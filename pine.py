@@ -8,6 +8,7 @@ Enable in PCSX2: Settings > Advanced > Enable PINE (default slot 28011).
 Windows: TCP 127.0.0.1:<slot>.  Linux: unix socket $XDG_RUNTIME_DIR/pcsx2.sock (or /tmp/pcsx2.sock).
 """
 import os
+from pathlib import Path
 import socket
 import struct
 
@@ -48,13 +49,31 @@ class Pine:
                 raise PineError(f'nothing listens on PINE port {self.slot}: is PCSX2 open with a game running and '
                                 f'Settings > Advanced > Enable PINE ticked (slot {self.slot})?') from None
         else:
-            base = os.environ.get('XDG_RUNTIME_DIR', '/tmp')
-            path = os.path.join(base, 'pcsx2.sock')
-            if self.slot != 28011:
-                path += f'.{self.slot}'
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(self.timeout)
-            s.connect(path)
+            base = Path(os.environ.get('XDG_RUNTIME_DIR') or '/tmp')
+            name = 'pcsx2.sock' + (f'.{self.slot}' if self.slot != 28011 else '')
+            # Flatpak can place the socket in its own runtime directory.
+            paths = list(dict.fromkeys((base / name,
+                                        base / 'app/net.pcsx2.PCSX2' / name,
+                                        Path('/tmp') / name)))
+            failures = []
+            for path in paths:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(self.timeout)
+                try:
+                    s.connect(str(path))
+                    break
+                except OSError as error:
+                    s.close()
+                    failures.append(f'{path}: {error.strerror or error}')
+            else:
+                raise PineError(
+                    'Cannot connect to PCSX2 PINE. Open PCSX2, enable '
+                    f'Settings > Advanced > Enable PINE (slot {self.slot}), '
+                    'restart PCSX2 and start the game before hosting. '
+                    'Run PCSX2 and the launcher as the same user. '
+                    'If using Flatpak, its PINE socket must be accessible outside the sandbox. '
+                    'Tried: ' + '; '.join(failures)
+                ) from None
         s.settimeout(self.timeout)                       # never wait forever for a PCSX2 that does not answer
         if os.name == 'nt':
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

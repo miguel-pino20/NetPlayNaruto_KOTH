@@ -1,5 +1,12 @@
 # UN5 Netplay Launcher
 
+For PCSX2 installed with Flatpak, close PCSX2 and start it using
+`bash "2 - PCSX2 Flatpak.sh"` before opening the launcher. This puts the PINE
+socket in Flatpak's shared application runtime directory, so the Linux launcher
+can connect from outside the sandbox. Enable PINE (slot 28011) and start the game.
+While using the local Linux fixes, launch with
+`UN5_SKIP_UPDATE=1 bash "1 - Run.sh"` to avoid overwriting them with upstream files.
+
 **Language / Idioma:** [English](#-english) · [Português (BR)](#-português-br)
 
 ---
