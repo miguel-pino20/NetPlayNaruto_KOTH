@@ -882,6 +882,7 @@ class Launcher(tk.Tk):
         def launch():
             cfg = self.cfg()
             args = ['hill', '--api-url', url, '--address', address, '--game', self.game,
+                    '--delay', core.MATCH_DELAY,
                     '--state', cfg['state_file'], '--state-dir', cfg['state_dir'], '--load-slot', cfg['load_slot'],
                     '--nick', cfg.get('nick', ''), '--relay-server', core.SERVER_ADDR, '--relay-api-url', core.SERVER_URL]
             self._koth_pending = False

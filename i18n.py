@@ -186,10 +186,8 @@ STRINGS = {
                    "when yours differ.",
                    "O estado da partida e o symbols.json vêm do servidor e são baixados para você "
                    "quando os seus forem diferentes."),
-    "note.delay": ("Input delay is automatic: the host picks it from its ping to the server "
-                   "when the room opens; the guest uses the host's value.",
-                   "O input delay é automático: o host escolhe pelo ping até o servidor quando a sala abre; "
-                   "o guest usa o valor do host."),
+    "note.delay": ("Input delay: 3 frames. Guests use the room's value.",
+                   "Input delay: 3 frames. O guest usa o valor da sala."),
     "nick.sub_game": ("Discord  ·  in the game as {shown}", "Discord  ·  no jogo como {shown}"),
     "nick.sub_default": ("Discord  ·  in the game as Player1 (host) / Player2 (guest)",
                          "Discord  ·  no jogo como Player1 (host) / Player2 (guest)"),

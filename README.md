@@ -92,8 +92,9 @@ python netplay.py --symbols /ruta/symbols.json hill \
   --state /ruta/match.p2s --state-dir /ruta/PCSX2/sstates --load-slot 9
 ```
 
-`--delay 0` (por defecto) calcula el delay por el ping al servidor principal.
-Puedes indicar 2–10 frames manualmente; ambos usan el delay del host.
+El launcher y KOTH usan **3 frames** de input delay. Ambos jugadores siguen el
+valor publicado por el host. Desde terminal puedes indicar `--delay 0` para
+calcularlo por el ping, o elegir 2–10 frames manualmente.
 `--relay-server` y `--relay-api-url` permiten configurar el servidor principal;
 `--api-url` sigue siendo la URL de Django. La IP de ZeroTier no interviene en las peleas.
 `--port` permite cambiar el puerto del host (47400 por defecto).
@@ -118,7 +119,7 @@ Desktop launcher (Python/Tkinter) for **UN5 Netplay**, a 2-player lockstep onlin
 
 - **Discord login:** your name and avatar show up in the room list and in the game.
 - **Room list** with host and guest avatars, match phase (`SELECTING` / `IN FIGHT`), real ping, and match time.
-- **Automatic input delay:** the host picks it based on its ping to the server; the guest uses the host's value.
+- **Fixed input delay:** the launcher uses 3 frames; the guest uses the room's value.
 - **Match state sync:** the default save state and `symbols.json` are downloaded from the server when yours differ.
 - **Owner-only PREPARE:** the room owner prepares the match state, which is then published to the server automatically.
 - **Extra tools:** load the match state into PCSX2, solo test, PINE test, and release game.
@@ -177,7 +178,7 @@ Launcher desktop (Python/Tkinter) do **UN5 Netplay**, um modo online lockstep pa
 
 - **Login com Discord:** seu nome e avatar aparecem na lista de salas e dentro do jogo.
 - **Lista de salas** com avatar do host e do guest, fase da partida (`SELECTING` / `IN FIGHT`), ping real e tempo de partida.
-- **Input delay automático:** o host escolhe o valor com base no ping até o servidor, e o guest usa o valor definido pelo host.
+- **Input delay fixo:** o launcher usa 3 frames; o guest usa o valor definido pelo host.
 - **Sincronização do estado da partida:** o save state padrão e o `symbols.json` são baixados do servidor quando os arquivos locais são diferentes.
 - **PREPARE exclusivo do dono:** o dono da sala prepara o estado da partida, que é publicado automaticamente no servidor.
 - **Ferramentas extras:** carregar o estado da partida no PCSX2, teste solo, teste do PINE e liberar o jogo.

@@ -19,8 +19,7 @@ salas mostra: avatar de quem e host/guest, status real, ping real e tempo de par
 Os caminhos (pasta do projeto, symbols.json, estado da partida, python, pasta de save do PCSX2) NAO sao mais
 configuraveis na tela: `full_config()` completa a configuracao do usuario com tudo que e detectado sozinho.
 O nick do jogo vem sempre do perfil do Discord (`account_game_nick`); nao ha campo de nick.
-O input delay tambem nao e mais escolhido na tela: o netplay.py recebe `--delay 0` (automatico): o host mede o
-ping ate o servidor e escolhe; o guest usa o delay da sala.
+O input delay do launcher e fixado em 3 frames; o guest usa o delay publicado pela sala.
 A mascara do hash e o resto do diagnostico ficam como estao no NetPad.c / netpad_core.h (nenhuma flag de
 diagnostico e enviada ao netplay.py).
 
@@ -62,7 +61,7 @@ SERVER_URL = DEFAULT_API_URL                           # API (salas, conta, save
 SERVER_ADDR = DEFAULT_SERVER                           # UDP (descoberta e relay): NAO passa pelo Caddy
 HOST_PORT = "47400"                                    # porta UDP local do host (fixa, sem campo na tela)
 GUEST_BIND_PORT = "0"                                  # porta UDP local do guest (0 = automatica)
-AUTO_DELAY = "0"                                       # --delay 0 = o netplay.py escolhe sozinho
+MATCH_DELAY = "3"                                      # atraso fixo de entrada para as partidas
 SOLO_DELAY = "3"                                       # solo nao tem rede: nada para medir
 
 STAT_RE = re.compile(r"frame=\s*(\d+)\s+([\d.]+)/s(?:\s+rtt=(\d+|None)ms)?\s+stalls=(\d+)")
@@ -326,8 +325,7 @@ def _need_state_dir(cfg):
 def make_args(cfg: dict, action: str, state_path=None):
     """Argumentos depois das opcoes globais do netplay.py. `cfg` e o resultado de full_config() (+ `nick`, que o
     launcher tira do perfil do Discord). Levanta ValueError com o motivo. Nenhuma flag de diagnostico (mascara, rng,
-    watch) e enviada: valem os padroes do NetPad.c / netpad_core.h e do netplay.py. O delay e sempre automatico
-    (--delay 0), exceto no solo."""
+    watch) e enviada: valem os padroes do NetPad.c / netpad_core.h e do netplay.py. O launcher usa delay 3."""
     missing_state = tr("err.no_state", name=STATE_NAME)
     if action == "prepare":
         args = ["prepare", "--save-slot", int_in(cfg["save_slot"], "Save slot", 0, 99)]
@@ -345,7 +343,7 @@ def make_args(cfg: dict, action: str, state_path=None):
     if action not in ("host", "guest"):
         raise ValueError(f"unknown action {action}")
 
-    delay = AUTO_DELAY                                   # 0 = automatico: o host escolhe pelo ping, o guest usa o da sala
+    delay = MATCH_DELAY                                  # o guest segue o valor publicado pelo host
     fetch = action == "guest" and bool(cfg.get("fetch_state", True))   # o arquivo do servidor e baixado
     if not state_path or (not Path(state_path).is_file() and not fetch):
         raise ValueError(missing_state)

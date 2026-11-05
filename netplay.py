@@ -1087,7 +1087,7 @@ def main(argv=None):
     hill.add_argument('--state-dir', required=True)
     hill.add_argument('--load-slot', type=int, default=9)
     hill.add_argument('--port', type=int, choices=range(1024, 65534), default=47400, metavar='PORT')
-    hill.add_argument('--delay', type=int, choices=(0, *range(2, 11)), default=0)
+    hill.add_argument('--delay', type=int, choices=(0, *range(2, 11)), default=3)
     hill.add_argument('--nick', default='')
     hill.add_argument('--relay-server', default=netlink.DEFAULT_SERVER)
     hill.add_argument('--relay-api-url', default=netlink.DEFAULT_API_URL)
