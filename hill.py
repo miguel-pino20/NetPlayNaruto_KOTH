@@ -75,8 +75,6 @@ def match_command(args, snapshot, stop_file, room_file=None):
         command += ['--port', str(args.port), '--no-announce', '--no-share-state']
         if room_file is not None and transport == 'relay':
             command += ['--room-file', str(room_file)]
-        if snapshot.get('spectator_key') and not getattr(args, 'no_spectators', False):
-            command += ['--spectator-port', str(host['spectator_port'])]
     elif role == 'guest':
         if transport == 'relay':
             if not host.get('relay_room'):
@@ -88,6 +86,8 @@ def match_command(args, snapshot, stop_file, room_file=None):
             command += ['--server', '', '--connect', f"{host['address']}:{host['port']}", '--bind-port', '0']
     else:
         command += ['--server', '', '--connect', f"{host['address']}:{host['spectator_port']}"]
+    if role in ('host', 'guest') and snapshot.get('spectator_key') and not getattr(args, 'no_spectators', False):
+        command += ['--spectator-port', str(args.port+1)]
     return command
 
 
@@ -135,6 +135,7 @@ def run(args):
             'transport': transport, 'spectators_enabled': not getattr(args, 'no_spectators', False)}
     process, active_round, blocked_round, last_message = None, None, None, None
     active_role, watch_failed_round = None, None
+    active_stream, watch_retry_at = None, 0
     last_board = None
     registered = False
     with tempfile.TemporaryDirectory(prefix='un5-hill-') as directory:
@@ -152,7 +153,8 @@ def run(args):
                 if process is not None and process.poll() is not None:
                     if active_role == 'spectator':
                         watch_failed_round = active_round
-                        print('La transmisión terminó. Sigues disponible para tu turno; puedes reentrar a KOTH para volver a observar.', flush=True)
+                        watch_retry_at = time.monotonic()+5
+                        print('La transmisión terminó. Se recargará el estado y se buscará otra fuente en 5 segundos. Sigues disponible para tu turno.', flush=True)
                     else:
                         blocked_round = active_round
                         print('La sesión terminó. Esperando el resultado del organizador; reinicia este modo para reintentar.', flush=True)
@@ -185,13 +187,15 @@ def run(args):
                             print('KOTH_STATE ' + board, flush=True)
                             last_board = board
                     round_id = snapshot['round_id']
+                    stream_id = snapshot.get('stream_id') or round_id
                     if blocked_round is not None and round_id != blocked_round:
                         blocked_round = None
                         # Publish availability for the new pair before starting it.
                         continue
                     if watch_failed_round is not None and round_id != watch_failed_round:
                         watch_failed_round = None
-                    if process is not None and (round_id != active_round or snapshot['role'] != active_role or not snapshot['ready']):
+                    if process is not None and (round_id != active_round or snapshot['role'] != active_role or not snapshot['ready']
+                                                or (active_role == 'spectator' and stream_id != active_stream)):
                         stop_match(process, child_stop)
                         process = None
                         if round_id == active_round and active_role != 'spectator':
@@ -209,18 +213,23 @@ def run(args):
                         print('Cola: ' + message[0], flush=True)
                         print(f"Turno: {snapshot['role'] or 'en espera'}. {reason}", flush=True)
                         last_message = message
-                    watching_failed = snapshot['role'] == 'spectator' and watch_failed_round == round_id
+                    watching_failed = (snapshot['role'] == 'spectator' and watch_failed_round == round_id
+                                       and time.monotonic() < watch_retry_at)
                     watching_disabled = snapshot['role'] == 'spectator' and getattr(args, 'no_spectators', False)
                     if process is None and blocked_round is None and snapshot['ready'] and not watching_failed and not watching_disabled and room_ready:
                         child_stop.unlink(missing_ok=True)
                         room_file.unlink(missing_ok=True)
                         active_round = round_id
+                        active_stream = stream_id
                         active_role = snapshot['role']
                         print('Iniciando modo espectador.' if active_role == 'spectator' else f"Iniciando combate como {active_role}.", flush=True)
                         child_env = os.environ.copy()
                         child_env.pop('UN5_HILL_TICKET', None)
                         if active_role == 'spectator':
                             child_env.pop('UN5_NETPLAY_SESSION', None)
+                            child_env['UN5_SPECTATOR_SOURCES'] = json.dumps(snapshot.get('spectator_sources') or [])
+                        else:
+                            child_env.pop('UN5_SPECTATOR_SOURCES', None)
                         if snapshot.get('spectator_key'):
                             child_env['UN5_SPECTATOR_KEY'] = snapshot['spectator_key']
                         else:

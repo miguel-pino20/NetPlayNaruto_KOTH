@@ -153,6 +153,51 @@ class HillTests(unittest.TestCase):
         self.assertEqual(command[command.index('--spectator-port')+1], '47401')
         self.assertNotIn('private-view-key', command)
 
+    def test_guest_also_serves_spectators_from_its_own_port(self):
+        snapshot = self.snapshot(role='guest')
+        snapshot['spectator_key'] = 'private-view-key'
+        self.args.port = 47510
+        command = hill.match_command(self.args, snapshot, '/tmp/stop')
+        self.assertEqual(command[command.index('--spectator-port')+1], '47511')
+        self.assertNotIn('private-view-key', command)
+
+    @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket'})
+    @patch('hill.time.monotonic')
+    @patch('hill.time.sleep')
+    @patch('hill.subprocess.Popen')
+    @patch('hill.sync')
+    def test_spectator_retries_with_fresh_process_after_connection_closes(self, sync, popen, sleep, monotonic):
+        clock = [100]
+        monotonic.side_effect = lambda: clock[0]
+        snapshot = self.snapshot(role='spectator')
+        snapshot['host']['spectator_port'] = 47401
+        calls = [snapshot, snapshot, self.snapshot(status='finished'), {}]
+        def reply(*args):
+            if len(calls) == 3:
+                clock[0] += 6
+            return calls.pop(0)
+        sync.side_effect = reply
+        popen.return_value.poll.return_value = 1
+        self.assertEqual(hill.run(self.args), 0)
+        self.assertEqual(popen.call_count, 2)
+
+    @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket'})
+    @patch('hill.time.monotonic', return_value=100)
+    @patch('hill.time.sleep')
+    @patch('hill.subprocess.Popen')
+    @patch('hill.sync')
+    def test_spectator_reloads_on_new_stream_in_same_round(self, sync, popen, sleep, monotonic):
+        first, second = self.snapshot(role='spectator'), self.snapshot(role='spectator')
+        for snap, identity in [(first, 'old'), (second, 'new')]:
+            snap['host']['spectator_port'] = 47401
+            snap['stream_id'] = identity
+            snap['spectator_sources'] = [{'address': '10.147.0.1', 'port': 47401}]
+        sync.side_effect = [first, second, self.snapshot(status='finished'), {}]
+        popen.return_value.poll.return_value = None
+        self.assertEqual(hill.run(self.args), 0)
+        self.assertEqual(popen.call_count, 2)
+        self.assertIn('10.147.0.1', popen.call_args.kwargs['env']['UN5_SPECTATOR_SOURCES'])
+
     @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket'})
     @patch('hill.time.sleep')
     @patch('hill.subprocess.Popen')

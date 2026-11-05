@@ -1,5 +1,37 @@
 # UN5 Netplay Launcher
 
+## Windows: un solo ejecutable
+
+El paquete `dist/UN5-Netplay-Windows-x64.exe` incluye el launcher, Python y sus
+dependencias. Abre únicamente netplay; el jugador inicia PCSX2 por separado.
+No requiere Python instalado ni los `.bat`/`.sh` del proyecto.
+Para construirlo con Python de Windows x64: `py windows/build_windows.py`.
+Consulta [las instrucciones de Windows](windows/README.md).
+
+## Linux: un solo AppImage
+
+El paquete `dist/UN5-Netplay-x86_64.AppImage` incluye el launcher y sus dependencias.
+Al abrirlo también ejecuta PCSX2, que debe estar instalado mediante Flatpak
+(`net.pcsx2.PCSX2`). No incluye el emulador, BIOS ni juegos.
+Para construirlo: `python3 appimage/build_appimage.py`.
+Consulta [las instrucciones de AppImage](appimage/README.md) para distribuirlo y usarlo.
+
+## Partida de dos jugadores por ZeroTier
+
+Pulsa **ZeroTier · 2 players**. Ambos PCs deben estar autorizados en la misma
+red ZeroTier y tener PCSX2 abierto con el juego y PINE habilitado.
+
+1. P1 elige **HOST**, selecciona su red (`Nombre — IPv4`) y pulsa **START ZEROTIER**.
+2. P1 comparte la IPv4 seleccionada con P2; el host escucha en UDP 47400.
+3. P2 elige **GUEST**, selecciona su propia red e introduce la IPv4 de P1 en
+   **Host's ZeroTier IPv4**. Después pulsa **START ZEROTIER**.
+
+El launcher comprueba y descarga el estado y los símbolos del servidor habitual
+antes de iniciar. La pelea conecta directamente por ZeroTier con delay 3;
+no necesita un torneo, código KOTH ni sala del servidor principal. Permite UDP
+47400 en el firewall del host. La conexión se enlaza a la IP local seleccionada.
+Estas partidas no aparecen en la lista de salas online. **STOP** termina la sesión.
+
 ## Rey de la colina con Django y ZeroTier
 
 Django coordina los turnos. Las peleas de KOTH conectan directamente por ZeroTier,
@@ -65,17 +97,29 @@ P2, pasa a P1 en la siguiente sesión.
 
 **Espectadores:** cuando la pareja está lista, los demás inscritos con el mismo
 juego, estado y símbolos reciben una transmisión de controles de solo lectura
-del host. Sus mandos no se envían y sus conexiones no participan en las esperas
+desde uno de los dos jugadores. Cada jugador habilitado sirve una copia del
+historial en su TCP `port+1`. El espectador compara en paralelo el tiempo de
+conexión y autenticación a ambas fuentes y conserva la más rápida disponible.
+La medición aproxima la latencia desde el espectador; no usa el ping entre jugadores.
+Sus mandos no se envían y sus conexiones no participan en las esperas
 ni en la comparación de hashes de los jugadores. La cola sigue mostrándose en
 la consola; al llegar tu turno, el launcher cierra la reproducción, recarga el
 estado y te conecta como jugador.
 
 La reproducción comienza desde el inicio del combate: si entras tarde, lo ves
 con retraso, sin saltar al instante actual. Una transmisión interrumpida no te
-retira de la cola; puedes salir y reentrar a KOTH para volver a observar. El host
+retira de la cola: tras 5 segundos se recarga el estado y se vuelven a comparar
+las fuentes, reproduciendo otra vez desde el comienzo. Cada jugador que transmite
 conserva hasta 64 MiB de historial y atiende hasta 16 espectadores; si se agota
 el búfer, desactiva la transmisión y los jugadores continúan. No se retransmite
-video ni se consulta PINE desde los hilos que atienden espectadores.
+video ni se consulta PINE desde los hilos que atienden espectadores. Elegir una
+fuente más rápida no garantiza que la emulación local muestre la misma imagen:
+PCSX2, el juego, el estado, los símbolos y la configuración deben ser compatibles.
+Las transmisiones consumen ancho de banda y recursos del PC aunque no bloqueen
+el protocolo de la pelea.
+
+Para las dos fuentes actualiza también `home/netplay.py` de Django y reinicia
+el servicio. Este cambio no requiere una migración adicional a la 0011.
 
 Hay que actualizar el launcher en **todos los PCs**, `home/netplay.py`,
 `home/models.py` y la migración `0011_koth_transport_spectators.py` en Django.

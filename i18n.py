@@ -54,6 +54,19 @@ def tr(key: str, **kw) -> str:
 
 # chave: (english, portugues)
 STRINGS = {
+    'zt.button': ('ZeroTier · 2 players', 'ZeroTier · 2 jogadores'),
+    'zt.title': ('Two players over ZeroTier', 'Dois jogadores pelo ZeroTier'),
+    'zt.host_ip': ("Host's ZeroTier IPv4 (guest only)", 'IPv4 ZeroTier do host (apenas convidado)'),
+    'zt.selected_ip': ('Selected ZeroTier IPv4', 'IPv4 ZeroTier selecionado'),
+    'zt.share_ip': ('Your host IPv4 · share with P2', 'Seu IPv4 de host · compartilhe com P2'),
+    'zt.note': ('Both PCs must join the same ZeroTier network. Host: share your selected IPv4 with your rival. Guest: enter the host IPv4. Fights use direct UDP 47400 with 3 frames of delay. These matches do not appear in the online room list.',
+                'Os dois PCs precisam da mesma rede ZeroTier. Host: compartilhe seu IPv4 selecionado. Convidado: informe o IPv4 do host. As lutas usam UDP 47400 direto com delay de 3 frames. Não aparecem na lista de salas online.'),
+    'zt.start': ('START ZEROTIER', 'INICIAR ZEROTIER'),
+    'zt.invalid_ip': ('Select a valid ZeroTier IPv4 for this PC and enter the host IPv4 when joining.',
+                      'Selecione um IPv4 ZeroTier válido para este PC e informe o IPv4 do host ao entrar.'),
+    'zt.same_ip': ('The host IPv4 must be your rival’s, not this PC’s.', 'O IPv4 do host deve ser o do rival, não o deste PC.'),
+    'zt.share': ('ZeroTier host: give your rival {ip}:{port}. Waiting for P2…',
+                 'Host ZeroTier: informe {ip}:{port} ao rival. Aguardando P2…'),
     'koth.events': ('KOTH EVENTS', 'EVENTOS KOTH'),
     'koth.event': ('Event', 'Evento'),
     'koth.state': ('Status', 'Estado'),

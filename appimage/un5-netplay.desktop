@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=UN5 Netplay
+Comment=Netplay launcher with PCSX2 Flatpak
+Exec=AppRun
+Icon=un5-netplay
+Terminal=false
+Categories=Game;Emulator;

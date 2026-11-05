@@ -12,6 +12,7 @@ import socket
 import struct
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 FRAME = struct.Struct('<I24sI24sI14I')
 MAX_HISTORY = 64 * 1024 * 1024
@@ -250,6 +251,30 @@ class ReplayPlayer:
         return True
 
 
+def connect_best_source(sources, key, tag, symbols, delay):
+    """Measure authenticated TCP setup concurrently, outside either player's loop.
+
+    Keep the fastest connection; closing unused probes never enters UDP lockstep.
+    Sources offer the same round and complete input history, not live video.
+    """
+    def probe(source):
+        start = time.monotonic()
+        try:
+            client = ReplayClient((source['address'], int(source['port'])), key, tag, symbols, delay)
+            return time.monotonic()-start, client, source
+        except (OSError, EOFError, ValueError):
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(probe, sources[:2]))
+    results = sorted((r for r in results if r is not None), key=lambda r: r[0])
+    if not results:
+        raise OSError('No se pudo abrir ninguna transmisión de la pareja.')
+    for _, client, _ in results[1:]:
+        client.close()
+    return results[0]
+
+
 def cmd_watch(args):
     from hill import file_tag
     from netplay import apply_config, connect, load_match_state, stop_requested
@@ -269,25 +294,32 @@ def cmd_watch(args):
         tag = file_tag(args.state)
         apply_config(args, core, tag)
         ip, _, port = args.connect.rpartition(':')
+        sources = json.loads(os.environ.get('UN5_SPECTATOR_SOURCES', '[]'))
+        if not sources:
+            sources = [{'address': ip, 'port': int(port), 'name': 'P1'}]
         # The host may still be loading its state when Django announces ready.
         deadline = time.monotonic()+45
         while not stop_requested(args):
             try:
-                client = ReplayClient((ip, int(port)), key, tag, file_tag(args.symbols), args.delay)
+                latency, client, selected = connect_best_source(sources, key, tag, file_tag(args.symbols), args.delay)
+                print(f"Espectador: fuente {selected.get('name', selected['address'])} "
+                      f"({selected['address']}:{selected['port']}), respuesta TCP {latency*1000:.0f} ms.", flush=True)
                 break
             except (OSError, EOFError):
                 if time.monotonic() >= deadline:
-                    raise OSError('No se pudo abrir la transmisión del host.') from None
+                    raise OSError('No se pudo abrir la transmisión de ningún jugador.') from None
                 time.sleep(0.2)
         if client is None:
             return 0
         print('ESPECTADOR: reproduciendo desde el inicio. Tu mando no participa en el combate.', flush=True)
         player = ReplayPlayer(core, client.records)
+        last_progress = time.monotonic()
         # Keep HOLD=1: missing spectator data may freeze this PC indefinitely,
         # but cannot abort the match or send anything to its UDP participants.
         while not stop_requested(args):
-            player.step()
-            if client.error and client.records.empty() and player.pending is None:
+            if player.step():
+                last_progress = time.monotonic()
+            if client.error and client.records.empty() and (player.pending is None or time.monotonic()-last_progress > 2):
                 raise EOFError(client.error)
             time.sleep(0.001)
         return 0

@@ -38,6 +38,16 @@ def apply_style(root):
     st.configure(".", background=BG, foreground=TEXT, font=("Segoe UI", 10))
     st.configure("TEntry", fieldbackground=PANEL_2, foreground=TEXT, insertcolor=TEXT, bordercolor=BORDER,
                  lightcolor=BORDER, darkcolor=BORDER, padding=6)
+    st.configure('TCombobox', fieldbackground=PANEL_2, background=PANEL_2, foreground=TEXT,
+                 arrowcolor=TEXT, insertcolor=TEXT, bordercolor=BORDER, padding=6)
+    st.map('TCombobox', fieldbackground=[('disabled', PANEL), ('readonly', PANEL_2), ('!disabled', PANEL_2)],
+           foreground=[('disabled', MUTED), ('!disabled', TEXT)],
+           selectbackground=[('!disabled', ACCENT)], selectforeground=[('!disabled', ON_ACCENT)],
+           background=[('active', BORDER), ('!disabled', PANEL_2)])
+    root.option_add('*TCombobox*Listbox.background', PANEL_2)
+    root.option_add('*TCombobox*Listbox.foreground', TEXT)
+    root.option_add('*TCombobox*Listbox.selectBackground', ACCENT)
+    root.option_add('*TCombobox*Listbox.selectForeground', ON_ACCENT)
     st.configure("Vertical.TScrollbar", background=PANEL_2, troughcolor=PANEL, bordercolor=PANEL,
                  arrowcolor=MUTED, relief="flat", gripcount=0)
     st.map("Vertical.TScrollbar", background=[("active", BORDER)])

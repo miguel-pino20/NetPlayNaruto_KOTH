@@ -320,6 +320,9 @@ class Launcher(tk.Tk):
         self.hill_btn = PillButton(inner, text=tr("koth.manual"), command=self.hill)
         self.hill_btn.pack(fill="x", pady=(6, 0))
 
+        self.zerotier_btn = PillButton(inner, text=tr('zt.button'), command=self.zerotier)
+        self.zerotier_btn.pack(fill='x', pady=(6, 0))
+
         # PREPARAR PARTIDA e Ferramentas: so para o dono (ver _sync_admin)
         self.admin_box = tk.Frame(inner, bg=PANEL)
         self.prepare_btn = PillButton(self.admin_box, text=tr("btn.prepare"), command=self.prepare)
@@ -656,7 +659,7 @@ class Launcher(tk.Tk):
     def _set_buttons(self, running):
         running = running or self._koth_pending
         state = "disabled" if running else "normal"
-        for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn, self.hill_btn):
+        for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn, self.hill_btn, self.zerotier_btn):
             b.configure(state=state)
         # PREPARE: so o dono (o servidor decide quem e o dono; o launcher so esconde o botao)
         self.prepare_btn.configure(state="normal" if (not running and self.backend.is_admin()) else "disabled")
@@ -683,36 +686,10 @@ class Launcher(tk.Tk):
             messagebox.showerror(tr("dlg.cannot_continue"), str(exc))
             return None
 
-    def hill(self, event=None):
-        if self.backend.running or self._koth_pending or not self._ensure_state_dir() or not self._pick_game():
-            return
-        from koth_client import site_url
+    def _zerotier_picker(self, dialog, initial, address_var=None):
         from zerotier_networks import discover
-        import ipaddress
-
-        dialog = tk.Toplevel(self)
-        dialog.title(tr("hill.title"))
-        dialog.transient(self)
-        dialog.configure(bg=PANEL, padx=20, pady=16)
-        values = {}
-        fields = [
-            ("url", tr("hill.url"), self.v["hill_url"].get()),
-        ]
-        if event:
-            tk.Label(dialog, text=event['name'], bg=PANEL, fg=ACCENT,
-                     font=('Segoe UI', 12, 'bold')).pack(anchor='w')
-            fields.append(('name', tr('koth.player_name'), self.v['hill_player_name'].get() or self.cfg().get('nick', '')))
-            tk.Label(dialog, text=tr('koth.linked_entry' if self.backend.session else 'koth.guest_entry'), bg=PANEL, fg=MUTED,
-                     wraplength=480, justify='left').pack(anchor='w', pady=(6, 0))
-        else:
-            fields.append(('ticket', tr('hill.ticket'), self.v['hill_ticket'].get()))
-        for key, label, initial in fields:
-            tk.Label(dialog, text=label, bg=PANEL, fg=TEXT).pack(anchor="w", pady=(8, 3))
-            values[key] = tk.StringVar(value=initial)
-            ttk.Entry(dialog, textvariable=values[key], width=65, show="*" if key == "ticket" else "",
-                      state='readonly' if event and key == 'url' else 'normal').pack(fill="x")
         tk.Label(dialog, text=tr("hill.address"), bg=PANEL, fg=TEXT).pack(anchor="w", pady=(8, 3))
-        selected_network = tk.StringVar(value=self.v["hill_address"].get())
+        selected_network = tk.StringVar(value=initial)
         networks = {}
         disabled_label = tr('hill.zt.choose')
         network_box = ttk.Combobox(dialog, textvariable=selected_network, width=65, values=(disabled_label,))
@@ -738,6 +715,22 @@ class Launcher(tk.Tk):
             if choice == disabled_label:
                 return '0.0.0.0'
             return networks.get(choice, choice).strip() or '0.0.0.0'
+
+        if address_var is None:
+            address_var = tk.StringVar()
+        tk.Label(dialog, text=tr('zt.selected_ip'), bg=PANEL, fg=TEXT).pack(anchor='w', pady=(8, 3))
+        ttk.Entry(dialog, textvariable=address_var, state='readonly').pack(fill='x')
+
+        def update_address(*_):
+            import ipaddress
+            try:
+                address = ipaddress.IPv4Address(address_for(selected_network.get()))
+                address_var.set('' if address.is_unspecified else str(address))
+            except ValueError:
+                address_var.set('')
+
+        selected_network.trace_add('write', update_address)
+        update_address()
 
         def refresh_networks(allow_admin=False):
             initial_choice = selected_network.get()
@@ -798,13 +791,100 @@ class Launcher(tk.Tk):
             button = ttk.Button(network_controls, text=tr('hill.zt.names'), command=lambda: refresh_networks(True))
             button.pack(side='left', padx=(8, 0))
             scan_buttons.append(button)
+        scan_job[0] = dialog.after(0, refresh_networks)
+        return lambda: address_for(selected_network.get())
+
+    def zerotier(self):
+        if self.backend.running or self._koth_pending or not self._ensure_state_dir() or not self._pick_game():
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title(tr('zt.title'))
+        dialog.transient(self)
+        dialog.configure(bg=PANEL, padx=20, pady=16)
+        role = tk.StringVar(value=self.v['zerotier_role'].get())
+        Segmented(dialog, [('host', 'HOST · P1'), ('guest', 'GUEST · P2')], role).pack(fill='x', pady=(0, 8))
+        local_address = tk.StringVar()
+        get_address = self._zerotier_picker(dialog, self.v['zerotier_address'].get(), local_address)
+        host_label = tk.Label(dialog, bg=PANEL, fg=TEXT)
+        host_label.pack(anchor='w', pady=(12, 3))
+        host = tk.StringVar(value=self.v['zerotier_host'].get())
+        entry = ttk.Entry(dialog, textvariable=host, width=65)
+        entry.pack(fill='x')
+        def sync_role(*_):
+            joining = role.get() == 'guest'
+            host_label.configure(text=tr('zt.host_ip' if joining else 'zt.share_ip'))
+            entry.configure(textvariable=host if joining else local_address,
+                            state='normal' if joining else 'readonly')
+        role.trace_add('write', sync_role)
+        sync_role()
+        tk.Label(dialog, text=tr('zt.note'), bg=PANEL, fg=MUTED, wraplength=480,
+                 justify='left').pack(pady=12)
+        def begin():
+            cfg = {**self.cfg(), 'transport': 'zerotier', 'zerotier_address': get_address(),
+                   'zerotier_host': host.get().strip(), 'zerotier_role': role.get()}
+            # Validate before starting the asynchronous state download.
+            try:
+                core.zerotier_args(cfg, role.get())
+            except ValueError as error:
+                return messagebox.showerror(tr('zt.title'), str(error), parent=dialog)
+            for key in ('zerotier_address', 'zerotier_host', 'zerotier_role'):
+                self.v[key].set(cfg[key])
+            core.save_config(self.raw())
+            dialog.destroy()
+            def launch():
+                try:
+                    args = core.make_args(cfg, cfg['zerotier_role'], cfg['state_file'])
+                except ValueError as error:
+                    self._set_buttons(False)
+                    self._set_status('READY', MUTED)
+                    return messagebox.showerror(tr('zt.title'), str(error))
+                if cfg['zerotier_role'] == 'host':
+                    self._log(tr('zt.share', ip=cfg['zerotier_address'], port=core.HOST_PORT), 'info')
+                self._spawn(args, tr('zt.title'))
+            self._after_sync = launch
+            self._log('\n▶ ' + tr('run.checking'), 'info')
+            self._set_status('LOADING', BLUE)
+            self._set_buttons(True)
+            self.stop_btn.configure(state='disabled')
+            self.backend.sync_default(self.game)
+        ttk.Button(dialog, text=tr('zt.start'), command=begin).pack(fill='x')
+        dialog.grab_set()
+
+    def hill(self, event=None):
+        if self.backend.running or self._koth_pending or not self._ensure_state_dir() or not self._pick_game():
+            return
+        from koth_client import site_url
+        import ipaddress
+
+        dialog = tk.Toplevel(self)
+        dialog.title(tr("hill.title"))
+        dialog.transient(self)
+        dialog.configure(bg=PANEL, padx=20, pady=16)
+        values = {}
+        fields = [
+            ("url", tr("hill.url"), self.v["hill_url"].get()),
+        ]
+        if event:
+            tk.Label(dialog, text=event['name'], bg=PANEL, fg=ACCENT,
+                     font=('Segoe UI', 12, 'bold')).pack(anchor='w')
+            fields.append(('name', tr('koth.player_name'), self.v['hill_player_name'].get() or self.cfg().get('nick', '')))
+            tk.Label(dialog, text=tr('koth.linked_entry' if self.backend.session else 'koth.guest_entry'), bg=PANEL, fg=MUTED,
+                     wraplength=480, justify='left').pack(anchor='w', pady=(6, 0))
+        else:
+            fields.append(('ticket', tr('hill.ticket'), self.v['hill_ticket'].get()))
+        for key, label, initial in fields:
+            tk.Label(dialog, text=label, bg=PANEL, fg=TEXT).pack(anchor="w", pady=(8, 3))
+            values[key] = tk.StringVar(value=initial)
+            ttk.Entry(dialog, textvariable=values[key], width=65, show="*" if key == "ticket" else "",
+                      state='readonly' if event and key == 'url' else 'normal').pack(fill="x")
+        get_address = self._zerotier_picker(dialog, self.v['hill_address'].get())
         Switch(dialog, tr('hill.spectators'), self.v['hill_spectators']).pack(anchor='w', pady=(10, 0))
         tk.Label(dialog, text=tr("hill.note"), bg=PANEL, fg=MUTED, wraplength=480, justify="left").pack(pady=12)
 
         def connect():
             try:
                 url = site_url(values["url"].get().strip())
-                selected_ip = ipaddress.IPv4Address(address_for(selected_network.get()))
+                selected_ip = ipaddress.IPv4Address(get_address())
                 if selected_ip.is_unspecified or selected_ip.is_loopback or selected_ip.is_multicast:
                     raise ValueError(tr('hill.zt.required'))
                 address = str(selected_ip)
@@ -866,7 +946,6 @@ class Launcher(tk.Tk):
 
         ttk.Button(dialog, text=tr("hill.connect"), command=connect).pack(fill="x")
         dialog.grab_set()
-        refresh_networks()
 
     def _begin_hill(self, url, address, ticket, event=None):
         self.v['hill_ticket'].set(ticket)

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+appdir="$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
+export APPDIR="$appdir"
+# python-appimage uses ARGV0 to set sys.executable. Child netplay processes must
+# invoke the bundled Python wrapper, rather than reopen this AppImage launcher.
+export ARGV0="$appdir/usr/bin/python3.12"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+unset PYTHONHOME PYTHONPATH
+
+# The Python AppImage wrapper configures its bundled Tcl/Tk and certificates.
+exec "$appdir/usr/bin/python3.12" \
+    "$appdir/usr/share/un5-netplay/appimage_start.py" "$@"

@@ -5,6 +5,7 @@ discord_server.py
 # ---- Backups ----
 *.bak
 *.bak[0-9]
+*.bak_seguranca
 *.orig
 *.tmp
 *.part
@@ -15,25 +16,72 @@ patch_*.py
 *Patch.bat
 *Patch*.bat
 
-# ---- Game data / build output ----
+# ---- Local game data (not distributed with the launcher) ----
 *.p2s
+*.ps2
+*.iso
+*.chd
+*.cso
+/bios/
+/games/
+/memcards/
+/sstates/
+/snaps/
 symbols.json
 
 # ---- User data and secrets ----
 session.json
 config.json
+launcher.json
+un5_launcher.json
+avatar.png
 .env
+.env.*
+!.env.example
+!.env.sample
 *.key
 *.pem
+.aws/
+.agents/
+.codex/
+
+# ---- Runtime files and updater state ----
+.update_commit
+un5_stop_*.flag
+*.log
 
 # ---- Python ----
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# ---- Linux / Windows packaging artifacts ----
+.appimage-cache/
+.windows-cache/
+build/
+dist/
+temp_build/
+*.AppImage
+*.AppImage.sha256
+*.exe
+*.exe.sha256
+*.msi
+*.whl
 
 # ---- Editors / OS ----
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo

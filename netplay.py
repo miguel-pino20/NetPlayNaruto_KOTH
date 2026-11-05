@@ -867,14 +867,15 @@ def cmd_play(args, is_host):
             return 1
     elif is_host:
         node = node_mod.Node(core, 1, 0, args.port, [0, 1], delay=args.delay, tag=tag, name=nick, first_capture=1,
-                             epoch=getattr(args, 'session_epoch', 0))
+                             epoch=getattr(args, 'session_epoch', 0), bind=getattr(args, 'bind_address', '0.0.0.0'))
         if getattr(args, 'expect_guest_ip', ''):
             node.add_expected_peer(2, 1, (args.expect_guest_ip, 0))
         print(f'host: waiting for the guest on UDP {args.port} (delay {args.delay} frames, state tag {tag}) ...')
     else:
         ip, _, port = args.connect.rpartition(':')
         node = node_mod.Node(core, 2, 1, args.bind_port, [0, 1], delay=args.delay, tag=tag, name=nick,
-                             host=(ip, int(port or 47400)), first_capture=1, epoch=getattr(args, 'session_epoch', 0))
+                             host=(ip, int(port or 47400)), first_capture=1, epoch=getattr(args, 'session_epoch', 0),
+                             bind=getattr(args, 'bind_address', '0.0.0.0'))
         if str(getattr(args, 'session_epoch', '0')) != '0':
             node.peers[1].strict = True
         print(f'guest: connecting to {args.connect} (delay {args.delay} frames, state tag {tag}) ...')
@@ -905,7 +906,7 @@ def cmd_play(args, is_host):
             announcer = None
     session = NetplaySession(core, node)
     replay = None
-    if is_host and getattr(args, 'spectator_port', 0):
+    if getattr(args, 'spectator_port', 0):
         from spectator import ReplayServer
         from hill import file_tag
         key = os.environ.get('UN5_SPECTATOR_KEY', '')
@@ -1156,10 +1157,11 @@ def main(argv=None):
                        help='HTTP(S) address of the server API (e.g. https://un5netplay.duckdns.org); '
                             'default: http://--server. UDP (relay) always uses --server')
         q.add_argument('--relay-only', action='store_true', help='send game packets only through the principal relay')
+        q.add_argument('--bind-address', default='0.0.0.0', help='local IPv4 for direct UDP connections')
+        q.add_argument('--spectator-port', type=int, default=0, help='TCP port for read-only spectators (0 = off)')
         if name == 'host':
             q.add_argument('--expect-guest-ip', default='', help=argparse.SUPPRESS)
             q.add_argument('--room-file', default=None, help=argparse.SUPPRESS)
-            q.add_argument('--spectator-port', type=int, default=0, help='TCP port for read-only spectators (0 = off)')
             q.add_argument('--no-share-state', action='store_true',
                            help='do not serve the match state file and symbols.json to guests (TCP)')
             q.add_argument('--port', type=int, default=47400, help='UDP port to listen on')

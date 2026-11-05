@@ -5,7 +5,7 @@ import time
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import core_link
 import node
@@ -42,6 +42,42 @@ def source(count=8):
 
 
 class SpectatorTests(unittest.TestCase):
+    def test_best_source_uses_authenticated_response_time_and_closes_unused_connection(self):
+        slow, fast = Mock(), Mock()
+        def connect(address, *args):
+            time.sleep(0.04 if address[1] == 1 else 0.005)
+            return slow if address[1] == 1 else fast
+        sources = [{'address': '127.0.0.1', 'port': 1}, {'address': '127.0.0.1', 'port': 2}]
+        with patch('spectator.ReplayClient', side_effect=connect):
+            _, chosen, source = spectator.connect_best_source(sources, 'key', 'a'*16, 'b'*16, 3)
+        self.assertIs(chosen, fast)
+        self.assertEqual(source['port'], 2)
+        slow.close.assert_called_once()
+        fast.close.assert_not_called()
+
+    def test_best_source_falls_back_if_one_player_cannot_serve(self):
+        server = self.server()
+        blocker = socket.socket()
+        blocker.bind(('127.0.0.1', 0))
+        self.addCleanup(blocker.close)
+        sources = [{'address': '127.0.0.1', 'port': blocker.getsockname()[1]},
+                   {'address': '127.0.0.1', 'port': server.port}]
+        _, client, chosen = spectator.connect_best_source(sources, 'secret-round', 'a'*16, 'b'*16, 3)
+        self.addCleanup(client.close)
+        self.assertEqual(chosen['port'], server.port)
+        server.capture(source())
+        self.assertEqual(len(self.frames(client, 8)), 8)
+
+    def test_guest_archives_host_selection_for_its_spectators(self):
+        guest = node.Node(Mock(), 2, 1, 0, [0, 1], host=('127.0.0.1', 47400))
+        self.addCleanup(guest.close)
+        guest.peers[1].hello = True
+        words = [1] + list(range(13))
+        packet = node.struct.pack(node.SEL_FMT, node.SEL_MAGIC, 1, guest._sel_crc, 1, *words)
+        guest._on_sel(packet, ('127.0.0.1', 47400), False)
+        self.assertEqual(guest.sel_words, words)
+        guest.core.follow_selection.assert_called_once_with(words)
+
     def server(self):
         server = spectator.ReplayServer(0, 'secret-round', 'a'*16, 'b'*16, 3, bind='127.0.0.1')
         self.addCleanup(server.close)
@@ -153,6 +189,11 @@ class SpectatorTests(unittest.TestCase):
         self.assertFalse(host.ready())
 
     def test_two_players_and_late_spectator_reproduce_the_same_simulated_fight(self):
+        for stream_source in (0, 1):
+            with self.subTest(source='host' if stream_source == 0 else 'guest'):
+                self._simulate_late_spectator(stream_source)
+
+    def _simulate_late_spectator(self, stream_source):
         cores, games = [], []
         for slot in range(3):
             core = core_link.PineCore(BASE, pine=MemoryPine(), serial=None)
@@ -167,7 +208,7 @@ class SpectatorTests(unittest.TestCase):
         self.addCleanup(host.close)
         self.addCleanup(guest.close)
         server = self.server()
-        host.replay = server
+        (host, guest)[stream_source].replay = server
         observer = None
         deadline = time.monotonic()+5
         while time.monotonic() < deadline:

@@ -80,7 +80,8 @@ AVATAR_RETRY = 30.0                                    # s ate tentar baixar de 
 # sozinha. A sessao do Discord NAO fica aqui: tem arquivo proprio (session.json).
 # (chaves antigas salvas no json, como "nick", "delay" ou "session", sao ignoradas por load_config)
 DEFAULTS = dict(mode="host", control="p1", room_id="", ignore_desync=False, state_dir="", lang="",
-                hill_url="", hill_address="", hill_ticket="", hill_event_id="", hill_player_name="", hill_spectators=True)
+                hill_url="", hill_address="", hill_ticket="", hill_event_id="", hill_player_name="", hill_spectators=True,
+                zerotier_address="", zerotier_host="", zerotier_role="host")
 
 # Valores fixos (antes eram campos na tela).
 FIXED = dict(pine_slot="28011", save_slot="1", load_slot="9", auto_copy=True, auto_load=True, fetch_state=True)
@@ -322,6 +323,26 @@ def _need_state_dir(cfg):
     return sdir
 
 
+def zerotier_args(cfg, action):
+    import ipaddress
+    def ipv4(value):
+        try:
+            ip = ipaddress.IPv4Address(str(value).strip())
+            if ip.is_unspecified or ip.is_loopback or ip.is_multicast or ip.is_reserved or int(ip) == 0xffffffff:
+                raise ValueError
+            return str(ip)
+        except ValueError:
+            raise ValueError(tr('zt.invalid_ip')) from None
+    address = ipv4(cfg.get('zerotier_address', ''))
+    args = ['--server', '', '--bind-address', address]
+    if action == 'host':
+        return args + ['--port', HOST_PORT, '--no-announce', '--no-share-state']
+    host = ipv4(cfg.get('zerotier_host', ''))
+    if host == address:
+        raise ValueError(tr('zt.same_ip'))
+    return args + ['--connect', f'{host}:{HOST_PORT}', '--bind-port', GUEST_BIND_PORT]
+
+
 def make_args(cfg: dict, action: str, state_path=None):
     """Argumentos depois das opcoes globais do netplay.py. `cfg` e o resultado de full_config() (+ `nick`, que o
     launcher tira do perfil do Discord). Levanta ValueError com o motivo. Nenhuma flag de diagnostico (mascara, rng,
@@ -344,7 +365,8 @@ def make_args(cfg: dict, action: str, state_path=None):
         raise ValueError(f"unknown action {action}")
 
     delay = MATCH_DELAY                                  # o guest segue o valor publicado pelo host
-    fetch = action == "guest" and bool(cfg.get("fetch_state", True))   # o arquivo do servidor e baixado
+    direct = cfg.get('transport') == 'zerotier'
+    fetch = action == "guest" and bool(cfg.get("fetch_state", True)) and not direct
     if not state_path or (not Path(state_path).is_file() and not fetch):
         raise ValueError(missing_state)
     args = [action, "--state", str(state_path), "--delay", delay]
@@ -356,6 +378,8 @@ def make_args(cfg: dict, action: str, state_path=None):
     if nick:
         args += ["--nick", nick]
 
+    if direct:
+        return args + zerotier_args(cfg, action)
     args += ["--server", SERVER_ADDR, "--api-url", SERVER_URL]
     if action == "host":
         if cfg.get("ignore_desync", False):              # so o host detecta desync
@@ -443,7 +467,8 @@ class Backend(DiscordMixin):
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
         role = args[0] if args else ""
         self.session_role = role
-        if role in ("host", "guest"):                    # so as sessoes de rede aparecem na lista de salas
+        direct = '--server' in args and args[args.index('--server')+1] == ''
+        if role in ("host", "guest") and not direct:
             room = args[args.index("--room") + 1] if "--room" in args[:-1] else ""
             threading.Thread(target=self._presence_loop, args=(self.proc, role, room), daemon=True).start()
         return self.last_cmd

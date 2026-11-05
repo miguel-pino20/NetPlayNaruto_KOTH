@@ -413,6 +413,8 @@ class Node:
             if diff >= 0x80000000:                           # older than what we already applied
                 return
         self.sel_rx_seq = seq
+        # Keep the host-authoritative selection for a read-only guest stream.
+        self.sel_words = list(words)
         if hasattr(self.core, 'follow_selection'):
             try:
                 self.core.follow_selection(words)
