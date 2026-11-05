@@ -80,7 +80,7 @@ AVATAR_RETRY = 30.0                                    # s ate tentar baixar de 
 # sozinha. A sessao do Discord NAO fica aqui: tem arquivo proprio (session.json).
 # (chaves antigas salvas no json, como "nick", "delay" ou "session", sao ignoradas por load_config)
 DEFAULTS = dict(mode="host", control="p1", room_id="", ignore_desync=False, state_dir="", lang="",
-                hill_url="", hill_address="", hill_ticket="", hill_event_id="", hill_player_name="")
+                hill_url="", hill_address="", hill_ticket="", hill_event_id="", hill_player_name="", hill_spectators=True)
 
 # Valores fixos (antes eram campos na tela).
 FIXED = dict(pine_slot="28011", save_slot="1", load_slot="9", auto_copy=True, auto_load=True, fetch_state=True)

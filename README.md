@@ -1,28 +1,27 @@
 # UN5 Netplay Launcher
 
-## Rey de la colina con Django y el servidor principal
+## Rey de la colina con Django y ZeroTier
 
-Django coordina los turnos. Las peleas usan exclusivamente el relay del servidor
-principal (`137.131.158.54:47500`), con su API habitual para las salas y archivos.
-ZeroTier es opcional y se utiliza solo para que los participantes en espera
-observen el combate en su propio PCSX2.
+Django coordina los turnos. Las peleas de KOTH conectan directamente por ZeroTier,
+con 3 frames de delay. Los participantes en espera también pueden observar por
+ZeroTier en su propio PCSX2. HOST/GUEST fuera de KOTH conserva el servidor principal.
 
 La URL pública de Django es `https://narutimateonline.sytes.net`.
 El launcher corrige automáticamente el dominio anterior mal escrito
 (`narultimateonline.sytes.net`) en las configuraciones guardadas.
 
 1. En Django, instala la actualización y ejecuta `python manage.py migrate`.
-2. Para jugar, todos necesitan acceso al servidor principal. Solo para observar
-   se necesita la misma red ZeroTier y TCP 47401 permitido en el host.
+2. Todos deben estar autorizados en la misma red ZeroTier. El host debe permitir
+   UDP 47400 para jugar y TCP 47401 si habilita espectadores.
    Cada PC debe tener PCSX2 con PINE habilitado,
    el juego abierto y los mismos archivos de save state y symbols de UN5 o UN6.
    El launcher comprueba y descarga el estado y los símbolos del servidor de
-   archivos habitual por HTTP antes de entrar. Los controles del combate viajan por el relay principal.
+   archivos habitual por HTTP antes de entrar. Los controles del combate viajan por ZeroTier.
 3. En **Your Role** selecciona **KOTH**. El panel de salas cambia a una lista de
    eventos de Django. La URL del sitio se puede editar encima de la lista.
    Selecciona el evento y pulsa **JOIN KOTH** (también puedes hacer doble clic).
-4. Confirma tu nombre y selecciona tu red de ZeroTier para espectadores; esta IP
-   es opcional para jugar. Si tienes la sesión de Discord del launcher activa,
+4. Confirma tu nombre y selecciona tu red de ZeroTier; la IPv4 es obligatoria.
+   Si tienes la sesión de Discord del launcher activa,
    Django la verifica con el servidor principal y vincula la inscripción a tu
    misma cuenta de Discord. Sin esa sesión, te inscribe como invitado. Se guarda
    una credencial local por sitio y evento para reconocer la inscripción al
@@ -39,7 +38,8 @@ El launcher corrige automáticamente el dominio anterior mal escrito
    **Refresh networks** vuelve a consultar las redes. Si Linux exige permisos,
    **Read network names…** solicita autorización solo para leer los nombres y
    los guarda para próximas aperturas; no hace falta ejecutar el launcher como
-   administrador. También puedes escribir la IP o elegir **No spectators**.
+   administrador. También puedes escribir la IP. **Enable spectators** permite
+   desactivar la transmisión y la observación sin salir de la cola.
    En Windows se consulta primero el servicio local de ZeroTier para obtener
    los nombres reales de las redes, usando la copia de autenticación del usuario
    que proporciona su instalador. Esa clave se utiliza solo en localhost y no
@@ -50,9 +50,9 @@ El launcher corrige automáticamente el dominio anterior mal escrito
    hasta tu turno. STOP libera el juego y desconecta, sin borrar la inscripción.
 5. El organizador inicia el torneo desde Django. Cuando los dos jugadores del
    turno estén conectados y sus archivos coincidan, el launcher recarga el estado
-   en el slot 9. El primero en la cola es P1/host y abre una sala en el servidor
-   principal; Django entrega el identificador al rival para que se una. Los
-   paquetes del combate usan solo el relay, sin intentos directos por VPN.
+   en el slot 9. El primero en la cola es P1/host; Django entrega su IP de ZeroTier
+   al rival/P2. La pareja conecta directamente, sin crear una sala en el relay.
+   Cada sesión tiene una identidad propia para rechazar paquetes de peleas anteriores.
 6. Después del combate, **el organizador registra el ganador en el panel de
    Django**. El launcher cierra la sesión anterior, el ganador sigue primero y
    el perdedor pasa al final. La siguiente pareja arranca automáticamente.
@@ -77,11 +77,9 @@ conserva hasta 64 MiB de historial y atiende hasta 16 espectadores; si se agota
 el búfer, desactiva la transmisión y los jugadores continúan. No se retransmite
 video ni se consulta PINE desde los hilos que atienden espectadores.
 
-Hay que actualizar el launcher en **todos los PCs** y `home/netplay.py` en el
-servidor Django. Los endpoints de lista e inscripción de eventos se añaden en
-`DJBase/urls.py`; actualiza ese archivo y `home/netplay.py`. Esta vista no necesita
-una migración nueva, pero las actualizaciones previas requieren la migración `0010_netplay_relay_room` con
-`python manage.py migrate`. Con `--port N`, la transmisión
+Hay que actualizar el launcher en **todos los PCs**, `home/netplay.py`,
+`home/models.py` y la migración `0011_koth_transport_spectators.py` en Django.
+Ejecuta `python manage.py migrate`. Con `--port N`, la transmisión
 usa TCP `N+1`. La API pública desplegada debe reiniciarse después de actualizarla.
 
 También se puede ejecutar desde terminal, definiendo `UN5_HILL_TICKET` en el entorno:
@@ -95,8 +93,10 @@ python netplay.py --symbols /ruta/symbols.json hill \
 El launcher y KOTH usan **3 frames** de input delay. Ambos jugadores siguen el
 valor publicado por el host. Desde terminal puedes indicar `--delay 0` para
 calcularlo por el ping, o elegir 2–10 frames manualmente.
-`--relay-server` y `--relay-api-url` permiten configurar el servidor principal;
-`--api-url` sigue siendo la URL de Django. La IP de ZeroTier no interviene en las peleas.
+Desde terminal, `--transport relay` permite usar el servidor principal si ambos
+jugadores lo eligen; `--relay-server` y `--relay-api-url` configuran ese servidor.
+El valor predeterminado es `--transport zerotier`. `--api-url` es la URL de Django.
+`--no-spectators` permite comparar el comportamiento sin transmisión de espectadores.
 `--port` permite cambiar el puerto del host (47400 por defecto).
 Las pruebas automatizadas no sustituyen una prueba real con dos PCs y PCSX2.
 

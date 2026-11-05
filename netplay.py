@@ -781,7 +781,8 @@ def online_open(args, core, is_host, tag, nick):
             poller.host_ip = pub[0]
             relay = (server_addr, bytes.fromhex(room['token']))
             node = node_mod.Node(core, 1, 0, 0, [0, 1], delay=args.delay, tag=tag, name=nick, first_capture=1,
-                                 sock=sock, relay=relay, relay_only=getattr(args, 'relay_only', False))
+                                 sock=sock, relay=relay, relay_only=getattr(args, 'relay_only', False),
+                                 epoch=getattr(args, 'session_epoch', 0))
             print(f"host: room {room['id']} is open on the server (delay {args.delay} frames, state tag {tag}). "
                   f"Waiting for the guest ...")
             return node, poller
@@ -797,7 +798,7 @@ def online_open(args, core, is_host, tag, nick):
         relay = (server_addr, bytes.fromhex(room['token']))
         node = node_mod.Node(core, 2, 1, 0, [0, 1], delay=room['delay'], tag=tag, name=nick, host=host_addr,
                              first_capture=1, sock=sock, relay=relay, cands=cands,
-                             relay_only=getattr(args, 'relay_only', False))
+                             relay_only=getattr(args, 'relay_only', False), epoch=getattr(args, 'session_epoch', 0))
         print(f"guest: joined room {args.room} ({room['host']['nick']}), connecting (delay {room['delay']} frames, "
               f"state tag {tag}) ...")
         return node, None
@@ -865,12 +866,17 @@ def cmd_play(args, is_host):
         if node is None:
             return 1
     elif is_host:
-        node = node_mod.Node(core, 1, 0, args.port, [0, 1], delay=args.delay, tag=tag, name=nick, first_capture=1)
+        node = node_mod.Node(core, 1, 0, args.port, [0, 1], delay=args.delay, tag=tag, name=nick, first_capture=1,
+                             epoch=getattr(args, 'session_epoch', 0))
+        if getattr(args, 'expect_guest_ip', ''):
+            node.add_expected_peer(2, 1, (args.expect_guest_ip, 0))
         print(f'host: waiting for the guest on UDP {args.port} (delay {args.delay} frames, state tag {tag}) ...')
     else:
         ip, _, port = args.connect.rpartition(':')
         node = node_mod.Node(core, 2, 1, args.bind_port, [0, 1], delay=args.delay, tag=tag, name=nick,
-                             host=(ip, int(port or 47400)), first_capture=1)
+                             host=(ip, int(port or 47400)), first_capture=1, epoch=getattr(args, 'session_epoch', 0))
+        if str(getattr(args, 'session_epoch', '0')) != '0':
+            node.peers[1].strict = True
         print(f'guest: connecting to {args.connect} (delay {args.delay} frames, state tag {tag}) ...')
     if is_host and getattr(args, 'ignore_desync', False):
         node.desync_stop = False
@@ -1079,9 +1085,9 @@ def main(argv=None):
     ap.add_argument('--stop-file', default=None, help='file signal to stop the netplay session')
     ap.add_argument('--parent-stop-file', default=None, help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest='cmd', required=True)
-    hill = sub.add_parser('hill', help='Rey de la colina con Django y peleas por el servidor principal')
+    hill = sub.add_parser('hill', help='Rey de la colina con Django y peleas por ZeroTier')
     hill.add_argument('--api-url', required=True)
-    hill.add_argument('--address', default='0.0.0.0', help='IPv4 de ZeroTier para espectadores (opcional)')
+    hill.add_argument('--address', default='0.0.0.0', help='IPv4 de este PC en ZeroTier (obligatoria para conexión directa)')
     hill.add_argument('--game', required=True, choices=('un5', 'un6'))
     hill.add_argument('--state', required=True)
     hill.add_argument('--state-dir', required=True)
@@ -1091,6 +1097,8 @@ def main(argv=None):
     hill.add_argument('--nick', default='')
     hill.add_argument('--relay-server', default=netlink.DEFAULT_SERVER)
     hill.add_argument('--relay-api-url', default=netlink.DEFAULT_API_URL)
+    hill.add_argument('--transport', choices=('zerotier', 'relay'), default='zerotier')
+    hill.add_argument('--no-spectators', action='store_true', help='disable watching and serving spectators')
     p = sub.add_parser('prepare', help='arm the filter and freeze the game at frame 0 (to save the match state)')
     p.add_argument('--save-slot', type=int, help='ask PCSX2 (PINE) to save the state in this slot')
     p.add_argument('--state-dir', help="PCSX2's save-state folder (Settings > Folders): the tool then checks the file appeared")
@@ -1110,6 +1118,7 @@ def main(argv=None):
                        help='frames of input delay (33 ms each). 0 = automatic (default): the host picks it from its '
                             'ping to the server, the online guest uses the room\'s, LAN / VPN uses 3')
         q.add_argument('--nick', default='', help='your name on the screen (up to 15 characters, ASCII)')
+        q.add_argument('--session-epoch', default='0', help='unique match identity shared by both PCs')
         q.add_argument('--state-dir', default=None, help="PCSX2's save-state folder (needed with --load-slot)")
         q.add_argument('--load-slot', type=int, default=None,
                        help='load --state into this PCSX2 slot (OVERWRITTEN) and start from it, automatically')
@@ -1148,6 +1157,7 @@ def main(argv=None):
                             'default: http://--server. UDP (relay) always uses --server')
         q.add_argument('--relay-only', action='store_true', help='send game packets only through the principal relay')
         if name == 'host':
+            q.add_argument('--expect-guest-ip', default='', help=argparse.SUPPRESS)
             q.add_argument('--room-file', default=None, help=argparse.SUPPRESS)
             q.add_argument('--spectator-port', type=int, default=0, help='TCP port for read-only spectators (0 = off)')
             q.add_argument('--no-share-state', action='store_true',

@@ -89,7 +89,7 @@ class Peer:
 class Node:
     def __init__(self, core, member, slot, bind_port, active, delay=3, tag='00' * 8, name='', host=None,
                  expect=None, loss=0.0, bind='0.0.0.0', first_capture=0, sock=None, relay=None, cands=None,
-                 punch_s=2.5, relay_only=False):
+                 punch_s=2.5, relay_only=False, epoch=0):
         """member: 1 for the host, 2.. for guests.  slot: this PC's input slot.  active: slots that have a player.
         host: (ip, port) of the host when this PC is a guest, None for the host.
         Online mode (rendezvous server): sock = the UDP socket the server already saw (same NAT mapping), relay =
@@ -97,7 +97,7 @@ class Node:
         seconds, through the server's relay. cands = extra direct addresses of the host (its LAN addresses)."""
         self.core, self.member, self.slot, self.active = core, member, slot, list(active)
         self.delay, self.tag, self.name, self.loss = delay, tag, name, loss
-        self.session = wire.session_id(tag, delay)
+        self.session = wire.session_id(tag, delay, epoch)
         self.is_host = host is None
         if sock is None:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -306,8 +306,14 @@ class Node:
             if m['session'] != self.session:
                 continue
             peer = self.peers.get(m['member'])
+            if peer is not None and not via_relay and peer.strict and not self._known_ip(peer, addr):
+                continue
             if m['kind'] == wire.HELLO:
                 slot = m['slot']
+                if m['delay'] != self.delay or m['tag'] != self.tag:
+                    continue
+                if peer is not None and peer.slot is not None and slot != peer.slot:
+                    continue
                 if peer is None and self.is_host and self.relay is None:   # online: peers come from the server
                     taken = {p.slot for p in self.peers.values()} | {self.slot}
                     if slot is None or slot not in self.active or slot in taken or m['member'] == 1:

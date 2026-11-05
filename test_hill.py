@@ -22,6 +22,7 @@ class HillTests(unittest.TestCase):
         (root / 'state').write_bytes(b'match state')
         (root / 'symbols').write_text('{}')
         self.args = argparse.Namespace(api_url='http://localhost:8000', address='10.147.0.2', game='un6',
+            transport='relay',
             port=47400, delay=3, state=str(root/'state'), symbols=str(root/'symbols'), state_dir=str(root),
             load_slot=9, pine_slot=28011, nick='Player', stop_file=str(root/'stop'))
 
@@ -194,6 +195,49 @@ class HillTests(unittest.TestCase):
         with self.assertRaises(hill.HillError):
             hill.run(self.args)
         popen.assert_not_called()
+
+    def test_zerotier_is_the_default_transport_and_uses_round_identity(self):
+        del self.args.transport
+        snapshot = self.snapshot()
+        snapshot['transport'] = 'zerotier'
+        snapshot['session_epoch'] = 'unique-session-epoch'
+        snapshot['guest'] = {'address': '10.147.0.2'}
+        host = hill.match_command(self.args, snapshot, '/tmp/stop')
+        snapshot['role'] = 'guest'
+        guest = hill.match_command(self.args, snapshot, '/tmp/stop')
+        self.assertEqual(host[host.index('--server')+1], '')
+        self.assertEqual(guest[guest.index('--server')+1], '')
+        self.assertEqual(guest[guest.index('--connect')+1], '10.147.0.1:47400')
+        self.assertEqual(host[host.index('--expect-guest-ip')+1], '10.147.0.2')
+        self.assertEqual(host[host.index('--session-epoch')+1], 'unique-session-epoch')
+        self.assertEqual(guest[guest.index('--session-epoch')+1], 'unique-session-epoch')
+        self.assertNotIn('--relay-only', host)
+        self.assertNotIn('--room', guest)
+
+    @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket'})
+    @patch('hill.time.sleep')
+    @patch('hill.subprocess.Popen')
+    @patch('hill.sync')
+    def test_zerotier_does_not_wait_for_a_principal_room(self, sync, popen, sleep):
+        self.args.transport = 'zerotier'
+        direct = self.snapshot()
+        direct['transport'] = 'zerotier'
+        direct['host']['relay_room'] = ''
+        finished = {**direct, 'status': 'finished'}
+        sync.side_effect = [direct, finished, {}]
+        popen.return_value.poll.return_value = None
+        self.assertEqual(hill.run(self.args), 0)
+        self.assertEqual(popen.call_count, 1)
+        self.assertEqual(sync.call_args_list[0].args[2]['transport'], 'zerotier')
+
+    def test_spectator_disabled_host_does_not_start_a_stream(self):
+        self.args.transport = 'zerotier'
+        self.args.no_spectators = True
+        snapshot = self.snapshot()
+        snapshot['spectator_key'] = 'private-view-key'
+        snapshot['host']['spectator_port'] = 47401
+        command = hill.match_command(self.args, snapshot, '/tmp/stop')
+        self.assertNotIn('--spectator-port', command)
 
     @patch.dict(os.environ, {'UN5_NETPLAY_SESSION': 'sample-account-session'})
     def test_online_host_reports_principal_room_without_saving_relay_token(self):

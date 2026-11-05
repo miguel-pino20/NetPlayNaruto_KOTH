@@ -1,5 +1,6 @@
 import queue
 import socket
+import select
 import time
 import threading
 import unittest
@@ -241,6 +242,71 @@ class SpectatorTests(unittest.TestCase):
         host._send_direct.assert_not_called()
         guest._send_direct.assert_not_called()
         self.assertIsNone(host.desync)
+
+    def test_recording_does_not_change_player_inputs_or_state_hashes(self):
+        def run(recording):
+            cores, games = [], []
+            for slot in (0, 1):
+                core = core_link.PineCore(BASE, pine=MemoryPine(), serial=None)
+                core.arm()
+                game = SimGame(core.pine, lambda f, s=slot: bytes([s+1, f % 256])*12)
+                game.step()
+                cores.append(core)
+                games.append(game)
+            host = node.Node(cores[0], 1, 0, 0, [0, 1], first_capture=1, epoch='same-round')
+            guest = node.Node(cores[1], 2, 1, 0, [0, 1], first_capture=1, epoch='same-round',
+                              host=('127.0.0.1', host.sock.getsockname()[1]))
+            host.add_expected_peer(2, 1, ('127.0.0.1', 0))
+            guest.peers[1].strict = True
+            server = self.server() if recording else None
+            host.replay = server
+            try:
+                deadline = time.monotonic()+5
+                while time.monotonic() < deadline:
+                    for network, game in zip((host, guest), games):
+                        network.pump()
+                        if network.started:
+                            network.core.release()
+                        game.step()
+                    if min(len(game.applied) for game in games) >= 80:
+                        break
+                    time.sleep(0.0005)
+                self.assertGreaterEqual(min(len(game.applied) for game in games), 80)
+                self.assertEqual(games[0].applied[:80], games[1].applied[:80])
+                self.assertIsNone(host.desync)
+                return games[0].applied[:80], cores[0].hashes(0, 80)
+            finally:
+                host.close()
+                guest.close()
+                if server:
+                    server.close()
+        baseline = run(False)
+        recording = run(True)
+        self.assertEqual(baseline, recording)
+
+    def test_old_round_packets_and_unexpected_guest_cannot_change_handshake(self):
+        host = node.Node(SimpleNamespace(), 1, 0, 0, [0, 1], epoch='new-round')
+        self.addCleanup(host.close)
+        peer = host.add_expected_peer(2, 1, ('192.0.2.2', 0))
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(sender.close)
+        target = ('127.0.0.1', host.sock.getsockname()[1])
+        for session, slot in [(wire.session_id(host.tag, 3, 'old-round'), 1), (host.session, 1)]:
+            sender.sendto(wire.hello(2, session, 0, 0, delay=3, tag=host.tag, slot=slot), target)
+            self.assertTrue(select.select([host.sock], [], [], 1)[0])
+            host._recv()
+            self.assertFalse(peer.hello)
+            self.assertEqual(peer.slot, 1)
+        peer.addr = ('127.0.0.1', 0)
+        sender.sendto(wire.hello(2, host.session, 0, 0, delay=3, tag=host.tag, slot=0), target)
+        self.assertTrue(select.select([host.sock], [], [], 1)[0])
+        host._recv()
+        self.assertFalse(peer.hello)
+        self.assertEqual(peer.slot, 1)
+        sender.sendto(wire.hello(2, host.session, 0, 0, delay=3, tag=host.tag, slot=1), target)
+        self.assertTrue(select.select([host.sock], [], [], 1)[0])
+        host._recv()
+        self.assertTrue(peer.hello)
 
 
 if __name__ == '__main__':

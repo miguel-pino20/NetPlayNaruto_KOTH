@@ -714,7 +714,7 @@ class Launcher(tk.Tk):
         tk.Label(dialog, text=tr("hill.address"), bg=PANEL, fg=TEXT).pack(anchor="w", pady=(8, 3))
         selected_network = tk.StringVar(value=self.v["hill_address"].get())
         networks = {}
-        disabled_label = tr('hill.zt.disabled')
+        disabled_label = tr('hill.zt.choose')
         network_box = ttk.Combobox(dialog, textvariable=selected_network, width=65, values=(disabled_label,))
         network_box.pack(fill='x')
         if selected_network.get() == '0.0.0.0':
@@ -778,7 +778,7 @@ class Launcher(tk.Tk):
                     matching = next((label for label, ip in labels.items() if ip == previous_address), None)
                     if matching:
                         selected_network.set(matching)
-                    elif not initial_choice and len(labels) == 1:
+                    elif previous_address == '0.0.0.0' and len(labels) == 1:
                         selected_network.set(next(iter(labels)))
                     else:
                         selected_network.set(disabled_label if previous_address == '0.0.0.0' else previous_address)
@@ -798,12 +798,16 @@ class Launcher(tk.Tk):
             button = ttk.Button(network_controls, text=tr('hill.zt.names'), command=lambda: refresh_networks(True))
             button.pack(side='left', padx=(8, 0))
             scan_buttons.append(button)
+        Switch(dialog, tr('hill.spectators'), self.v['hill_spectators']).pack(anchor='w', pady=(10, 0))
         tk.Label(dialog, text=tr("hill.note"), bg=PANEL, fg=MUTED, wraplength=480, justify="left").pack(pady=12)
 
         def connect():
             try:
                 url = site_url(values["url"].get().strip())
-                address = str(ipaddress.IPv4Address(address_for(selected_network.get())))
+                selected_ip = ipaddress.IPv4Address(address_for(selected_network.get()))
+                if selected_ip.is_unspecified or selected_ip.is_loopback or selected_ip.is_multicast:
+                    raise ValueError(tr('hill.zt.required'))
+                address = str(selected_ip)
                 ticket = values['ticket'].get().strip() if 'ticket' in values else self.v['hill_ticket'].get().strip()
                 name = values['name'].get().strip() if 'name' in values else ''
                 if event and not name:
@@ -882,9 +886,11 @@ class Launcher(tk.Tk):
         def launch():
             cfg = self.cfg()
             args = ['hill', '--api-url', url, '--address', address, '--game', self.game,
-                    '--delay', core.MATCH_DELAY,
+                    '--delay', core.MATCH_DELAY, '--transport', 'zerotier',
                     '--state', cfg['state_file'], '--state-dir', cfg['state_dir'], '--load-slot', cfg['load_slot'],
                     '--nick', cfg.get('nick', ''), '--relay-server', core.SERVER_ADDR, '--relay-api-url', core.SERVER_URL]
+            if not self.v['hill_spectators'].get():
+                args.append('--no-spectators')
             self._koth_pending = False
             self._spawn(args, tr('hill.title'), session_env={'UN5_HILL_TICKET': ticket,
                         'UN5_NETPLAY_SESSION': self.backend.session})

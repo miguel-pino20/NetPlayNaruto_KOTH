@@ -55,26 +55,37 @@ def match_command(args, snapshot, stop_file, room_file=None):
     import netlink
     host = snapshot['host']
     role = 'watch' if snapshot['role'] == 'spectator' else snapshot['role']
+    transport = getattr(args, 'transport', 'zerotier')
     command = [sys.executable, '-u', str(Path(__file__).with_name('netplay.py')),
                '--symbols', args.symbols, '--pine-slot', str(args.pine_slot), '--stop-file', str(stop_file),
                role, '--state', args.state, '--state-dir', args.state_dir, '--load-slot', str(args.load_slot),
                '--delay', str(args.delay if role == 'host' else host['delay']), '--nick', args.nick]
+    if snapshot.get('session_epoch') or snapshot.get('round_id'):
+        command += ['--session-epoch', str(snapshot.get('session_epoch') or snapshot['round_id'])]
     if args.stop_file:
         command[3:3] = ['--parent-stop-file', str(args.stop_file)]
     if role == 'host':
-        command += ['--server', getattr(args, 'relay_server', netlink.DEFAULT_SERVER),
-                    '--api-url', getattr(args, 'relay_api_url', netlink.DEFAULT_API_URL), '--relay-only']
+        if transport == 'relay':
+            command += ['--server', getattr(args, 'relay_server', netlink.DEFAULT_SERVER),
+                        '--api-url', getattr(args, 'relay_api_url', netlink.DEFAULT_API_URL), '--relay-only']
+        else:
+            command += ['--server', '']
+            if (snapshot.get('guest') or {}).get('address'):
+                command += ['--expect-guest-ip', snapshot['guest']['address']]
         command += ['--port', str(args.port), '--no-announce', '--no-share-state']
-        if room_file is not None:
+        if room_file is not None and transport == 'relay':
             command += ['--room-file', str(room_file)]
-        if snapshot.get('spectator_key'):
+        if snapshot.get('spectator_key') and not getattr(args, 'no_spectators', False):
             command += ['--spectator-port', str(host['spectator_port'])]
     elif role == 'guest':
-        if not host.get('relay_room'):
-            raise HillError('La sala del servidor principal todavía no está lista.')
-        command += ['--server', getattr(args, 'relay_server', netlink.DEFAULT_SERVER),
-                    '--api-url', getattr(args, 'relay_api_url', netlink.DEFAULT_API_URL),
-                    '--relay-only', '--room', host['relay_room'], '--fetch-state', '--bind-port', '0']
+        if transport == 'relay':
+            if not host.get('relay_room'):
+                raise HillError('La sala del servidor principal todavía no está lista.')
+            command += ['--server', getattr(args, 'relay_server', netlink.DEFAULT_SERVER),
+                        '--api-url', getattr(args, 'relay_api_url', netlink.DEFAULT_API_URL),
+                        '--relay-only', '--room', host['relay_room'], '--fetch-state', '--bind-port', '0']
+        else:
+            command += ['--server', '', '--connect', f"{host['address']}:{host['port']}", '--bind-port', '0']
     else:
         command += ['--server', '', '--connect', f"{host['address']}:{host['spectator_port']}"]
     return command
@@ -113,13 +124,15 @@ def release_game(args):
 def run(args):
     url = validate_url(args.api_url)
     address = ipaddress.IPv4Address(args.address)
-    if address.is_loopback or address.is_multicast:
+    transport = getattr(args, 'transport', 'zerotier')
+    if address.is_loopback or address.is_multicast or (transport == 'zerotier' and address.is_unspecified):
         raise ValueError('Introduce la IPv4 de ZeroTier de este PC.')
     ticket = os.environ.get('UN5_HILL_TICKET', '').strip()
     if not ticket:
         raise ValueError('Falta UN5_HILL_TICKET: genera el código personal desde el torneo.')
     body = {'address': str(address), 'port': args.port, 'game': args.game, 'delay': args.delay or 3,
-            'state_tag': file_tag(args.state), 'symbols_tag': file_tag(args.symbols), 'available': True}
+            'state_tag': file_tag(args.state), 'symbols_tag': file_tag(args.symbols), 'available': True,
+            'transport': transport, 'spectators_enabled': not getattr(args, 'no_spectators', False)}
     process, active_round, blocked_round, last_message = None, None, None, None
     active_role, watch_failed_round = None, None
     last_board = None
@@ -147,7 +160,7 @@ def run(args):
                 body['available'] = blocked_round is None
                 body['room_id'], body['room_round'] = '', ''
                 body['delay'] = args.delay or 3
-                if process is not None and active_role == 'host' and room_file.is_file():
+                if transport == 'relay' and process is not None and active_role == 'host' and room_file.is_file():
                     try:
                         announced = json.loads(room_file.read_text(encoding='utf-8'))
                         body['room_id'], body['room_round'] = announced['room_id'], active_round
@@ -156,8 +169,8 @@ def run(args):
                         pass
                 try:
                     snapshot = sync(url, ticket, dict(body))
-                    if snapshot.get('transport') != 'relay':
-                        raise HillError('Actualiza Django: KOTH debe usar el servidor principal para las peleas.')
+                    if snapshot.get('transport') != transport:
+                        raise HillError('Actualiza Django y los dos launchers: la pareja debe usar el mismo transporte de KOTH.')
                     registered = True
                     last_success = time.monotonic()
                 except OSError as error:
@@ -186,7 +199,7 @@ def run(args):
                     if snapshot['status'] == 'finished':
                         print('El torneo finalizó.', flush=True)
                         return 0
-                    room_ready = snapshot['role'] == 'host' or bool((snapshot.get('host') or {}).get('relay_room'))
+                    room_ready = transport == 'zerotier' or snapshot['role'] == 'host' or bool((snapshot.get('host') or {}).get('relay_room'))
                     reason = snapshot['reason']
                     if snapshot['ready'] and not room_ready:
                         reason = 'Esperando que el host abra la sala en el servidor principal.'
@@ -197,7 +210,8 @@ def run(args):
                         print(f"Turno: {snapshot['role'] or 'en espera'}. {reason}", flush=True)
                         last_message = message
                     watching_failed = snapshot['role'] == 'spectator' and watch_failed_round == round_id
-                    if process is None and blocked_round is None and snapshot['ready'] and not watching_failed and room_ready:
+                    watching_disabled = snapshot['role'] == 'spectator' and getattr(args, 'no_spectators', False)
+                    if process is None and blocked_round is None and snapshot['ready'] and not watching_failed and not watching_disabled and room_ready:
                         child_stop.unlink(missing_ok=True)
                         room_file.unlink(missing_ok=True)
                         active_round = round_id
