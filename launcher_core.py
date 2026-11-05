@@ -127,6 +127,12 @@ def load_config() -> dict:
         cfg.update({k: v for k, v in json.loads(CONFIG_FILE.read_text(encoding="utf-8")).items() if k in DEFAULTS})
     except (OSError, ValueError):
         pass
+    if cfg.get('hill_url'):
+        from koth_client import site_url
+        try:
+            cfg['hill_url'] = site_url(cfg['hill_url'])
+        except (ValueError, TypeError):
+            pass
     return cfg
 
 

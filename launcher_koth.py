@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from i18n import tr
-from koth_client import DEFAULT_URL, get_event, list_events
+from koth_client import DEFAULT_URL, get_event, list_events, site_url
 from launcher_theme import ACCENT, BORDER, DIM, GREEN, MUTED, PANEL, RED, TEXT, RoundFrame
 
 
@@ -116,6 +116,13 @@ class KothPanel(RoundFrame):
         url = self.app.v['hill_url'].get().strip()
         if not url:
             return
+        try:
+            corrected = site_url(url)
+            if corrected != url:
+                self.app.v['hill_url'].set(corrected)
+                url = corrected
+        except ValueError:
+            pass
         self.busy, self.next_poll = True, time.monotonic()+3
         live = getattr(self.app, 'koth_live_event', None)
         live_id = live.get('id') if live else None

@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from discord_auth import AccountError
-from koth_client import MembershipStore, enroll, link_account
+from koth_client import DEFAULT_URL, MembershipStore, enroll, link_account, site_url
 from launcher_core import Backend
 from urllib.error import HTTPError
 
@@ -26,6 +26,28 @@ class KothClientTests(unittest.TestCase):
         self.assertEqual(MembershipStore(self.path).member(self.url, 2), first)
         self.assertNotEqual(self.store.member(self.url, 3)['key'], first['key'])
         self.assertNotEqual(self.store.member('https://other.example.test', 2)['key'], first['key'])
+
+    def test_typo_in_shipped_domain_is_repaired_without_changing_custom_servers(self):
+        self.assertEqual(DEFAULT_URL, 'https://narutimateonline.sytes.net')
+        self.assertEqual(site_url('https://narultimateonline.sytes.net/'), DEFAULT_URL)
+        self.assertEqual(site_url('http://narultimateonline.sytes.net:8077'), 'http://narutimateonline.sytes.net:8077')
+        self.assertEqual(site_url(self.url), self.url)
+        self.assertEqual(site_url('https://narultimateonline.sytes.net.example.test'),
+                         'https://narultimateonline.sytes.net.example.test')
+
+    def test_saved_configuration_url_is_repaired(self):
+        import launcher_core
+        config = Path(self.directory.name)/'launcher.json'
+        config.write_text(json.dumps({'hill_url': 'https://narultimateonline.sytes.net'}))
+        with patch.object(launcher_core, 'CONFIG_FILE', config):
+            self.assertEqual(launcher_core.load_config()['hill_url'], DEFAULT_URL)
+
+    def test_membership_key_is_preserved_when_correcting_the_old_default(self):
+        old_key = 'https://narultimateonline.sytes.net/events/2'
+        credential = {'key': 'a'*32, 'ticket': 'sample-ticket'}
+        self.path.write_text(json.dumps({old_key: credential}))
+        self.assertEqual(self.store.member(DEFAULT_URL, 2), credential)
+        self.assertEqual(self.store.member('https://narultimateonline.sytes.net', 2), credential)
 
     @patch('koth_client.api_call')
     def test_lost_enrollment_response_retries_with_same_key(self, api):

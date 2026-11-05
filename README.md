@@ -7,6 +7,10 @@ principal (`137.131.158.54:47500`), con su API habitual para las salas y archivo
 ZeroTier es opcional y se utiliza solo para que los participantes en espera
 observen el combate en su propio PCSX2.
 
+La URL pública de Django es `https://narutimateonline.sytes.net`.
+El launcher corrige automáticamente el dominio anterior mal escrito
+(`narultimateonline.sytes.net`) en las configuraciones guardadas.
+
 1. En Django, instala la actualización y ejecuta `python manage.py migrate`.
 2. Para jugar, todos necesitan acceso al servidor principal. Solo para observar
    se necesita la misma red ZeroTier y TCP 47401 permitido en el host.
@@ -36,6 +40,12 @@ observen el combate en su propio PCSX2.
    **Read network names…** solicita autorización solo para leer los nombres y
    los guarda para próximas aperturas; no hace falta ejecutar el launcher como
    administrador. También puedes escribir la IP o elegir **No spectators**.
+   En Windows se consulta primero el servicio local de ZeroTier para obtener
+   los nombres reales de las redes, usando la copia de autenticación del usuario
+   que proporciona su instalador. Esa clave se utiliza solo en localhost y no
+   se guarda ni se envía a Django. Si no se puede consultar el servicio, se
+   buscan los adaptadores ZeroTier y sus IPv4 mediante PowerShell. Mantén
+   ZeroTier abierto y pulsa **Refresh networks** después de conectar una red.
    Al entrar se comprueban los archivos y se carga el estado en PCSX2, congelado
    hasta tu turno. STOP libera el juego y desconecta, sin borrar la inscripción.
 5. El organizador inicia el torneo desde Django. Cuando los dos jugadores del

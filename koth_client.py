@@ -2,12 +2,26 @@
 import json
 from pathlib import Path
 from uuid import uuid4
+from urllib.parse import urlsplit, urlunsplit
 
 from appdata import write_json
 from discord_auth import AccountError, api_call
 from hill import validate_url
 
-DEFAULT_URL = 'https://narultimateonline.sytes.net'
+DEFAULT_URL = 'https://narutimateonline.sytes.net'
+LEGACY_HOST = 'narultimateonline.sytes.net'
+
+
+def site_url(url):
+    """Repair the misspelled default shipped previously; preserve custom sites."""
+    url = validate_url(url)
+    parts = urlsplit(url)
+    if parts.hostname == LEGACY_HOST:
+        authority = 'narutimateonline.sytes.net'
+        if parts.port is not None:
+            authority += f':{parts.port}'
+        return urlunsplit(parts._replace(netloc=authority))
+    return url
 
 
 class MembershipStore:
@@ -22,11 +36,14 @@ class MembershipStore:
             return {}
 
     def member(self, url, event_id):
-        key = f'{validate_url(url)}/events/{int(event_id)}'
+        key = f'{site_url(url)}/events/{int(event_id)}'
         data = self._read()
         member = data.get(key)
+        if not isinstance(member, dict) and key.startswith(DEFAULT_URL+'/'):
+            member = data.get(key.replace('narutimateonline.sytes.net', LEGACY_HOST, 1))
         if not isinstance(member, dict) or not isinstance(member.get('key'), str):
             member = {'key': uuid4().hex, 'ticket': ''}
+        if data.get(key) != member:
             data[key] = member
             # Persist before the HTTP request: a lost response can be retried
             # with the same key without creating a second participant.
@@ -34,7 +51,7 @@ class MembershipStore:
         return dict(member)
 
     def save_ticket(self, url, event_id, ticket):
-        key = f'{validate_url(url)}/events/{int(event_id)}'
+        key = f'{site_url(url)}/events/{int(event_id)}'
         self.member(url, event_id)
         data = self._read()
         data[key]['ticket'] = ticket
@@ -42,18 +59,18 @@ class MembershipStore:
 
 
 def list_events(url):
-    data = api_call(validate_url(url), 'GET', '/api/netplay/events/', timeout=4)
+    data = api_call(site_url(url), 'GET', '/api/netplay/events/', timeout=4)
     if not isinstance(data.get('events'), list):
         raise AccountError('Actualiza Django para consultar los eventos KOTH desde el launcher.')
     return data['events']
 
 
 def get_event(url, event_id):
-    return api_call(validate_url(url), 'GET', f'/api/netplay/events/{int(event_id)}/', timeout=4)
+    return api_call(site_url(url), 'GET', f'/api/netplay/events/{int(event_id)}/', timeout=4)
 
 
 def enroll(url, event, name, store, fallback_ticket='', netplay_session=''):
-    url = validate_url(url)
+    url = site_url(url)
     event_id = int(event['id'])
     member = store.member(url, event_id)
     body = {'version': event['version'], 'name': name, 'registration_key': member['key']}
@@ -77,7 +94,7 @@ def enroll(url, event, name, store, fallback_ticket='', netplay_session=''):
 
 def link_account(url, ticket, netplay_session):
     try:
-        result = api_call(validate_url(url), 'POST', '/api/netplay/link-account/', {}, token=ticket, timeout=12,
+        result = api_call(site_url(url), 'POST', '/api/netplay/link-account/', {}, token=ticket, timeout=12,
                           extra_headers={'X-Netplay-Session': netplay_session})
     except AccountError as error:
         if error.code == 404:

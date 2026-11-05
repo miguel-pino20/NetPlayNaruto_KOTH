@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
 
 import zerotier_networks as zt
 
@@ -95,6 +96,72 @@ class ZeroTierNetworksTests(unittest.TestCase):
             self.assertEqual(choices, current)
             self.assertFalse(restored)
             self.assertEqual(zt._restore_names(cache, []), ([], False))
+
+    @patch('zerotier_networks._is_windows', return_value=True)
+    @patch('zerotier_networks._windows_service_networks')
+    @patch('zerotier_networks._cli_path')
+    def test_windows_reads_named_memberships_without_cli_or_admin(self, cli, service, windows):
+        service.return_value = [{'id': '0123456789abcdef', 'name': 'SSSS Online', 'status': 'OK',
+                                 'assignedAddresses': ['192.168.195.14/24']}]
+        choices, status = zt.discover()
+        self.assertEqual(choices[0]['name'], 'SSSS Online')
+        self.assertEqual(choices[0]['address'], '192.168.195.14')
+        self.assertEqual(status, 'hill.zt.found')
+        cli.assert_not_called()
+
+    @patch('zerotier_networks._is_windows', return_value=True)
+    @patch('zerotier_networks._windows_service_networks', return_value=None)
+    @patch('zerotier_networks._cli_path', return_value=None)
+    @patch('zerotier_networks._windows_interfaces')
+    def test_windows_falls_back_to_native_adapters(self, interfaces, cli, service, windows):
+        interfaces.return_value = [{'name': 'ZeroTier One [0123456789abcdef]', 'address': '10.1.2.3',
+                                    'id': '0123456789abcdef', 'interface': 'ZeroTier One [0123456789abcdef]'}]
+        choices, status = zt.discover()
+        self.assertEqual(choices[0]['address'], '10.1.2.3')
+        self.assertEqual(status, 'hill.zt.windows_interfaces')
+
+    def test_windows_single_adapter_json_and_unusable_addresses(self):
+        payload = {'name': 'ZeroTier One [0123456789abcdef]', 'address': '192.168.195.14'}
+        choices = zt.parse_windows_interfaces(payload)
+        self.assertEqual(choices[0]['id'], '0123456789abcdef')
+        self.assertEqual(choices[0]['address'], '192.168.195.14')
+        self.assertEqual(zt.parse_windows_interfaces([{'name': 'ZeroTier', 'address': '169.254.1.2'},
+                                                      {'name': 'ZeroTier', 'address': '::1'}]), [])
+
+    @patch('zerotier_networks.http.client.HTTPConnection')
+    def test_windows_service_token_is_only_sent_to_loopback_not_in_command_or_result(self, connection):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            local = root/'local'/'ZeroTier'
+            shared = root/'shared'/'ZeroTier'/'One'
+            local.mkdir(parents=True)
+            shared.mkdir(parents=True)
+            (local/'authtoken.secret').write_text('private-test-token\n')
+            (shared/'zerotier-one.port').write_text('19993')
+            response = connection.return_value.getresponse.return_value
+            response.status = 200
+            response.read.return_value = b'[{"name":"SSSS Online","status":"OK","assignedAddresses":["10.1.2.3/24"]}]'
+            with patch.dict(zt.os.environ, {'LOCALAPPDATA': str(root/'local'), 'PROGRAMDATA': str(root/'shared')}):
+                payload = zt._windows_service_networks()
+            connection.assert_called_once_with('127.0.0.1', 19993, timeout=2)
+            connection.return_value.request.assert_called_once_with('GET', '/network', headers={'X-ZT1-Auth': 'private-test-token'})
+            self.assertNotIn('private-test-token', str(payload))
+            connection.return_value.close.assert_called_once()
+
+    def test_windows_executable_uses_cli_flag_without_batch_wrapper(self):
+        self.assertEqual(zt._cli_command('C:/ProgramData/ZeroTier/One/zerotier-one_x64.exe'),
+                         ['C:/ProgramData/ZeroTier/One/zerotier-one_x64.exe', '-q', '-j', 'listnetworks'])
+
+    def test_windows_cached_names_match_network_id_after_adapter_alias_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)/'networks.json'
+            cache.write_text(json.dumps([{'name': 'SSSS Online', 'id': '0123456789abcdef',
+                                         'interface': 'different-device-id', 'address': '10.1.2.2'}]))
+            interfaces = zt.parse_windows_interfaces({'name': 'ZeroTier One [0123456789abcdef]', 'address': '10.1.2.3'})
+            choices, restored = zt._restore_names(cache, interfaces)
+            self.assertTrue(restored)
+            self.assertEqual(choices[0]['name'], 'SSSS Online')
+            self.assertEqual(choices[0]['address'], '10.1.2.3')
 
 
 if __name__ == '__main__':

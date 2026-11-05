@@ -106,6 +106,7 @@ STRINGS = {
     "hill.zt.cached": ("Saved network names shown with their current IPs. Read names again if a network was renamed.", "Nomes salvos exibidos com os IPs atuais. Consulte os nomes novamente se uma rede foi renomeada."),
     "hill.zt.empty": ("No authorized ZeroTier network has an IPv4 address. You can enter an IP manually.", "Nenhuma rede ZeroTier autorizada possui IPv4. Você pode digitar um IP manualmente."),
     "hill.zt.interfaces": ("IPs detected. Read network names with system authorization, or select an interface.", "IPs detectados. Consulte os nomes com autorização do sistema, ou selecione uma interface."),
+    "hill.zt.windows_interfaces": ("ZeroTier adapters detected. Select an IP; full names appear when the local service is accessible.", "Adaptadores ZeroTier detectados. Selecione um IP; os nomes completos aparecem quando o serviço local está acessível."),
     "hill.zt.unavailable": ("ZeroTier could not be queried. Check that it is running, or enter your IP manually.", "Não foi possível consultar o ZeroTier. Confira se está ativo, ou digite seu IP manualmente."),
     # ---- cabecalho / rodape
     "lang.label": ("LANGUAGE", "IDIOMA"),

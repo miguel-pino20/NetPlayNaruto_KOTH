@@ -686,7 +686,7 @@ class Launcher(tk.Tk):
     def hill(self, event=None):
         if self.backend.running or self._koth_pending or not self._ensure_state_dir() or not self._pick_game():
             return
-        from hill import validate_url
+        from koth_client import site_url
         from zerotier_networks import discover
         import ipaddress
 
@@ -802,7 +802,7 @@ class Launcher(tk.Tk):
 
         def connect():
             try:
-                url = validate_url(values["url"].get().strip())
+                url = site_url(values["url"].get().strip())
                 address = str(ipaddress.IPv4Address(address_for(selected_network.get())))
                 ticket = values['ticket'].get().strip() if 'ticket' in values else self.v['hill_ticket'].get().strip()
                 name = values['name'].get().strip() if 'name' in values else ''
