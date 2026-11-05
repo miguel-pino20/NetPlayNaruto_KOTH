@@ -1,5 +1,94 @@
 # UN5 Netplay Launcher
 
+## Rey de la colina con Django y el servidor principal
+
+Django coordina los turnos. Las peleas usan exclusivamente el relay del servidor
+principal (`137.131.158.54:47500`), con su API habitual para las salas y archivos.
+ZeroTier es opcional y se utiliza solo para que los participantes en espera
+observen el combate en su propio PCSX2.
+
+1. En Django, instala la actualización y ejecuta `python manage.py migrate`.
+2. Para jugar, todos necesitan acceso al servidor principal. Solo para observar
+   se necesita la misma red ZeroTier y TCP 47401 permitido en el host.
+   Cada PC debe tener PCSX2 con PINE habilitado,
+   el juego abierto y los mismos archivos de save state y symbols de UN5 o UN6.
+   El launcher comprueba y descarga el estado y los símbolos del servidor de
+   archivos habitual por HTTP antes de entrar. Los controles del combate viajan por el relay principal.
+3. En **Your Role** selecciona **KOTH**. El panel de salas cambia a una lista de
+   eventos de Django. La URL del sitio se puede editar encima de la lista.
+   Selecciona el evento y pulsa **JOIN KOTH** (también puedes hacer doble clic).
+4. Confirma tu nombre y selecciona tu red de ZeroTier para espectadores; esta IP
+   es opcional para jugar. Si tienes la sesión de Discord del launcher activa,
+   Django la verifica con el servidor principal y vincula la inscripción a tu
+   misma cuenta de Discord. Sin esa sesión, te inscribe como invitado. Se guarda
+   una credencial local por sitio y evento para reconocer la inscripción al
+   volver; una reconexión no crea otro participante ni reinicia los puntos.
+   Si ya estás inscrito desde la web, puedes usar el botón inferior
+   **King of the Hill · personal code**, con tu código obtenido en la página del
+   torneo mediante **Conectar netplay con ZeroTier**. Las dos formas de entrada
+   muestran el mismo tablero en vivo: partida actual, siguiente jugador, cola,
+   puntos y meta del evento. El código manual también permite vincular una
+   inscripción de invitado a tu Discord verificado, conservando puntos y posición.
+   Abre la web con la misma cuenta Discord para que aparezca como tu participante.
+   No se identifica a una cuenta únicamente por su nombre visible.
+   El desplegable ZeroTier muestra `Nombre de red — IPv4`.
+   **Refresh networks** vuelve a consultar las redes. Si Linux exige permisos,
+   **Read network names…** solicita autorización solo para leer los nombres y
+   los guarda para próximas aperturas; no hace falta ejecutar el launcher como
+   administrador. También puedes escribir la IP o elegir **No spectators**.
+   Al entrar se comprueban los archivos y se carga el estado en PCSX2, congelado
+   hasta tu turno. STOP libera el juego y desconecta, sin borrar la inscripción.
+5. El organizador inicia el torneo desde Django. Cuando los dos jugadores del
+   turno estén conectados y sus archivos coincidan, el launcher recarga el estado
+   en el slot 9. El primero en la cola es P1/host y abre una sala en el servidor
+   principal; Django entrega el identificador al rival para que se una. Los
+   paquetes del combate usan solo el relay, sin intentos directos por VPN.
+6. Después del combate, **el organizador registra el ganador en el panel de
+   Django**. El launcher cierra la sesión anterior, el ganador sigue primero y
+   el perdedor pasa al final. La siguiente pareja arranca automáticamente.
+
+**STOP** desconecta del netplay; no retira tu inscripción del torneo. Para salir
+de la cola usa la página del torneo. Si falla un combate, vuelve a entrar a este
+modo para reintentar el mismo turno; no se asignan victorias por desconexión.
+Cada combate comienza desde el save state compartido. Si el ganador antes era
+P2, pasa a P1 en la siguiente sesión.
+
+**Espectadores:** cuando la pareja está lista, los demás inscritos con el mismo
+juego, estado y símbolos reciben una transmisión de controles de solo lectura
+del host. Sus mandos no se envían y sus conexiones no participan en las esperas
+ni en la comparación de hashes de los jugadores. La cola sigue mostrándose en
+la consola; al llegar tu turno, el launcher cierra la reproducción, recarga el
+estado y te conecta como jugador.
+
+La reproducción comienza desde el inicio del combate: si entras tarde, lo ves
+con retraso, sin saltar al instante actual. Una transmisión interrumpida no te
+retira de la cola; puedes salir y reentrar a KOTH para volver a observar. El host
+conserva hasta 64 MiB de historial y atiende hasta 16 espectadores; si se agota
+el búfer, desactiva la transmisión y los jugadores continúan. No se retransmite
+video ni se consulta PINE desde los hilos que atienden espectadores.
+
+Hay que actualizar el launcher en **todos los PCs** y `home/netplay.py` en el
+servidor Django. Los endpoints de lista e inscripción de eventos se añaden en
+`DJBase/urls.py`; actualiza ese archivo y `home/netplay.py`. Esta vista no necesita
+una migración nueva, pero las actualizaciones previas requieren la migración `0010_netplay_relay_room` con
+`python manage.py migrate`. Con `--port N`, la transmisión
+usa TCP `N+1`. La API pública desplegada debe reiniciarse después de actualizarla.
+
+También se puede ejecutar desde terminal, definiendo `UN5_HILL_TICKET` en el entorno:
+
+```bash
+python netplay.py --symbols /ruta/symbols.json hill \
+  --api-url http://127.0.0.1:8000 --address 10.147.0.12 --game un6 \
+  --state /ruta/match.p2s --state-dir /ruta/PCSX2/sstates --load-slot 9
+```
+
+`--delay 0` (por defecto) calcula el delay por el ping al servidor principal.
+Puedes indicar 2–10 frames manualmente; ambos usan el delay del host.
+`--relay-server` y `--relay-api-url` permiten configurar el servidor principal;
+`--api-url` sigue siendo la URL de Django. La IP de ZeroTier no interviene en las peleas.
+`--port` permite cambiar el puerto del host (47400 por defecto).
+Las pruebas automatizadas no sustituyen una prueba real con dos PCs y PCSX2.
+
 For PCSX2 installed with Flatpak, close PCSX2 and start it using
 `bash "2 - PCSX2 Flatpak.sh"` before opening the launcher. This puts the PINE
 socket in Flatpak's shared application runtime directory, so the Linux launcher
@@ -126,3 +215,20 @@ Os dados do usuário (preferências, sessão do Discord e estado da partida) fic
 - **STOP** pede para a sessão encerrar de forma limpa e devolver os controles reais. Se o jogo continuar congelado, use **Tools → RELEASE GAME**.
 - Os dois PCs precisam ter estados de partida idênticos, byte a byte. O launcher cuida disso baixando a cópia do servidor.
 - Os arquivos de estado da partida (`.p2s`) e o `symbols.json` não fazem parte do repositório.
+
+### Vinculación Discord entre el launcher y la web
+
+Conecta Discord en el launcher, actualiza Django y vuelve a entrar al evento.
+Django consulta el endpoint de confianza del servidor principal y utiliza su ID
+de Discord para recuperar la misma cuenta que usa el navegador. Una inscripción
+anterior de invitado se vincula solo si conservas su clave local o código
+personal. Se mantienen los puntos, el puesto en la cola y el historial.
+
+Para actualizar el Django publicado copia `home/netplay.py`,
+`home/netplay_identity.py`, `DJBase/settings.py` y `DJBase/urls.py`, y reinicia
+el servicio. No hay migraciones nuevas. El endpoint de identidad predeterminado
+es `https://un5netplay.duckdns.org/accounts/me`; el administrador puede cambiarlo
+con `NETPLAY_IDENTITY_URL` si cambia el servidor principal. La sesión del
+servidor principal solo se envía en una cabecera HTTPS para comprobar la cuenta;
+Django no la guarda. Si falla la comprobación, no se crea una inscripción de
+invitado de forma silenciosa.

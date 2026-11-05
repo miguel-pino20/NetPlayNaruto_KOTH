@@ -16,6 +16,8 @@ from urllib.parse import quote
 
 MAGIC = b"UN5\xfe"
 DEFAULT_PORT = 47500
+DEFAULT_SERVER = '137.131.158.54:47500'
+DEFAULT_API_URL = 'https://un5netplay.duckdns.org'
 
 
 class ServerError(Exception):

@@ -14,9 +14,11 @@ execucao vem de i18n.detect(). Trocar o idioma reconstroi a janela na hora (o hi
 from __future__ import annotations
 
 import io
+import os
 import queue
 import re
 import shutil
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -32,6 +34,7 @@ import launcher_core as core
 from i18n import has, tr
 from launcher_account import DiscordDialog, ProfileDialog
 from launcher_core import SERVER_ADDR
+from launcher_koth import KothPanel
 from launcher_theme import (ACCENT, BG, BLUE, BORDER, COLORS, DIM, GREEN, MUTED, ON_ACCENT, PANEL, RED, TEXT, WARN,
                             AvatarView, PillButton, RoundEntry, RoundFrame, Segmented, Switch, apply_style)
 
@@ -77,6 +80,9 @@ class Launcher(tk.Tk):
         self.game = "un5"                                 # jogo detectado pelo CRC (ver _pick_game)
         self._after_sync = None                           # o que fazer quando o download do save padrao terminar
         self._after_allow = None
+        self._koth_pending = False
+        self.koth_live_event = None
+        self.koth_live_state = {}
         self.rooms_data: dict = {}
         self.guest_imgs: dict = {}                        # id da sala -> avatar do guest (ou None)
         self.guest_labels: dict = {}                      # id da sala -> Label por cima da celula GUEST
@@ -129,7 +135,7 @@ class Launcher(tk.Tk):
         self._build()
         self._sync_mode()
         self._refresh_account()
-        self._set_buttons(self.backend.running)
+        self._set_buttons(self.backend.running or self._koth_pending)
         self._set_status(self.status_key, self.status_color)
         for text, tag in self._history:
             self._write(text, tag)
@@ -177,6 +183,7 @@ class Launcher(tk.Tk):
         console_host.pack(side="bottom", fill="x")
         self._console(console_host)
         self._rooms_panel(right)                          # as salas ocupam o resto: e a informacao principal
+        self.koth_panel = KothPanel(right, self)
 
         foot = tk.Frame(self, bg=BG, padx=22, pady=8)
         foot.pack(fill="x")
@@ -284,7 +291,7 @@ class Launcher(tk.Tk):
         self.nick_sub.pack(anchor="w", pady=(2, 0))
 
         self._label(inner, tr("your_role"))
-        Segmented(inner, [("host", "HOST  ·  P1"), ("guest", "GUEST  ·  P2")], self.v["mode"],
+        Segmented(inner, [("host", "HOST · P1"), ("guest", "GUEST · P2"), ("koth", "KOTH")], self.v["mode"],
                   self._sync_mode).pack(fill="x")
         self._note(inner, tr("note.delay"))
 
@@ -297,6 +304,11 @@ class Launcher(tk.Tk):
         self._label(self.guest_box, tr("room.label"))
         RoundEntry(self.guest_box, textvariable=self.v["room_id"], state="readonly").pack(fill="x")
         self._note(self.guest_box, tr("note.guest"))
+        self.koth_box = tk.Frame(self.mode_box, bg=PANEL)
+        self.koth_hint = tk.Label(self.koth_box, text=tr('koth.pick'), bg=PANEL, fg=TEXT, wraplength=300,
+                                  justify='left', anchor='w', font=('Segoe UI', 10, 'bold'))
+        self.koth_hint.pack(fill='x', pady=(8, 0))
+        self._note(self.koth_box, tr('koth.join_hint'))
 
         tk.Frame(inner, bg=BORDER, height=1).pack(fill="x", pady=(14, 12))   # separador
 
@@ -305,6 +317,8 @@ class Launcher(tk.Tk):
         self.stop_btn = PillButton(inner, text=tr("btn.stop"), style="Danger.TButton", command=self.stop,
                                    state="disabled")
         self.stop_btn.pack(fill="x")
+        self.hill_btn = PillButton(inner, text=tr("koth.manual"), command=self.hill)
+        self.hill_btn.pack(fill="x", pady=(6, 0))
 
         # PREPARAR PARTIDA e Ferramentas: so para o dono (ver _sync_admin)
         self.admin_box = tk.Frame(inner, bg=PANEL)
@@ -348,6 +362,7 @@ class Launcher(tk.Tk):
     def _rooms_panel(self, parent):
         """As salas: o painel principal da janela (ocupa todo o espaco livre da coluna direita)."""
         panel = RoundFrame(parent, radius=20, padx=16, pady=14, grow=True)
+        self.rooms_panel = panel
         panel.pack(side="top", fill="both", expand=True, pady=(0, 13))
         inner = panel.inner
 
@@ -420,11 +435,23 @@ class Launcher(tk.Tk):
             self.nick_sub.configure(text=tr("nick.none_sub"))
 
     def _sync_mode(self):
-        guest = self.v["mode"].get() == "guest"
-        (self.host_box.pack_forget() if guest else self.host_box.pack(fill="x"))
-        (self.guest_box.pack(fill="x") if guest else self.guest_box.pack_forget())
+        if self._koth_pending or (self.backend.running and self.backend.session_role == 'hill'):
+            self.v['mode'].set('koth')
+        mode = self.v['mode'].get()
+        for role, box in (('host', self.host_box), ('guest', self.guest_box), ('koth', self.koth_box)):
+            box.pack(fill='x') if mode == role else box.pack_forget()
+        if hasattr(self, 'koth_panel'):
+            if mode == 'koth':
+                self.rooms_panel.pack_forget()
+                self.koth_panel.pack(side='top', fill='both', expand=True, pady=(0, 13))
+                self.koth_panel.refresh()
+                self.console.configure(height=5)
+            else:
+                self.koth_panel.pack_forget()
+                self.rooms_panel.pack(side='top', fill='both', expand=True, pady=(0, 13))
+                self.console.configure(height=7)
         if hasattr(self, "start_btn"):
-            self.start_btn.configure(text=tr("btn.start_guest") if guest else tr("btn.start_host"))
+            self.start_btn.configure(text=tr('koth.join') if mode == 'koth' else tr("btn.start_guest") if mode == 'guest' else tr("btn.start_host"))
 
     def _detect_game(self):
         """Le o CRC do jogo aberto no PCSX2 (PINE). Retorna "un5" / "un6", ou None (o aviso ja foi mostrado)."""
@@ -544,6 +571,9 @@ class Launcher(tk.Tk):
             self.after(500, self._rooms_tick)
 
     def _rooms_refresh(self):
+        if self.v['mode'].get() == 'koth':
+            self.koth_panel.tick()
+            return
         self.backend.poll_rooms()
         found, error = self.backend.online_rooms, self.backend.online_error
         self.rooms_data = {r["id"]: r for r in found}
@@ -624,17 +654,18 @@ class Launcher(tk.Tk):
         # o indicador visual foi removido do cabecalho
 
     def _set_buttons(self, running):
+        running = running or self._koth_pending
         state = "disabled" if running else "normal"
-        for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn):
+        for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn, self.hill_btn):
             b.configure(state=state)
         # PREPARE: so o dono (o servidor decide quem e o dono; o launcher so esconde o botao)
         self.prepare_btn.configure(state="normal" if (not running and self.backend.is_admin()) else "disabled")
-        self.stop_btn.configure(state="normal" if running else "disabled")
+        self.stop_btn.configure(state="normal" if running and not self._koth_pending else "disabled")
 
     # ================================================================ acoes
-    def _spawn(self, args, label, allow_missing_symbols=False):
+    def _spawn(self, args, label, allow_missing_symbols=False, session_env=None):
         try:
-            self.backend.spawn(self.cfg(), args, allow_missing_symbols)
+            self.backend.spawn(self.cfg(), args, allow_missing_symbols, session_env=session_env)
         except RuntimeError as exc:
             return messagebox.showwarning(tr("dlg.busy"), str(exc))
         except ValueError as exc:
@@ -651,6 +682,217 @@ class Launcher(tk.Tk):
         except ValueError as exc:
             messagebox.showerror(tr("dlg.cannot_continue"), str(exc))
             return None
+
+    def hill(self, event=None):
+        if self.backend.running or self._koth_pending or not self._ensure_state_dir() or not self._pick_game():
+            return
+        from hill import validate_url
+        from zerotier_networks import discover
+        import ipaddress
+
+        dialog = tk.Toplevel(self)
+        dialog.title(tr("hill.title"))
+        dialog.transient(self)
+        dialog.configure(bg=PANEL, padx=20, pady=16)
+        values = {}
+        fields = [
+            ("url", tr("hill.url"), self.v["hill_url"].get()),
+        ]
+        if event:
+            tk.Label(dialog, text=event['name'], bg=PANEL, fg=ACCENT,
+                     font=('Segoe UI', 12, 'bold')).pack(anchor='w')
+            fields.append(('name', tr('koth.player_name'), self.v['hill_player_name'].get() or self.cfg().get('nick', '')))
+            tk.Label(dialog, text=tr('koth.linked_entry' if self.backend.session else 'koth.guest_entry'), bg=PANEL, fg=MUTED,
+                     wraplength=480, justify='left').pack(anchor='w', pady=(6, 0))
+        else:
+            fields.append(('ticket', tr('hill.ticket'), self.v['hill_ticket'].get()))
+        for key, label, initial in fields:
+            tk.Label(dialog, text=label, bg=PANEL, fg=TEXT).pack(anchor="w", pady=(8, 3))
+            values[key] = tk.StringVar(value=initial)
+            ttk.Entry(dialog, textvariable=values[key], width=65, show="*" if key == "ticket" else "",
+                      state='readonly' if event and key == 'url' else 'normal').pack(fill="x")
+        tk.Label(dialog, text=tr("hill.address"), bg=PANEL, fg=TEXT).pack(anchor="w", pady=(8, 3))
+        selected_network = tk.StringVar(value=self.v["hill_address"].get())
+        networks = {}
+        disabled_label = tr('hill.zt.disabled')
+        network_box = ttk.Combobox(dialog, textvariable=selected_network, width=65, values=(disabled_label,))
+        network_box.pack(fill='x')
+        if selected_network.get() == '0.0.0.0':
+            selected_network.set(disabled_label)
+        network_status = tk.Label(dialog, text='', bg=PANEL, fg=MUTED, wraplength=480, justify='left')
+        network_status.pack(anchor='w', pady=(4, 0))
+        network_controls = tk.Frame(dialog, bg=PANEL)
+        network_controls.pack(fill='x', pady=(6, 0))
+        scan_results = queue.Queue()
+        scan_buttons = []
+        scan_job = [None]
+
+        def cancel_scan_poll(event):
+            if event.widget is dialog and scan_job[0] is not None:
+                dialog.after_cancel(scan_job[0])
+                scan_job[0] = None
+
+        dialog.bind('<Destroy>', cancel_scan_poll, add='+')
+
+        def address_for(choice):
+            if choice == disabled_label:
+                return '0.0.0.0'
+            return networks.get(choice, choice).strip() or '0.0.0.0'
+
+        def refresh_networks(allow_admin=False):
+            initial_choice = selected_network.get()
+            previous_address = address_for(initial_choice)
+            network_status.configure(text=tr('hill.zt.scanning'))
+            for button in scan_buttons:
+                button.configure(state='disabled')
+
+            def work():
+                try:
+                    scan_results.put(discover(allow_admin=allow_admin,
+                                              cache_path=core.DATA_DIR / 'zerotier-networks.json'))
+                except Exception:
+                    scan_results.put(([], 'hill.zt.unavailable'))
+
+            def poll():
+                scan_job[0] = None
+                if not dialog.winfo_exists():
+                    return
+                try:
+                    choices, status = scan_results.get_nowait()
+                except queue.Empty:
+                    scan_job[0] = dialog.after(100, poll)
+                    return
+                labels = {}
+                current_choice = selected_network.get()
+                current_address = address_for(current_choice)
+                was_detected = current_choice in networks
+                for choice in choices:
+                    label = f"{choice['name']} — {choice['address']}"
+                    if label in labels:
+                        label += f" ({choice['id']})"
+                    labels[label] = choice['address']
+                networks.clear()
+                networks.update(labels)
+                network_box.configure(values=(disabled_label, *labels))
+                if selected_network.get() == initial_choice:
+                    matching = next((label for label, ip in labels.items() if ip == previous_address), None)
+                    if matching:
+                        selected_network.set(matching)
+                    elif not initial_choice and len(labels) == 1:
+                        selected_network.set(next(iter(labels)))
+                    else:
+                        selected_network.set(disabled_label if previous_address == '0.0.0.0' else previous_address)
+                elif was_detected:
+                    matching = next((label for label, ip in labels.items() if ip == current_address), None)
+                    selected_network.set(matching or current_address)
+                network_status.configure(text=tr(status))
+                for button in scan_buttons:
+                    button.configure(state='normal')
+
+            threading.Thread(target=work, daemon=True).start()
+            scan_job[0] = dialog.after(100, poll)
+
+        scan_buttons.append(ttk.Button(network_controls, text=tr('hill.zt.refresh'), command=refresh_networks))
+        scan_buttons[0].pack(side='left')
+        if os.name != 'nt' and shutil.which('pkexec'):
+            button = ttk.Button(network_controls, text=tr('hill.zt.names'), command=lambda: refresh_networks(True))
+            button.pack(side='left', padx=(8, 0))
+            scan_buttons.append(button)
+        tk.Label(dialog, text=tr("hill.note"), bg=PANEL, fg=MUTED, wraplength=480, justify="left").pack(pady=12)
+
+        def connect():
+            try:
+                url = validate_url(values["url"].get().strip())
+                address = str(ipaddress.IPv4Address(address_for(selected_network.get())))
+                ticket = values['ticket'].get().strip() if 'ticket' in values else self.v['hill_ticket'].get().strip()
+                name = values['name'].get().strip() if 'name' in values else ''
+                if event and not name:
+                    raise ValueError(tr('koth.player_name'))
+                if not event and not ticket:
+                    raise ValueError(tr("hill.ticket"))
+            except ValueError as error:
+                messagebox.showerror(tr("hill.title"), str(error), parent=dialog)
+                return
+            self.v["hill_url"].set(url)
+            self.v["hill_address"].set(address)
+            if name:
+                self.v['hill_player_name'].set(name)
+            core.save_config({**self.raw(), "ignore_desync": False})
+            dialog.destroy()
+            netplay_session = self.backend.session
+            if event:
+                self._koth_pending = True
+                self.koth_live_event = event
+                self.v['mode'].set('koth')
+                self._sync_mode()
+                self._set_buttons(True)
+                self.stop_btn.configure(state='disabled')
+                self.koth_panel.display(event, reason=tr('koth.registering'))
+
+                def enroll():
+                    from koth_client import MembershipStore, enroll as enroll_event
+                    try:
+                        result = enroll_event(url, event, name, MembershipStore(core.DATA_DIR/'koth-memberships.json'), ticket,
+                                              netplay_session=netplay_session)
+                        self.backend.q.put(('koth_enroll', url, address, result, ''))
+                    except Exception as error:
+                        self.backend.q.put(('koth_enroll', url, address, None, str(error)))
+
+                threading.Thread(target=enroll, daemon=True).start()
+            else:
+                if netplay_session:
+                    self._koth_pending = True
+                    self.koth_live_event = None
+                    self.v['mode'].set('koth')
+                    self._sync_mode()
+                    self._set_buttons(True)
+                    self.koth_panel.display(reason=tr('koth.linking'))
+
+                    def link():
+                        from koth_client import link_account
+                        try:
+                            result = link_account(url, ticket, netplay_session)
+                            self.backend.q.put(('koth_enroll', url, address, result, ''))
+                        except Exception as error:
+                            self.backend.q.put(('koth_enroll', url, address, None, str(error)))
+
+                    threading.Thread(target=link, daemon=True).start()
+                else:
+                    self._begin_hill(url, address, ticket)
+
+        ttk.Button(dialog, text=tr("hill.connect"), command=connect).pack(fill="x")
+        dialog.grab_set()
+        refresh_networks()
+
+    def _begin_hill(self, url, address, ticket, event=None):
+        self.v['hill_ticket'].set(ticket)
+        self.v['hill_url'].set(url)
+        if event:
+            self.v['hill_event_id'].set(str(event['id']))
+        self.koth_live_event = event
+        self.koth_live_state = {}
+        self._koth_pending = True
+        self.v['mode'].set('koth')
+        core.save_config({**self.raw(), 'ignore_desync': False})
+        self._sync_mode()
+        self._set_buttons(True)
+        self.stop_btn.configure(state='disabled')
+        self.koth_panel.display(event, reason=tr('koth.loading'))
+
+        def launch():
+            cfg = self.cfg()
+            args = ['hill', '--api-url', url, '--address', address, '--game', self.game,
+                    '--state', cfg['state_file'], '--state-dir', cfg['state_dir'], '--load-slot', cfg['load_slot'],
+                    '--nick', cfg.get('nick', ''), '--relay-server', core.SERVER_ADDR, '--relay-api-url', core.SERVER_URL]
+            self._koth_pending = False
+            self._spawn(args, tr('hill.title'), session_env={'UN5_HILL_TICKET': ticket,
+                        'UN5_NETPLAY_SESSION': self.backend.session})
+            self.koth_panel.display(event)
+
+        self._after_sync = launch
+        self._log('\n▶ '+tr('run.checking'), 'info')
+        self._set_status('LOADING', BLUE)
+        self.backend.sync_default(self.game)
 
     def prepare(self):
         if not self.backend.is_admin():
@@ -673,6 +915,13 @@ class Launcher(tk.Tk):
             self._spawn(args, tr("run.load"))
 
     def start(self):
+        if self._koth_pending or self.backend.running:
+            return
+        if self.v['mode'].get() == 'koth':
+            event = self.koth_panel.selected_event()
+            if event is None:
+                return messagebox.showinfo(tr('hill.title'), tr('koth.pick'))
+            return self.hill(event)
         if not self._ensure_state_dir():
             return
         role = self.v["mode"].get()
@@ -733,9 +982,12 @@ class Launcher(tk.Tk):
             self._log(tr("log.stopfile", exc=exc), "error")
         self._log(tr("log.stopping"), "info")
         self.stop_btn.configure(state="disabled")
-        self.after(4500, self._force)
+        self.after(15000 if self.backend.session_role == 'hill' else 4500,
+                   lambda proc=self.backend.proc: self._force(proc))
 
-    def _force(self):
+    def _force(self, expected_proc):
+        if self.backend.proc is not expected_proc:
+            return
         if self.backend.force_stop():
             self._log(tr("log.forced"), "warn")
             self.after(600, self.release_game)
@@ -772,6 +1024,26 @@ class Launcher(tk.Tk):
                 kind = ev[0]
                 if kind == "line":
                     self._on_line(ev[1])
+                elif kind == 'koth_events':
+                    if ev[1] is self.koth_panel:
+                        self.koth_panel.update_events(*ev[2:])
+                elif kind == 'koth_state':
+                    if ev[2] is self.backend.proc and self.backend.session_role == 'hill':
+                        state = ev[1]
+                        self.koth_live_state = state
+                        self.koth_live_event = state['event']
+                        self.v['hill_event_id'].set(str(state['event']['id']))
+                        self.koth_panel.display(state['event'], state.get('role'), state.get('reason'))
+                elif kind == 'koth_enroll':
+                    _, url, address, result, error = ev
+                    if error:
+                        self._koth_pending = False
+                        self._set_buttons(False)
+                        self.koth_panel.display(self.koth_live_event)
+                        self.koth_panel.status.configure(text=error, fg=RED)
+                        messagebox.showerror(tr('hill.title'), error)
+                    else:
+                        self._begin_hill(url, address, result['ticket'], result['event'])
                 elif kind == "exit":
                     self._on_exit(ev[1])
                 elif kind == "avatar":
@@ -790,6 +1062,8 @@ class Launcher(tk.Tk):
                         if cont:
                             cont()
                     else:
+                        self._koth_pending = False
+                        self.koth_panel.display(self.koth_live_event)
                         self._set_status("READY", MUTED)
                         self._log(ev[2], "error")
                         messagebox.showerror(tr("dlg.default_state"), ev[2])
@@ -843,6 +1117,8 @@ class Launcher(tk.Tk):
     def _on_exit(self, code):
         self._log(tr("log.finished", code=code), "success" if code in (0, None) else "error")
         self.backend.on_exit()
+        self._koth_pending = False
+        self.koth_panel.display(self.koth_live_event)
         self._set_buttons(False)
         if self.status_key not in ("DESYNC", "FROZEN"):
             self._set_status("READY", MUTED)

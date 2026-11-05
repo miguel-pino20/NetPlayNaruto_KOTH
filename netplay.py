@@ -203,8 +203,8 @@ def connect(args):
     return pine, core_link.PineCore(base, pine=pine, serial=None)
 
 def stop_requested(args):
-    path = getattr(args, 'stop_file', None)
-    return bool(path and os.path.isfile(path))
+    return any(path and os.path.isfile(path) for path in
+               (getattr(args, 'stop_file', None), getattr(args, 'parent_stop_file', None)))
 
 def _fine_timer(on):
     """Windows: sleep(0.001) can really sleep ~15 ms. Ask for a 1 ms timer while a session runs (inputs arrive sooner)."""
@@ -740,13 +740,22 @@ def online_guest_fetch(args):
 def online_open(args, core, is_host, tag, nick):
     """Open the UDP socket, learn our public address from the server, publish / join the room and build the Node.
     Returns (node, poller) or (None, None) after printing why."""
+    from discord_auth import AccountError, api_call
     api = room = sock = None
     try:
         api = netlink.Api(getattr(args, 'api_url', '') or args.server)
+        session_token = os.environ.get('UN5_NETPLAY_SESSION', '')
+        if session_token:
+            presence = {'role': 'host' if is_host else 'guest'}
+            if not is_host:
+                presence['room'] = args.room
+            api_call(args.api_url, 'POST', '/presence', presence, token=session_token)
+            if not is_host:
+                api_call(args.api_url, 'POST', f'/rooms/{args.room}/allow', {}, token=session_token)
         server_addr = netlink.resolve(args.server)
         sock = netlink.open_socket(args.port if is_host else args.bind_port)
         pub = netlink.whoami(sock, server_addr)
-        lan = netlink.lan_candidates(sock.getsockname()[1])
+        lan = [] if getattr(args, 'relay_only', False) else netlink.lan_candidates(sock.getsockname()[1])
         print(f'online: the server sees this PC as {pub[0]}:{pub[1]} (UDP)')
         if is_host and args.delay <= 0:
             args.delay = auto_delay(sock, server_addr)
@@ -754,12 +763,18 @@ def online_open(args, core, is_host, tag, nick):
         if is_host:
             sym_tag = symbols_tag(args.symbols)
             room = api.create_room(nick, args.delay, tag, sym_tag, pub, lan)
+            if getattr(args, 'room_file', None):
+                from pathlib import Path
+                path = Path(args.room_file)
+                temporary = path.with_suffix('.tmp')
+                temporary.write_text(json.dumps({'room_id': room['id'], 'delay': args.delay}), encoding='utf-8')
+                temporary.replace(path)
             print(f"the server accepted your match state ({tag}): it is the server's default.")
             poller = netlink.RoomPoller(api, room['id'], room['token'])
             poller.host_ip = pub[0]
             relay = (server_addr, bytes.fromhex(room['token']))
             node = node_mod.Node(core, 1, 0, 0, [0, 1], delay=args.delay, tag=tag, name=nick, first_capture=1,
-                                 sock=sock, relay=relay)
+                                 sock=sock, relay=relay, relay_only=getattr(args, 'relay_only', False))
             print(f"host: room {room['id']} is open on the server (delay {args.delay} frames, state tag {tag}). "
                   f"Waiting for the guest ...")
             return node, poller
@@ -773,11 +788,12 @@ def online_open(args, core, is_host, tag, nick):
         cands = [tuple(c) for c in room['host'].get('lan', [])] if host_addr[0] == pub[0] else []
         relay = (server_addr, bytes.fromhex(room['token']))
         node = node_mod.Node(core, 2, 1, 0, [0, 1], delay=room['delay'], tag=tag, name=nick, host=host_addr,
-                             first_capture=1, sock=sock, relay=relay, cands=cands)
+                             first_capture=1, sock=sock, relay=relay, cands=cands,
+                             relay_only=getattr(args, 'relay_only', False))
         print(f"guest: joined room {args.room} ({room['host']['nick']}), connecting (delay {room['delay']} frames, "
               f"state tag {tag}) ...")
         return node, None
-    except (netlink.ServerError, OSError) as error:
+    except (netlink.ServerError, OSError, AccountError) as error:
         print(f'failed: {error}')
         if is_host and room is not None and api is not None:
             try:
@@ -791,6 +807,9 @@ def online_open(args, core, is_host, tag, nick):
 
 def cmd_play(args, is_host):
     server_mode = bool(getattr(args, 'server', ''))
+    if getattr(args, 'relay_only', False) and not server_mode:
+        print('--relay-only necesita --server: no se iniciará una pelea por conexión directa.')
+        return 1
     if args.delay <= 0 and not server_mode:
         args.delay = LAN_DELAY                         # LAN / VPN: nothing to measure before connecting
     if not is_host and not server_mode and not args.connect:
@@ -871,7 +890,39 @@ def cmd_play(args, is_host):
             print('room not announced: no usable network interface')
             announcer = None
     session = NetplaySession(core, node)
+    replay = None
+    if is_host and getattr(args, 'spectator_port', 0):
+        from spectator import ReplayServer
+        from hill import file_tag
+        key = os.environ.get('UN5_SPECTATOR_KEY', '')
+        if key:
+            try:
+                replay = ReplayServer(args.spectator_port, key, tag, file_tag(args.symbols), args.delay)
+                node.replay = replay
+                print(f'Espectadores: transmisión de solo lectura en TCP {replay.port}.', flush=True)
+            except (OSError, ValueError, RuntimeError) as error:
+                print(f'Espectadores no disponibles ({error}); el combate continúa.', flush=True)
     flow = GameFlow(pine)
+    presence_stop = threading.Event()
+    if server_mode and os.environ.get('UN5_NETPLAY_SESSION'):
+        def presence_loop():
+            from discord_auth import AccountError, api_call
+            while not presence_stop.is_set():
+                body = {'role': 'host' if is_host else 'guest',
+                        'room': poller.room_id if poller else args.room}
+                if flow.last:
+                    body['phase'] = flow.last
+                try:
+                    ping = node.rtt_ms()
+                    if ping is not None:
+                        body['ping'] = round(ping)
+                    api_call(args.api_url, 'POST', '/presence', body,
+                             token=os.environ['UN5_NETPLAY_SESSION'], timeout=4)
+                except (AccountError, OSError, RuntimeError):
+                    pass
+                if presence_stop.wait(2):
+                    break
+        threading.Thread(target=presence_loop, daemon=True).start()
     _fine_timer(True)
     last, last_frame, t0 = time.time(), 0, time.time()
     seen = 0
@@ -992,6 +1043,9 @@ def cmd_play(args, is_host):
     except KeyboardInterrupt:
         pass
     finally:
+        presence_stop.set()
+        if replay is not None:
+            replay.close()
         if server is not None:
             server.close()
         if sym_server is not None:
@@ -1015,7 +1069,20 @@ def main(argv=None):
     ap.add_argument('--symbols', default='temp_build/build/symbols.json')
     ap.add_argument('--pine-slot', type=int, default=28011)
     ap.add_argument('--stop-file', default=None, help='file signal to stop the netplay session')
+    ap.add_argument('--parent-stop-file', default=None, help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest='cmd', required=True)
+    hill = sub.add_parser('hill', help='Rey de la colina con Django y peleas por el servidor principal')
+    hill.add_argument('--api-url', required=True)
+    hill.add_argument('--address', default='0.0.0.0', help='IPv4 de ZeroTier para espectadores (opcional)')
+    hill.add_argument('--game', required=True, choices=('un5', 'un6'))
+    hill.add_argument('--state', required=True)
+    hill.add_argument('--state-dir', required=True)
+    hill.add_argument('--load-slot', type=int, default=9)
+    hill.add_argument('--port', type=int, choices=range(1024, 65534), default=47400, metavar='PORT')
+    hill.add_argument('--delay', type=int, choices=(0, *range(2, 11)), default=0)
+    hill.add_argument('--nick', default='')
+    hill.add_argument('--relay-server', default=netlink.DEFAULT_SERVER)
+    hill.add_argument('--relay-api-url', default=netlink.DEFAULT_API_URL)
     p = sub.add_parser('prepare', help='arm the filter and freeze the game at frame 0 (to save the match state)')
     p.add_argument('--save-slot', type=int, help='ask PCSX2 (PINE) to save the state in this slot')
     p.add_argument('--state-dir', help="PCSX2's save-state folder (Settings > Folders): the tool then checks the file appeared")
@@ -1028,7 +1095,7 @@ def main(argv=None):
     so.add_argument('--delay', type=int, default=3)
     so.add_argument('--control', choices=('p1', 'p2', 'both'), default='p1')
     env = os.environ.get
-    for name in ('host', 'guest'):
+    for name in ('host', 'guest', 'watch'):
         q = sub.add_parser(name)
         q.add_argument('--state', help='the match state file (both PCs: identical bytes); makes the session id')
         q.add_argument('--delay', type=int, default=0,
@@ -1071,7 +1138,10 @@ def main(argv=None):
         q.add_argument('--api-url', default=env('NP_API_URL', ''), metavar='URL',
                        help='HTTP(S) address of the server API (e.g. https://un5netplay.duckdns.org); '
                             'default: http://--server. UDP (relay) always uses --server')
+        q.add_argument('--relay-only', action='store_true', help='send game packets only through the principal relay')
         if name == 'host':
+            q.add_argument('--room-file', default=None, help=argparse.SUPPRESS)
+            q.add_argument('--spectator-port', type=int, default=0, help='TCP port for read-only spectators (0 = off)')
             q.add_argument('--no-share-state', action='store_true',
                            help='do not serve the match state file and symbols.json to guests (TCP)')
             q.add_argument('--port', type=int, default=47400, help='UDP port to listen on')
@@ -1086,6 +1156,12 @@ def main(argv=None):
                            help='download the host match state and symbols.json when they differ from yours')
             q.add_argument('--bind-port', type=int, default=0, help='local UDP port (0 = any)')
     args = ap.parse_args(argv)
+    if args.cmd == 'hill':
+        import hill as hill_mode
+        return hill_mode.command(args)
+    if args.cmd == 'watch':
+        from spectator import cmd_watch
+        return cmd_watch(args)
     if args.cmd == 'prepare':
         return cmd_prepare(args)
     if args.cmd == 'solo':

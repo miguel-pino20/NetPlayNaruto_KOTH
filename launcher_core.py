@@ -52,13 +52,14 @@ import urllib.request
 from pathlib import Path
 
 from i18n import tr
-from appdata import CONFIG_FILE, DATA_DIR, STATE_NAME, STATE_PATH, SYMBOLS_PATH      # noqa: F401
+from netlink import DEFAULT_SERVER, DEFAULT_API_URL
+from appdata import CONFIG_FILE, DATA_DIR, STATE_NAME, STATE_PATH, SYMBOLS_PATH, write_json      # noqa: F401
 from discord_auth import (UA, ssl_context, AccountError, DiscordMixin, account_game_nick, api_call,   # noqa: F401
                           fetch_avatar)
 
 HERE = Path(__file__).resolve().parent
-SERVER_URL = "https://un5netplay.duckdns.org"          # API (salas, conta, save state): HTTPS pelo Caddy
-SERVER_ADDR = "137.131.158.54:47500"                   # UDP (descoberta e relay): NAO passa pelo Caddy
+SERVER_URL = DEFAULT_API_URL                           # API (salas, conta, save state): HTTPS pelo Caddy
+SERVER_ADDR = DEFAULT_SERVER                           # UDP (descoberta e relay): NAO passa pelo Caddy
 HOST_PORT = "47400"                                    # porta UDP local do host (fixa, sem campo na tela)
 GUEST_BIND_PORT = "0"                                  # porta UDP local do guest (0 = automatica)
 AUTO_DELAY = "0"                                       # --delay 0 = o netplay.py escolhe sozinho
@@ -79,7 +80,8 @@ AVATAR_RETRY = 30.0                                    # s ate tentar baixar de 
 # O que o usuario realmente escolhe (e e salvo em %APPDATA%). state_dir so aparece se a pasta do PCSX2 nao for achada
 # sozinha. A sessao do Discord NAO fica aqui: tem arquivo proprio (session.json).
 # (chaves antigas salvas no json, como "nick", "delay" ou "session", sao ignoradas por load_config)
-DEFAULTS = dict(mode="host", control="p1", room_id="", ignore_desync=False, state_dir="", lang="")
+DEFAULTS = dict(mode="host", control="p1", room_id="", ignore_desync=False, state_dir="", lang="",
+                hill_url="", hill_address="", hill_ticket="", hill_event_id="", hill_player_name="")
 
 # Valores fixos (antes eram campos na tela).
 FIXED = dict(pine_slot="28011", save_slot="1", load_slot="9", auto_copy=True, auto_load=True, fetch_state=True)
@@ -130,7 +132,7 @@ def load_config() -> dict:
 
 def save_config(cfg: dict):
     try:
-        CONFIG_FILE.write_text(json.dumps({k: cfg[k] for k in DEFAULTS if k in cfg}, indent=2), encoding="utf-8")
+        write_json(CONFIG_FILE, {k: cfg[k] for k in DEFAULTS if k in cfg}, private=True)
     except OSError:
         pass
 
@@ -370,6 +372,7 @@ class Backend(DiscordMixin):
         self.proc: subprocess.Popen | None = None
         self.started_at: float | None = None
         self.last_cmd = ""
+        self.session_role = ""
         self.stop_file = Path(os.environ.get("TEMP", str(HERE))) / f"un5_stop_{os.getpid()}.flag"
         self.online_rooms: list = []
         self.online_error = ""
@@ -418,7 +421,7 @@ class Backend(DiscordMixin):
                          "--stop-file", str(self.stop_file)]
 
     # ---------------------------------------------------------------- sessao
-    def spawn(self, cfg: dict, args, allow_missing_symbols=False) -> str:
+    def spawn(self, cfg: dict, args, allow_missing_symbols=False, session_env=None) -> str:
         """Inicia o netplay.py. Levanta ValueError (configuracao) ou OSError (nao abriu)."""
         if self.running:
             raise RuntimeError(tr("err.busy"))
@@ -431,17 +434,26 @@ class Backend(DiscordMixin):
         self.phase, self.ping = "", None
         self.proc = subprocess.Popen(cmd, cwd=str(project), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-                                     bufsize=1, env=self._env(), creationflags=self._flags())
+                                     bufsize=1, env={**self._env(), **(session_env or {})}, creationflags=self._flags())
         self.started_at = time.monotonic()
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
         role = args[0] if args else ""
+        self.session_role = role
         if role in ("host", "guest"):                    # so as sessoes de rede aparecem na lista de salas
             room = args[args.index("--room") + 1] if "--room" in args[:-1] else ""
             threading.Thread(target=self._presence_loop, args=(self.proc, role, room), daemon=True).start()
         return self.last_cmd
 
-    def _observe(self, line: str):
+    def _observe(self, line: str, proc=None):
         """Fase e ping reais da partida, lidos da saida do netplay.py."""
+        if line.startswith('KOTH_STATE '):
+            try:
+                state = json.loads(line[len('KOTH_STATE '):])
+                if isinstance(state, dict) and isinstance(state.get('event'), dict):
+                    self.q.put(('koth_state', state, proc))
+            except ValueError:
+                pass
+            return True
         stat = parse_stat(line)
         if stat:
             if not self.phase:
@@ -458,7 +470,8 @@ class Backend(DiscordMixin):
         try:
             for line in proc.stdout:
                 line = line.rstrip("\r\n")
-                self._observe(line)
+                if self._observe(line, proc):
+                    continue
                 self.q.put(("line", line))
         except (OSError, ValueError):
             pass
@@ -689,6 +702,6 @@ class Backend(DiscordMixin):
         if self.running:
             try:
                 self.request_stop()
-                self.proc.wait(timeout=3)
+                self.proc.wait(timeout=12 if self.session_role == 'hill' else 3)
             except (OSError, subprocess.TimeoutExpired):
                 self.proc.terminate()

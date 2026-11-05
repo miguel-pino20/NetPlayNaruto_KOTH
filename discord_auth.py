@@ -106,10 +106,12 @@ def account_game_nick(acc) -> str:
 
 
 # ---- HTTP -----------------------------------------------------------------------------------------------------------
-def api_call(server, method, path, body=None, token="", timeout=8.0) -> dict:
+def api_call(server, method, path, body=None, token="", timeout=8.0, extra_headers=None) -> dict:
     headers, data = {"User-Agent": UA}, None
     if body is not None:
         data, headers["Content-Type"] = json.dumps(body).encode("utf-8"), "application/json"
+    if extra_headers:
+        headers.update(extra_headers)
     if token:
         headers["Authorization"] = "Bearer " + token
     base = server if server.startswith(("http://", "https://")) else f"http://{server}"
@@ -119,7 +121,15 @@ def api_call(server, method, path, body=None, token="", timeout=8.0) -> dict:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
-            msg = json.loads(exc.read().decode("utf-8"))["error"]
+            error = json.loads(exc.read().decode('utf-8'))
+            if isinstance(error, dict):
+                msg = error.get('error') or error.get('detail')
+                if not msg:
+                    msg = '; '.join(f"{key}: {', '.join(map(str, value)) if isinstance(value, list) else value}"
+                                    for key, value in error.items())
+            else:
+                msg = ', '.join(map(str, error)) if isinstance(error, list) else str(error)
+            msg = str(msg)[:800] or f'Server error {exc.code}.'
         except Exception:                                   # noqa: BLE001
             msg = f"Server error {exc.code}."
         raise AccountError(msg, exc.code) from None

@@ -89,7 +89,7 @@ class Peer:
 class Node:
     def __init__(self, core, member, slot, bind_port, active, delay=3, tag='00' * 8, name='', host=None,
                  expect=None, loss=0.0, bind='0.0.0.0', first_capture=0, sock=None, relay=None, cands=None,
-                 punch_s=2.5):
+                 punch_s=2.5, relay_only=False):
         """member: 1 for the host, 2.. for guests.  slot: this PC's input slot.  active: slots that have a player.
         host: (ip, port) of the host when this PC is a guest, None for the host.
         Online mode (rendezvous server): sock = the UDP socket the server already saw (same NAT mapping), relay =
@@ -105,6 +105,7 @@ class Node:
         self.sock = sock
         self.sock.setblocking(False)
         self.relay = relay
+        self.relay_only = relay_only
         self.relay_addr = tuple(relay[0]) if relay else None
         self.relay_token = relay[1] if relay else None
         self.punch_s = punch_s
@@ -149,6 +150,7 @@ class Node:
         self.last_hello = 0.0
         self.closed_reason = None
         self.sel_sync = True                                 # host-authoritative selection (--no-force-sel turns it off)
+        self.replay = None                                  # optional read-only spectator archive; never a peer
         self.sel_seq = None
         self.sel_words = None
         self.sel_polled = 0.0
@@ -187,6 +189,9 @@ class Node:
         if self.relay is None:
             if p.addr:
                 self._sendto(datagram, p.addr)
+            return
+        if self.relay_only:
+            self._send_relay(datagram)
             return
         now = time.perf_counter()
         if p.direct_rx and now - p.direct_rx < 2.0:
@@ -289,6 +294,8 @@ class Node:
                 if addr != self.relay_addr or data[4:5] != b'D':
                     continue                                 # (an old WHOAMI answer, a stranger ...)
                 via_relay, data = True, data[5:]
+            if self.relay_only and not via_relay:
+                continue
             if data[:4] == SEL_MAGIC:                        # the host's menu selection (not a wire.py message)
                 self._on_sel(data, addr, via_relay)
                 continue
@@ -593,6 +600,13 @@ class Node:
         self._hash_step()
         self._send_data()
         self._sel_send()
+        if self.replay is not None:
+            try:
+                self.replay.capture(self)
+            except Exception:
+                # Spectator recording must never end or park the players' game.
+                self.replay.close()
+                self.replay = None
         self._prune()
 
     def close(self, reason=wire.BYE_DONE):
