@@ -737,6 +737,17 @@ def online_guest_fetch(args):
     return True
 
 
+def report_online_presence(api_url, role, room_id, session_token):
+    """Presence is cosmetic: a failure must not cancel an existing room."""
+    from discord_auth import AccountError, api_call
+    if not session_token:
+        return
+    try:
+        api_call(api_url, 'POST', '/presence', {'role': role, 'room': room_id}, token=session_token, timeout=4)
+    except AccountError as error:
+        print(f'note: no se pudo actualizar la presencia de la sala {room_id} ({error}); la conexión continúa.', flush=True)
+
+
 def online_open(args, core, is_host, tag, nick):
     """Open the UDP socket, learn our public address from the server, publish / join the room and build the Node.
     Returns (node, poller) or (None, None) after printing why."""
@@ -745,13 +756,8 @@ def online_open(args, core, is_host, tag, nick):
     try:
         api = netlink.Api(getattr(args, 'api_url', '') or args.server)
         session_token = os.environ.get('UN5_NETPLAY_SESSION', '')
-        if session_token:
-            presence = {'role': 'host' if is_host else 'guest'}
-            if not is_host:
-                presence['room'] = args.room
-            api_call(args.api_url, 'POST', '/presence', presence, token=session_token)
-            if not is_host:
-                api_call(args.api_url, 'POST', f'/rooms/{args.room}/allow', {}, token=session_token)
+        if session_token and not is_host:
+            api_call(args.api_url, 'POST', f'/rooms/{args.room}/allow', {}, token=session_token)
         server_addr = netlink.resolve(args.server)
         sock = netlink.open_socket(args.port if is_host else args.bind_port)
         pub = netlink.whoami(sock, server_addr)
@@ -763,6 +769,7 @@ def online_open(args, core, is_host, tag, nick):
         if is_host:
             sym_tag = symbols_tag(args.symbols)
             room = api.create_room(nick, args.delay, tag, sym_tag, pub, lan)
+            report_online_presence(args.api_url, 'host', room['id'], session_token)
             if getattr(args, 'room_file', None):
                 from pathlib import Path
                 path = Path(args.room_file)
@@ -784,6 +791,7 @@ def online_open(args, core, is_host, tag, nick):
                   f"host's UN5-partida.p2s.")
             sock.close()
             return None, None
+        report_online_presence(args.api_url, 'guest', args.room, session_token)
         host_addr = tuple(room['host']['addr'])
         cands = [tuple(c) for c in room['host'].get('lan', [])] if host_addr[0] == pub[0] else []
         relay = (server_addr, bytes.fromhex(room['token']))

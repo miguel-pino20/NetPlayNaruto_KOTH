@@ -230,8 +230,74 @@ class HillTests(unittest.TestCase):
              patch('netplay.node_mod.Node') as make_node, patch('discord_auth.api_call') as auth:
             netplay.online_open(args, Mock(), False, 'a'*16, 'Guest')
         self.assertEqual(api.join_room.call_args.args[0], 'principal-room')
-        self.assertEqual([call.args[2] for call in auth.call_args_list], ['/presence', '/rooms/principal-room/allow'])
+        self.assertEqual([call.args[2] for call in auth.call_args_list], ['/rooms/principal-room/allow', '/presence'])
         self.assertTrue(make_node.call_args.kwargs['relay_only'])
+
+    @patch.dict(os.environ, {'UN5_NETPLAY_SESSION': 'sample-account-session'})
+    def test_host_creates_room_before_presence_and_presence_failure_is_nonfatal(self):
+        import netplay
+        import netlink
+        from discord_auth import AccountError
+        args = argparse.Namespace(server=netlink.DEFAULT_SERVER, api_url=netlink.DEFAULT_API_URL,
+                                  port=47400, delay=3, relay_only=True, symbols=self.args.symbols,
+                                  room_file=str(Path(self.directory.name)/'room.json'))
+        api = Mock()
+        api.create_room.return_value = {'id': 'principal-room', 'token': '0011223344556677'}
+        order = Mock()
+        order.attach_mock(api.create_room, 'create_room')
+        with patch('netplay.netlink.Api', return_value=api), patch('netplay.netlink.resolve', return_value=('127.0.0.1', 47500)), \
+             patch('netplay.netlink.open_socket'), patch('netplay.netlink.whoami', return_value=('192.0.2.1', 47400)), \
+             patch('netplay.netlink.RoomPoller'), patch('netplay.node_mod.Node') as make_node, \
+             patch('discord_auth.api_call', side_effect=AccountError('no room from your address', 404)) as presence:
+            order.attach_mock(presence, 'presence')
+            connected, poller = netplay.online_open(args, Mock(), True, 'a'*16, 'Host')
+        self.assertIs(connected, make_node.return_value)
+        self.assertIsNotNone(poller)
+        self.assertEqual([call[0] for call in order.mock_calls], ['create_room', 'presence'])
+        self.assertEqual(presence.call_args.args[3], {'role': 'host', 'room': 'principal-room'})
+        self.assertTrue(Path(args.room_file).is_file())
+        api.close_room.assert_not_called()
+
+    @patch.dict(os.environ, {'UN5_NETPLAY_SESSION': 'sample-account-session'})
+    def test_guest_checks_permission_then_joins_before_announcing_presence(self):
+        import netplay
+        import netlink
+        from discord_auth import AccountError
+        args = argparse.Namespace(server=netlink.DEFAULT_SERVER, api_url=netlink.DEFAULT_API_URL,
+                                  bind_port=0, delay=3, relay_only=True, room='principal-room')
+        api = Mock()
+        api.join_room.return_value = {'tag': 'a'*16, 'delay': 3, 'token': '0011223344556677',
+                                      'host': {'addr': ['192.0.2.1', 47400], 'nick': 'Host'}}
+        events = []
+        def request(server, method, path, *args, **kwargs):
+            events.append(path)
+            if path == '/presence':
+                raise AccountError('no room from your address', 404)
+            return {}
+        def join(*args):
+            events.append('join')
+            return api.join_room.return_value
+        api.join_room.side_effect = join
+        with patch('netplay.netlink.Api', return_value=api), patch('netplay.netlink.resolve', return_value=('127.0.0.1', 47500)), \
+             patch('netplay.netlink.open_socket'), patch('netplay.netlink.whoami', return_value=('192.0.2.2', 47400)), \
+             patch('netplay.node_mod.Node') as make_node, patch('discord_auth.api_call', side_effect=request):
+            connected, _ = netplay.online_open(args, Mock(), False, 'a'*16, 'Guest')
+        self.assertIs(connected, make_node.return_value)
+        self.assertEqual(events, ['/rooms/principal-room/allow', 'join', '/presence'])
+
+    @patch.dict(os.environ, {'UN5_NETPLAY_SESSION': 'sample-account-session'})
+    def test_denied_guest_permission_still_prevents_joining(self):
+        import netplay
+        import netlink
+        from discord_auth import AccountError
+        args = argparse.Namespace(server=netlink.DEFAULT_SERVER, api_url=netlink.DEFAULT_API_URL,
+                                  bind_port=0, delay=3, relay_only=True, room='principal-room')
+        api = Mock()
+        with patch('netplay.netlink.Api', return_value=api), patch('netplay.netlink.open_socket') as open_socket, \
+             patch('discord_auth.api_call', side_effect=AccountError('not allowed', 403)):
+            self.assertEqual(netplay.online_open(args, Mock(), False, 'a'*16, 'Guest'), (None, None))
+        api.join_room.assert_not_called()
+        open_socket.assert_not_called()
 
     @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket'})
     @patch('hill.sync')
