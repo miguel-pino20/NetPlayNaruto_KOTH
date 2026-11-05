@@ -12,7 +12,7 @@ import venv
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ("appdata core_link discord_auth hill i18n koth_client launcher launcher_account "
            "launcher_avatar launcher_core launcher_koth launcher_theme lockstep netlink netplay "
-           "node pine rooms simgame spectator statesync wire zerotier_networks").split()
+           "node pine release_info rooms simgame spectator statesync updater wire zerotier_networks").split()
 
 
 def run(*args, **kwargs):
@@ -39,11 +39,11 @@ def main():
     run(python, "-m", "pip", "install", *pip_args, "-r", ROOT / "windows/requirements-build.txt", env=env)
     run(python, "-c", "import tkinter; print('Tcl/Tk:', tkinter.Tcl().eval('info library'))", env=env)
     icon = build / "un5-netplay.ico"
-    run(python, "-c", "from PIL import Image; import sys; Image.open(sys.argv[1]).save(sys.argv[2], sizes=[(16,16),(32,32),(48,48),(256,256)])",
+    run(python, "-c", "from PIL import Image; import sys; Image.open(sys.argv[1]).convert('RGBA').save(sys.argv[2], sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])",
         ROOT / "appimage/un5-netplay.png", icon, env=env)
     # Every added source file is deliberate: no .bat/.sh, PCSX2, games, user data or secrets.
     data_files = [ROOT / f"{module}.py" for module in MODULES]
-    data_files += [ROOT / "symbols_un6.json"]
+    data_files += [ROOT / "symbols_un6.json", ROOT / "appimage/un5-netplay.png", icon]
     python_license = Path(sys.base_prefix) / "LICENSE.txt"
     if python_license.is_file():
         data_files.append(python_license)
@@ -55,6 +55,7 @@ def main():
     for path in data_files:
         command += ["--add-data", f"{path}{os.pathsep}."]
     command += ["--add-data", f"{ROOT / 'windows/README.md'}{os.pathsep}."]
+    command += ["--add-data", f"{ROOT / 'UPDATES.md'}{os.pathsep}."]
     for module in MODULES:
         command += ["--hidden-import", module]
     command += ["--hidden-import", "PIL.ImageTk", ROOT / "windows/windows_start.py"]

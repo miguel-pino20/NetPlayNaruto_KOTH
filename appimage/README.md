@@ -45,8 +45,11 @@ APPIMAGELAUNCHER_DISABLE=1 ./UN5-Netplay-x86_64.AppImage
 ```
 
 No se necesita Python instalado, un entorno virtual, pip ni los `.sh` externos.
-El AppImage no instala paquetes ni descarga código al abrirse. Para actualizar
-el launcher, se entrega un AppImage nuevo. No incluye BIOS, juegos, sesiones ni
+El AppImage no instala paquetes del sistema. Al abrirse, comprueba las releases
+de GitHub y descarga una versión posterior si está disponible, verificándola
+antes de reemplazar el archivo y reiniciar el launcher.
+Consulta [actualizaciones automáticas](../UPDATES.md) para publicar nuevas versiones.
+No incluye BIOS, juegos, sesiones ni
 configuración personal del equipo que lo construye.
 
 ## Construcción

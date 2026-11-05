@@ -9,6 +9,20 @@ import appimage_start as start
 
 
 class AppImageStartupTests(unittest.TestCase):
+    def setUp(self):
+        updater = patch.object(start, "check_for_updates_on_startup", return_value=False)
+        updater.start()
+        self.addCleanup(updater.stop)
+
+    def test_update_restart_does_not_open_pcsx2_or_old_launcher(self):
+        with patch.object(start.sys, "argv", ["AppRun"]), \
+                patch.object(start, "check_for_updates_on_startup", return_value=True), \
+                patch.object(start, "check_flatpak") as preflight, \
+                patch.object(start.subprocess, "Popen") as spawn:
+            self.assertEqual(start.main(), 0)
+            preflight.assert_not_called()
+            spawn.assert_not_called()
+
     def test_missing_flatpak_explains_requirement(self):
         with patch.object(start.shutil, "which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "No se encontró Flatpak"):

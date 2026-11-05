@@ -9,6 +9,8 @@ import sys
 import tempfile
 import traceback
 
+from updater import check_for_updates_on_startup, confirm_startup
+
 PROJECT = Path(__file__).resolve().parent
 FLATPAK_ID = "net.pcsx2.PCSX2"
 
@@ -54,8 +56,14 @@ def self_test():
 
 
 def main():
+    if sys.argv[1:] == ["--version"]:
+        from release_info import VERSION
+        print(f"UN5 Netplay {VERSION}")
+        return 0
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
+    if check_for_updates_on_startup():
+        return 0
     try:
         check_flatpak()
         if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
@@ -83,7 +91,9 @@ def main():
             if code not in (0, None):
                 raise RuntimeError(f"No se pudo abrir PCSX2. Revisa el registro:\n{logs / 'pcsx2.log'}")
             from launcher import Launcher
-            Launcher().mainloop()
+            app = Launcher()
+            confirm_startup()
+            app.mainloop()
             return 0
         except Exception as error:
             traceback.print_exc()

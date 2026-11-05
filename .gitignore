@@ -75,6 +75,7 @@ temp_build/
 *.exe.sha256
 *.msi
 *.whl
+.un5-update-*/
 
 # ---- Editors / OS ----
 .vscode/

@@ -24,6 +24,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from release_info import VERSION
+
 try:
     from PIL import Image, ImageDraw, ImageTk
 except ImportError:                                       # sem Pillow: a lista de salas fica sem avatares
@@ -63,8 +65,17 @@ def make_avatar(png):
 # ======================================================================================================================
 class Launcher(tk.Tk):
     def __init__(self):
-        super().__init__()
-        self.title("UN5 Netplay")
+        super().__init__(className="UN5Netplay")
+        self.title(f"UN5 Netplay · {VERSION}")
+        icon = Path(__file__).with_name("un5-netplay.png")
+        if not icon.is_file():
+            icon = Path(__file__).parent / "appimage" / "un5-netplay.png"
+        if icon.is_file():
+            self._app_icon = tk.PhotoImage(file=str(icon))
+            self.iconphoto(True, self._app_icon)
+        windows_icon = Path(__file__).with_name("un5-netplay.ico")
+        if os.name == "nt" and windows_icon.is_file():
+            self.iconbitmap(default=str(windows_icon))
         self.geometry("1120x740")
         self.minsize(980, 660)
         self.configure(bg=BG)

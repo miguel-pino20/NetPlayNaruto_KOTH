@@ -73,6 +73,8 @@ def run_gui(smoke_test=False):
         try:
             from launcher import Launcher
             app = Launcher()
+            from updater import confirm_startup
+            confirm_startup()
             if smoke_test:
                 app.after(800, app.destroy)
             app.mainloop()
@@ -94,12 +96,22 @@ def main(arguments=None):
     os.environ["PYTHONUNBUFFERED"] = "1"
     os.environ["PYTHONIOENCODING"] = "utf-8"
     os.environ.setdefault("TEMP", tempfile.gettempdir())
+    if args == ["--version"]:
+        from release_info import VERSION
+        print(f"UN5 Netplay {VERSION}", flush=True)
+        return 0
     if args == ["--self-test"]:
         return self_test()
     if args == ["--smoke-test-gui"]:
         return run_gui(smoke_test=True)
+    if len(args) == 2 and args[0] == "--apply-update":
+        from updater import apply_windows_update
+        return apply_windows_update(Path(args[1]))
     if args:
         return run_worker(args)
+    from updater import check_for_updates_on_startup
+    if check_for_updates_on_startup():
+        return 0
     return run_gui()
 
 

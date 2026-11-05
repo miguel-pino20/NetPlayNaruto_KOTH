@@ -1,5 +1,14 @@
 # UN5 Netplay Launcher
 
+Los compilados comprueban las releases de GitHub al abrirse y se actualizan
+automáticamente si hay una versión posterior para su plataforma.
+La versión y el repositorio se configuran en `release_info.py`.
+Consulta [cómo publicar actualizaciones](UPDATES.md).
+
+Para compilar Linux y Windows desde Linux con el Wine preparado del proyecto,
+ejecuta `./build.sh`. También admite `./build.sh linux` y `./build.sh windows`.
+Lee la versión de `release_info.py` y genera los paquetes y sus SHA256 en `dist/`.
+
 ## Windows: un solo ejecutable
 
 El paquete `dist/UN5-Netplay-Windows-x64.exe` incluye el launcher, Python y sus

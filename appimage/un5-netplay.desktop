@@ -6,3 +6,4 @@ Exec=AppRun
 Icon=un5-netplay
 Terminal=false
 Categories=Game;Emulator;
+StartupWMClass=Un5netplay

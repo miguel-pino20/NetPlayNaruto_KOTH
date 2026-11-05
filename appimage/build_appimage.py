@@ -82,10 +82,10 @@ def main():
     # Include source files, never a virtualenv, account/session data, BIOS or games.
     modules = ("appdata core_link discord_auth hill i18n koth_client launcher launcher_account "
                "launcher_avatar launcher_core launcher_koth launcher_theme lockstep netlink netplay "
-               "node pine rooms simgame spectator statesync wire zerotier_networks").split()
+               "node pine release_info rooms simgame spectator statesync updater wire zerotier_networks").split()
     for module in modules:
         shutil.copy2(ROOT / f"{module}.py", project / f"{module}.py")
-    for name in ("2 - PCSX2 Flatpak.sh", "symbols_un6.json", "README.md"):
+    for name in ("2 - PCSX2 Flatpak.sh", "symbols_un6.json", "README.md", "UPDATES.md"):
         shutil.copy2(ROOT / name, project / name)
     shutil.copy2(ROOT / "appimage/appimage_start.py", project / "appimage_start.py")
     (project / "appimage").mkdir()
@@ -93,8 +93,27 @@ def main():
     # Replace only the root entry points; preserve the upstream Python wrapper.
     for path in (*appdir.glob("*.desktop"), appdir / "AppRun", appdir / ".DirIcon", appdir / "python.png"):
         path.unlink(missing_ok=True)
-    for name in ("AppRun", "un5-netplay.desktop", "un5-netplay.png"):
+    for name in ("AppRun", "un5-netplay.desktop"):
         shutil.copy2(ROOT / "appimage" / name, appdir / name)
+    # Desktop integrators copy themed icons from this directory, not just .DirIcon.
+    # Pillow saves conventional 8-bit RGBA PNGs for compatibility with icon loaders.
+    run(python, "-c", "\n".join([
+        "from pathlib import Path",
+        "from PIL import Image",
+        "import sys",
+        "source = Image.open(sys.argv[1]).convert('RGBA')",
+        "root = Path(sys.argv[2])",
+        "for size in (16, 24, 32, 48, 64, 128, 256):",
+        "    path = root / f'usr/share/icons/hicolor/{size}x{size}/apps/un5-netplay.png'",
+        "    path.parent.mkdir(parents=True, exist_ok=True)",
+        "    source.resize((size, size), Image.Resampling.LANCZOS).save(path)",
+    ]), ROOT / "appimage/un5-netplay.png", appdir, env=env)
+    icon = appdir / "usr/share/icons/hicolor/256x256/apps/un5-netplay.png"
+    shutil.copy2(icon, appdir / "un5-netplay.png")
+    shutil.copy2(icon, project / "un5-netplay.png")
+    applications = appdir / "usr/share/applications"
+    applications.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "appimage/un5-netplay.desktop", applications / "un5-netplay.desktop")
     (appdir / "AppRun").chmod(0o755)
     (appdir / ".DirIcon").symlink_to("un5-netplay.png")
     (project / "BUILD-SOURCES.txt").write_text("\n".join(

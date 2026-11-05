@@ -12,9 +12,11 @@ y conectado a la red. Los datos de usuario y el registro `launcher.log` se guard
 en `%APPDATA%\UN5 Netplay`. No se incluyen cuentas, BIOS, juegos ni save states
 personales del equipo que construye el ejecutable.
 
-El programa no instala paquetes ni descarga código al abrirse. Las descargas de
-estados y símbolos del servidor de netplay conservan su funcionamiento habitual.
-Para actualizar el launcher, se distribuye un `.exe` nuevo.
+El programa no instala paquetes del sistema. Al abrirse, comprueba las releases
+de GitHub y descarga una versión posterior si está disponible. Verifica la
+descarga, cierra la versión anterior, reemplaza el `.exe` y reinicia el launcher.
+Las descargas de estados y símbolos del servidor de netplay conservan su
+funcionamiento habitual. Consulta [actualizaciones automáticas](../UPDATES.md).
 
 ## Construir en Windows
 
