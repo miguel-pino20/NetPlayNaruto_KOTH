@@ -356,3 +356,7 @@ pérdida y reordenamiento de datagramas simulados, autoría de cada mando, hashe
 contrato del cliente. La suite de Django `home.test_multiplayer` verifica
 asignación, permisos, compatibilidad, caducidad y cierre. Estas pruebas no
 establecen compatibilidad real de D.O.N ni sustituyen una prueba con PCSX2.
+
+## Puentes D.O.N y acceso por código corto
+
+La actualización de salas con caché persistente, códigos de seis caracteres, acceso por IP del host y reenvío entre jugadores está documentada en [DON-BRIDGE.md](DON-BRIDGE.md). Requiere migración Django `0015_don_short_codes_and_bridge` y actualizar todos los launchers antes de crear una sala nueva. Validación entre equipos pendiente; no se ejecutaron pruebas ni se generaron builds.

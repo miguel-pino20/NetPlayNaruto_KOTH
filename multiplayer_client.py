@@ -11,6 +11,7 @@ import os
 import time
 from pathlib import Path
 from uuid import UUID
+from urllib.parse import urlencode
 
 from discord_auth import AccountError, api_call
 from hill import validate_url
@@ -57,7 +58,39 @@ class DonRoomClient(RoomClient):
     def create(self, manifest, capacity, delay=3):
         if capacity not in (2, 3, 4):
             raise ValueError('Selecciona 2, 3 o 4 jugadores.')
-        return api_call(self.url, 'POST', self.base_path, {'capacity': capacity, 'delay': delay}, token=self.ticket)
+        return api_call(self.url, 'POST', self.base_path, {'capacity': capacity, 'delay': delay,
+                         'network_protocol': 'don-bridge-v1'}, token=self.ticket)
+
+    @staticmethod
+    def validate_reference(reference):
+        reference = reference.strip()
+        try:
+            return str(UUID(reference))
+        except ValueError:
+            pass
+        if len(reference) == 6 and reference.isascii() and reference.isalnum():
+            return reference.upper()
+        parts = reference.split(':')
+        try:
+            ipaddress.IPv4Address(parts[0])
+            if len(parts) > 2 or (len(parts) == 2 and not 1024 <= int(parts[1]) <= 65533):
+                raise ValueError
+        except ValueError:
+            raise ValueError('Introduce el código de 6 caracteres o la IPv4 de ZeroTier del host.') from None
+        return reference
+
+    def resolve_room(self, reference):
+        reference = self.validate_reference(reference)
+        try:
+            return {'id': str(UUID(reference))}
+        except ValueError:
+            return api_call(self.url, 'GET', '/api/netplay/don/resolve/?'+urlencode({'q': reference}),
+                            token=self.ticket)
+
+    def request(self, room_id, action=None, body=None):
+        if action in ('join', 'sync'):
+            body = {**(body or {}), 'network_protocol': 'don-bridge-v1'}
+        return super().request(room_id, action, body)
 
 
 def watch(client, room_id, manifest, address, port=47400, ready=False):
@@ -129,10 +162,22 @@ def make_node(snapshot, core, *, experimental_don=False):
     own, host = players[slot], players[0]
     # Cover every compatibility field, not just the savestate, in the wire tag.
     tag = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:16]
-    node = Node(core, own['member'], slot, own['port'], list(range(capacity)),
-                bind=own['address'], host=None if slot == 0 else (host['address'], host['port']),
-                delay=snapshot['delay'], tag=tag, epoch=epoch, first_capture=1,
-                name=own['name'], roster_locked=True, generic=True)
+    bridge = None
+    if snapshot.get('network_protocol') == 'don-bridge-v1':
+        if not experimental:
+            raise ValueError('El puente está disponible únicamente para D.O.N experimental.')
+        from don_routing import BridgeSocket
+        bridge = BridgeSocket(snapshot)
+    try:
+        node = Node(core, own['member'], slot, own['port'], list(range(capacity)),
+                    bind=own['address'], host=None if slot == 0 else (host['address'], host['port']),
+                    delay=snapshot['delay'], tag=tag, epoch=epoch, first_capture=1,
+                    name=own['name'], roster_locked=True, generic=True, sock=bridge)
+    except BaseException:
+        if bridge is not None:
+            bridge.close()
+        raise
+    node.bridge = bridge
     node.sel_sync = False                         # Naruto's selection packet is game-specific
     if slot == 0:
         for player in players[1:]:

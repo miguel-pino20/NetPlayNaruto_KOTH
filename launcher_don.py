@@ -23,7 +23,7 @@ class DonRoomsDialog(tk.Toplevel):
         self.title('D.O.N · salas online experimentales')
         self.transient(app)
         self.resizable(True, True)
-        self.minsize(800, 690)
+        self.minsize(800, 510)
         # Modal within this launcher: the Naruto path must not take PINE while
         # the D.O.N session owns it. All network and PINE work stays off Tk.
         self.grab_set()
@@ -41,23 +41,26 @@ class DonRoomsDialog(tk.Toplevel):
             if isinstance(saved.get(key), str):
                 initial[key] = saved[key]
         self.v = {k: tk.StringVar(value=value) for k, value in initial.items()}
-        self.status = tk.StringVar(value='Crea una sala o introduce el código de la sala del host.')
+        self.status = tk.StringVar(value='Crea una sala o únete con el código de 6 caracteres o la IP ZeroTier del host.')
         box = ttk.Frame(self, padding=18)
         box.pack(fill='both', expand=True)
         ttk.Label(box, text='Battle Stadium D.O.N · Online experimental', font=('', 15, 'bold')).pack(anchor='w')
-        ttk.Label(box, text='Usa D.O.N abierto en PCSX2. Django descarga el estado inicial; ZeroTier conecta los mandos.\n'
+        ttk.Label(box, text='Usa D.O.N abierto en PCSX2. Django comparte el estado inicial; ZeroTier conecta los mandos.\n'
                             'La sincronía del combate todavía no está certificada.', wraplength=760).pack(anchor='w', pady=(5, 12))
-        self.tabs = ttk.Notebook(box)
-        self.tabs.pack(fill='x', pady=(0, 10))
-        main = ttk.Frame(self.tabs, padding=10)
-        configuration = ttk.Frame(self.tabs, padding=10)
-        self.tabs.add(main, text='Crear sala / Unirme')
-        self.tabs.add(configuration, text='PCSX2 y administración')
+        main = ttk.Frame(box, padding=10)
+        main.pack(fill='x', pady=(0, 10))
+        configuration = ttk.Frame(box, padding=10)
+        def toggle_options():
+            if configuration.winfo_manager():
+                configuration.pack_forget()
+            else:
+                configuration.pack(fill='x', after=main, pady=(0, 8))
+        ttk.Button(main, text='Opciones de PCSX2 / administración…', command=toggle_options).pack(anchor='e')
         role = ttk.Frame(main)
         role.pack(fill='x')
         for text, value in [('Host · crear sala', 'host'), ('Invitado · unirme', 'guest')]:
             ttk.Radiobutton(role, text=text, variable=self.v['role'], value=value).pack(side='left', padx=(0, 24))
-        server = ttk.Frame(main)
+        server = ttk.Frame(configuration)
         server.pack(fill='x', pady=(10, 4))
         ttk.Label(server, text='Servidor Django').pack(side='left', padx=(0, 10))
         ttk.Entry(server, textvariable=self.v['url']).pack(side='left', fill='x', expand=True)
@@ -66,7 +69,7 @@ class DonRoomsDialog(tk.Toplevel):
         options.pack(fill='x', pady=8)
         ttk.Label(options, text='Jugadores (host)').pack(side='left')
         ttk.Combobox(options, textvariable=self.v['players'], values=('2', '3', '4'), state='readonly', width=4).pack(side='left', padx=(8, 24))
-        ttk.Label(options, text='Código de sala').pack(side='left')
+        ttk.Label(options, text='Código / IP del host').pack(side='left')
         ttk.Entry(options, textvariable=self.v['room_id']).pack(side='left', padx=(8, 0), fill='x', expand=True)
         self.get_address = app._zerotier_picker(main, app.v['hill_address'].get() or app.v['zerotier_address'].get())
         settings = ttk.LabelFrame(configuration, text='Instancia de PCSX2 abierta', padding=8)
@@ -96,8 +99,8 @@ class DonRoomsDialog(tk.Toplevel):
         self.end = ttk.Button(actions, text='Detener / Salir', state='disabled', command=self.stop)
         self.end.pack(side='left')
         ttk.Button(actions, text='Copiar código', command=self.copy_code).pack(side='right')
-        self.roster = ttk.Treeview(box, columns=('player', 'address', 'state'), show='headings', height=4)
-        for key, label, width in [('player', 'Puesto y jugador', 220), ('address', 'Dirección ZeroTier', 200), ('state', 'Estado', 160)]:
+        self.roster = ttk.Treeview(box, columns=('player', 'address', 'state', 'route'), show='headings', height=4)
+        for key, label, width in [('player', 'Puesto y jugador', 220), ('address', 'Dirección ZeroTier', 200), ('state', 'Estado', 125), ('route', 'Ruta estimada / RTT', 220)]:
             self.roster.heading(key, text=label)
             self.roster.column(key, width=width)
         self.roster.pack(fill='both', expand=True)
@@ -143,8 +146,7 @@ class DonRoomsDialog(tk.Toplevel):
             if not Path(config['state_dir']).is_dir():
                 raise ValueError('Selecciona la carpeta de estados de la instancia abierta de PCSX2.')
             if config['role'] == 'guest':
-                from uuid import UUID
-                UUID(config['room_id'])
+                config['room_id'] = DonRoomClient.validate_reference(config['room_id'])
             write_json(DATA_DIR/'don-online.json', {k: str(config[k]) for k in self.v})
         except (ValueError, OSError) as error:
             self.status.set(str(error))
@@ -156,6 +158,7 @@ class DonRoomsDialog(tk.Toplevel):
         self.prepare.configure(state='disabled')
         self.publish.configure(state='disabled')
         self.end.configure(state='normal')
+        self.roster.delete(*self.roster.get_children())
         self.status.set('Conectando tu cuenta y preparando la sala libre…')
         self.pending_stop = threading.Event()
         def work():
@@ -262,15 +265,23 @@ class DonRoomsDialog(tk.Toplevel):
             except queue.Empty:
                 break
             if kind == 'room':
-                self.v['room_id'].set(value['id'])
+                self.v['room_id'].set(value.get('code', value['id']))
                 self.v['players'].set(str(value['capacity']))
+                previous_routes = {iid: self.roster.set(iid, 'route') for iid in self.roster.get_children()}
                 self.roster.delete(*self.roster.get_children())
                 for player in value['players']:
-                    self.roster.insert('', 'end', values=(f"P{player['slot']+1} · {player['name']}",
-                        player['address'] or '—', 'Listo' if player['ready'] else 'Preparando'))
+                    self.roster.insert('', 'end', iid=str(player['slot']), values=(f"P{player['slot']+1} · {player['name']}",
+                        player['address'] or '—', 'Estado listo' if player['ready'] else 'Preparando',
+                        'Local' if player['slot'] == value['slot'] else previous_routes.get(str(player['slot']), 'Esperando conexión UDP')))
                 self.play.configure(state='normal' if self.busy and value['slot'] == 0 and value['can_start'] else 'disabled')
             elif kind == 'progress':
-                self.status.set(f"Online experimental · fotograma {value['frame']} · RTT {value['rtt']} ms · "
+                for slot, route in value.get('routes', {}).items():
+                    iid = str(slot)
+                    if self.roster.exists(iid):
+                        path = ' → '.join(f'P{s+1}' for s in route['path'])
+                        latency = f"{route['rtt']} ms" if route['rtt'] is not None else 'midiendo'
+                        self.roster.set(iid, 'route', path+' · '+latency)
+                self.status.set(f"{'Mandos conectados' if value.get('connected') else 'Conectando mandos'} · fotograma {value['frame']} · RTT {value['rtt']} ms · "
                                 'verificación de entradas; sincronía de combate no certificada.')
             elif kind == 'done':
                 self.busy, self.session = False, None

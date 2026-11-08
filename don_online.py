@@ -75,6 +75,65 @@ def unpack_package(package, manifest, destination):
         return state, metadata
 
 
+def obtain_profile(client, room, state_dir, temporary, emit):
+    """Reuse a hash-verified PCSX2 state; only fetch missing artifacts."""
+    manifest = room['manifest']
+    directory = Path(state_dir)
+    cached = directory/f"DON-inicial-{len(manifest['pads'])}p-{manifest['state_sha256'][:16]}.p2s"
+    metadata_dir = directory/'DON-netplay'
+    symbols_file = metadata_dir/(manifest['symbols_sha256']+'.json')
+    symbols = None
+    try:
+        if symbols_file.stat().st_size <= 65536:
+            symbols = symbols_file.read_bytes()
+    except OSError:
+        pass
+    if symbols is not None and hashlib.sha256(symbols).hexdigest() != manifest['symbols_sha256']:
+        symbols = None
+    cached_state = cached.is_file() and sha256_file(cached) == manifest['state_sha256']
+    if cached_state and symbols is None:
+        request = urllib.request.Request(client.url.rstrip('/')+client.base_path+room['id']+'/symbols/',
+                    headers={'Authorization': 'Bearer '+client.ticket})
+        try:
+            with urllib.request.urlopen(request, timeout=30, context=ssl_context()) as response:
+                symbols = response.read(65537)
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise AccountError('No se pudieron obtener los símbolos del estado inicial.', error.code) from None
+    if cached_state and symbols is not None:
+        if len(symbols) > 65536 or hashlib.sha256(symbols).hexdigest() != manifest['symbols_sha256']:
+            raise ValueError('Los símbolos del estado local no coinciden con Django.')
+        metadata = json.loads(symbols)
+        if (manifest['game'] != 'don' or manifest['adapter'] != DonCore.adapter_id or
+                metadata['adapter'] != manifest['adapter'] or metadata['source_crc'] != CRC or
+                metadata['source_elf_sha256'] != ELF_SHA256 or metadata['boot_crc'] != manifest['crc']):
+            raise ValueError('El perfil local no corresponde al adaptador D.O.N.')
+        players = len(manifest['pads'])
+        if players not in (2, 3, 4) or manifest['pads'] != [{'port': 1, 'slot': n+1} for n in range(players)]:
+            raise ValueError('Mapa de mandos incompatible.')
+        validate_state(cached, metadata, players)
+        emit('log', 'Reutilizando el estado inicial guardado en PCSX2; sin descargar el paquete.')
+        state = cached
+    else:
+        emit('log', 'Descargando el estado inicial desde Django…')
+        package = Path(temporary)/'initial.zip'
+        state_request(client, room['id'], destination=package,
+                      expected_sha=room['package_sha256'], expected_size=room['package_size'])
+        state, metadata = unpack_package(package, manifest, Path(temporary)/'profile')
+        with zipfile.ZipFile(package) as archive:
+            symbols = archive.read('symbols.json')
+    metadata_dir.mkdir(exist_ok=True)
+    # Identical writes are harmless; replace avoids a partial metadata cache.
+    with tempfile.NamedTemporaryFile(dir=metadata_dir, delete=False) as output:
+        staged = Path(output.name)
+        output.write(symbols)
+    try:
+        staged.replace(symbols_file)
+    finally:
+        staged.unlink(missing_ok=True)
+    return state, metadata
+
+
 def state_request(client, room_id, *, upload=None, destination=None, expected_sha=None, expected_size=None):
     """Use the fixed authenticated API route; never trust a remote download URL."""
     room_id = str(UUID(str(room_id)))
@@ -261,22 +320,21 @@ class OnlineSession:
                 return
             with tempfile.TemporaryDirectory(prefix='don-online-', dir=self.config['cache_dir']) as folder:
                 folder = Path(folder)
-                package = folder/'initial.zip'
                 pine = Pine(self.config['pine_slot'], timeout=3).connect()
                 if not same_serial(pine.game_id(), SERIAL) or pine.status() != 0:
                     raise ValueError('Abre D.O.N en PCSX2 y reanúdalo antes de conectar.')
                 if owner:
                     room = self.client.create(None, self.config['players'], self.config.get('delay', 3))
                 else:
-                    room = self.client.request(self.config['room_id'], 'join')
+                    resolved = self.client.resolve_room(self.config['room_id'])
+                    room = self.client.request(resolved['id'], 'join')
                 self.room_id, manifest = room['id'], room['manifest']
                 self.emit('room', room)
-                self.emit('log', 'Descargando el estado inicial desde Django…')
-                state_request(self.client, self.room_id, destination=package,
-                              expected_sha=room['package_sha256'], expected_size=room['package_size'])
+                if room.get('network_protocol') != 'don-bridge-v1':
+                    raise ValueError('Actualiza Django y todos los launchers para crear una sala con puentes.')
+                state, metadata = obtain_profile(self.client, room, self.config['state_dir'], folder, self.emit)
                 if self.cancel.is_set():
                     return
-                state, metadata = unpack_package(package, manifest, folder/'profile')
                 self.sync(manifest, False)
                 self.emit('log', 'Cargando el estado compartido en PCSX2…')
                 core = load_initial(pine, metadata, manifest, state, self.config['state_dir'])
@@ -300,9 +358,14 @@ class OnlineSession:
                         if not room['ready']:
                             raise ValueError('Un participante dejó de estar conectado o listo.')
                         if node is None:
+                            locked_roster = [(p['player_id'], p['slot'], p['address'], p['port']) for p in room['players']]
                             node = make_node(room, core, experimental_don=True)
                             last_progress = time.monotonic()
                             self.emit('log', 'Conectando los mandos por ZeroTier…')
+                        if locked_roster != [(p['player_id'], p['slot'], p['address'], p['port']) for p in room['players']]:
+                            raise ValueError('Cambió la dirección de un mando; crea una sala nueva.')
+                        if node.bridge is not None:
+                            node.bridge.tick()
                         node.pump()
                         if node.started and not released and min(node.published.values()) >= 1:
                             core.release()
@@ -318,9 +381,18 @@ class OnlineSession:
                         if frame != previous_frame:
                             previous_frame, last_progress = frame, time.monotonic()
                         if time.monotonic()-last_progress > 30:
-                            raise ValueError('No hubo avance de mandos durante 30 segundos; partida detenida.')
+                            if not node.started or any(not p.hello or not p.confirmed for p in node.peers.values()):
+                                missing = [f'P{p.slot+1} ({p.addr[0]}:{p.addr[1]})'
+                                           for p in node.peers.values() if not p.hello or not p.confirmed]
+                                raise ValueError('No se completó la conexión UDP de mandos: '+
+                                    (', '.join(missing) or 'esperando confirmación de inicio')+
+                                    '. Comprueba ZeroTier y el acceso UDP en los equipos indicados.')
+                            raise ValueError(f'Sin avance durante 30 s: PCSX2 estado {pine.status()}, '
+                                f"hold={core.get('hold')}, mandos pendientes={core.get('missing'):04b}, "
+                                f'fotograma={frame}.')
                         if time.monotonic() >= next_log:
-                            self.emit('progress', {'frame': frame, 'checked': node.checked, 'rtt': node.rtt_ms()})
+                            self.emit('progress', {'frame': frame, 'checked': node.checked, 'rtt': node.rtt_ms(),
+                                'routes': node.bridge.route_stats() if node.bridge else {}, 'connected': node.started})
                             next_log = time.monotonic()+2
                     self.cancel.wait(0.002 if node else 0.05)
                 if self.api_error:
