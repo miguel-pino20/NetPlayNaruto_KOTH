@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from build_don import BASE, RESERVE, SHARED_SIZE
+from don_adapter import ELF_SHA256
 from don_core import prepare_state
 from don_profiles import create_profile, select_profile, index_profiles
 
@@ -23,7 +24,7 @@ class DonProfileTests(unittest.TestCase):
         struct.pack_into('<16I', self.memory, self.base, *header)
         self.meta = {'schema': 1, 'adapter': 'don-experimental-input-v1', 'experimental': True,
                      'online_verified': False, 'hash_kind': 'inputs-only', 'source_serial': 'SLPS-25675',
-                     'source_crc': '82EA02B7', 'source_elf_sha256': 'a'*64, 'boot_crc': '12345678',
+                     'source_crc': '82EA02B7', 'source_elf_sha256': ELF_SHA256, 'boot_crc': '12345678',
                      'boot_sha256': 'b'*64, 'disc_sha256': 'c'*64,
                      'payload_base': BASE, 'reserve_size': RESERVE, 'shared_base': self.base,
                      'shared_size': SHARED_SIZE, 'code_size': 8,

@@ -50,3 +50,18 @@ No se ejecutaron pruebas ni builds para este cambio. Para la comprobación entre
 5. Repetir con 2 y 4 jugadores. Si hay una espera, copiar el diagnóstico con puesto/IP o `hold`, máscara de mandos pendientes y fotograma.
 
 D.O.N sigue siendo experimental: los hashes actuales comprueban entradas; la sincronía del estado de combate todavía no está certificada.
+
+## Archivos de diagnóstico por intento
+
+Cada conexión nueva crea automáticamente `logs/don/DON-FECHA-ID.jsonl` dentro de la carpeta de datos de UN5 Netplay. El botón **Registros…** en la ventana de D.O.N abre esa carpeta; la consola también indica la ruta exacta. Se registran incluso los errores de autenticación o de conexión inicial a PINE.
+
+- Linux: `~/.config/UN5 Netplay/logs/don/` (o la ubicación configurada mediante `XDG_CONFIG_HOME`).
+- Windows: `%APPDATA%\UN5 Netplay\logs\don\`.
+
+El archivo contiene una línea JSON por evento: hora UTC, segundos desde el inicio, versión y huellas del código, configuración local relevante, sala y puestos, progreso, rutas, ACK y tiempo sin paquetes por jugador. Al atascarse incluye los contadores y etiquetas del bloque de mandos. Las excepciones guardan su traceback; también se registra si se pudo restaurar el control local.
+
+No se guardan tokens de acceso ni la sesión de Discord. Los archivos incluyen nombres de jugadores, direcciones ZeroTier y rutas locales para poder relacionar los equipos.
+
+Para investigar una desconexión, actualizar por Git, cerrar y volver a abrir los tres launchers, reproducir una vez y enviar el archivo más reciente de **cada equipo de esa misma partida**. Si se crearon archivos `.jsonl.1` o `.jsonl.2`, incluirlos también: son las partes anteriores del mismo registro. Cada parte tiene un límite de 5 MiB y se conservan hasta dos partes anteriores por intento. Los archivos de intentos distintos permanecen disponibles y se pueden borrar manualmente después de analizarlos.
+
+Esta instrumentación registra el fallo; no demuestra por sí sola que la causa del bloqueo haya quedado corregida. No se ejecutaron pruebas ni builds al añadirla.

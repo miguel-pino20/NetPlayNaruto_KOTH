@@ -74,6 +74,7 @@ class Peer:
         self.confirmed = False               # we got a DATA from it: it knows we are here
         self.last_t = 0                      # newest clock value received from this peer
         self.last_rx = 0                     # when (our clock) we received it
+        self.frame = None                    # last capture frontier announced by this peer
         self.rtt = None
         self.hash_ack = 0                    # next hash frame this peer wants from us
         self.last_tx = 0
@@ -150,6 +151,7 @@ class Node:
         self._watch_last = None
         self.last_hello = 0.0
         self.closed_reason = None
+        self.closed_member = None
         self.sel_sync = True                                 # host-authoritative selection (--no-force-sel turns it off)
         self.replay = None                                  # optional read-only spectator archive; never a peer
         self.sel_seq = None
@@ -339,6 +341,7 @@ class Node:
                 self._on_data(peer, m)
             elif m['kind'] == wire.BYE:
                 self.closed_reason = m['reason']
+                self.closed_member = peer.member
 
     def _clock(self, peer, m):
         now = now_ms()
@@ -350,6 +353,7 @@ class Node:
 
     def _on_data(self, peer, m):
         peer.confirmed = True
+        peer.frame = max(peer.frame or 0, m['frame'])
         peer.ack = [max(a, b) for a, b in zip(peer.ack, m['acks'])]
         for slot, first, items in m['blocks']:
             if self.roster_locked and self.is_host and slot != peer.slot:

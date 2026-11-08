@@ -8,32 +8,39 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 from appdata import DATA_DIR, write_json
-from don_online import OnlineSession, manifest_for, make_package, publish_profile
+from don_online import OnlineSession, manifest_for, shared_profile_for, make_package, publish_profile
+from don_diagnostics import SessionLog
 from don_setup import DonSetupDialog, latest_state_directory
-from multiplayer_client import DonRoomClient
+from multiplayer_client import DonRoomClient, DigimonRoomClient
+from game_adapters import get_game
 
 ROOT = Path(__file__).resolve().parent
 
 
 class DonRoomsDialog(tk.Toplevel):
-    def __init__(self, app):
+    def __init__(self, app, game="don"):
+        self.game = get_game(game)
+        self.client_class = DonRoomClient if self.game.slug == "don" else DigimonRoomClient
         super().__init__(app)
         self.app, self.session, self.busy, self.closing = app, None, False, False
         self.messages = queue.Queue()
-        self.title('D.O.N · salas online experimentales')
+        self.title(self.game.short+' · salas online experimentales')
         self.transient(app)
         self.resizable(True, True)
         self.minsize(800, 510)
         # Modal within this launcher: the Naruto path must not take PINE while
         # the D.O.N session owns it. All network and PINE work stays off Tk.
         self.grab_set()
+        self.settings_file = DATA_DIR/(self.game.slug+'-online.json')
         saved = {}
         try:
-            saved = json.loads((DATA_DIR/'don-online.json').read_text())
+            saved = json.loads(self.settings_file.read_text())
         except (OSError, ValueError):
             pass
-        source_profiles = ROOT/'build/don/profiles'
-        self.publish_root = source_profiles if source_profiles.is_dir() else DATA_DIR/'don/profiles'
+        source_profiles = ROOT/'build/don/profiles' if self.game.slug == 'don' else ROOT/'build/digimon/adapter-v1/profiles'
+        self.publish_root = source_profiles if source_profiles.is_dir() or (source_profiles.parent/'adapter.json').is_file() else DATA_DIR/(self.game.slug+'/adapter-v1/profiles')
+        if isinstance(saved.get('profiles_root'), str):
+            self.publish_root = Path(saved['profiles_root'])
         initial = {'role': 'host', 'players': '2', 'room_id': '',
                    'url': app.v['hill_url'].get() or 'https://narutimateonline.sytes.net',
                    'state_dir': app.cfg().get('state_dir') or latest_state_directory(), 'pine_slot': '28011', 'port': '47400'}
@@ -44,8 +51,8 @@ class DonRoomsDialog(tk.Toplevel):
         self.status = tk.StringVar(value='Crea una sala o únete con el código de 6 caracteres o la IP ZeroTier del host.')
         box = ttk.Frame(self, padding=18)
         box.pack(fill='both', expand=True)
-        ttk.Label(box, text='Battle Stadium D.O.N · Online experimental', font=('', 15, 'bold')).pack(anchor='w')
-        ttk.Label(box, text='Usa D.O.N abierto en PCSX2. Django comparte el estado inicial; ZeroTier conecta los mandos.\n'
+        ttk.Label(box, text=self.game.title+' · Online experimental', font=('', 15, 'bold')).pack(anchor='w')
+        ttk.Label(box, text='Usa '+self.game.short+' abierto en PCSX2. Django comparte el estado inicial; ZeroTier conecta los mandos.\n'
                             'La sincronía del combate todavía no está certificada.', wraplength=760).pack(anchor='w', pady=(5, 12))
         main = ttk.Frame(box, padding=10)
         main.pack(fill='x', pady=(0, 10))
@@ -82,13 +89,17 @@ class DonRoomsDialog(tk.Toplevel):
             ttk.Entry(ports, textvariable=self.v[key], width=8).pack(side='left', padx=(0, 20))
         admin = ttk.LabelFrame(configuration, text='Administración de estados compartidos', padding=8)
         admin.pack(fill='x', pady=8)
+        if self.game.slug == 'digimon':
+            ttk.Button(admin, text='Preparar adaptador Digimon desde tu ISO…', command=self.prepare_adapter).pack(anchor='w', pady=4)
         self.prepare = ttk.Button(admin, text='Preparar otro estado inicial…', command=self.prepare_state)
         self.prepare.pack(anchor='w', pady=4)
-        self.publish = ttk.Button(admin, text='Publicar estados de 2, 3 y 4 jugadores en Django…', command=self.publish_states)
+        self.publish = ttk.Button(admin, text='Publicar estado común en Django…' if self.game.slug == 'digimon'
+                                  else 'Publicar estados preparados en Django…', command=self.publish_states)
         self.publish.pack(anchor='w', pady=4)
         ttk.Label(admin, text='Solo un administrador publica los perfiles una vez. Host e invitados los descargan automáticamente.',
                   wraplength=720).pack(anchor='w')
-        ttk.Label(settings, text='Abre la ISO, activa PINE y el Multitap del puerto 1. Los invitados descargan el perfil desde Django.',
+        multitap_hint = 'Multitap solo en puerto 2; usa 1A, 2A, 2B, 2C y desconecta 2D.' if self.game.slug == 'digimon' else 'Multitap en puerto 1.'
+        ttk.Label(settings, text='Abre la ISO y activa PINE. '+multitap_hint+' Los invitados descargan el perfil desde Django.',
                   wraplength=740).pack(anchor='w')
         actions = ttk.Frame(box)
         actions.pack(fill='x', pady=(0, 8))
@@ -99,6 +110,7 @@ class DonRoomsDialog(tk.Toplevel):
         self.end = ttk.Button(actions, text='Detener / Salir', state='disabled', command=self.stop)
         self.end.pack(side='left')
         ttk.Button(actions, text='Copiar código', command=self.copy_code).pack(side='right')
+        ttk.Button(actions, text='Registros…', command=self.open_logs).pack(side='right', padx=6)
         self.roster = ttk.Treeview(box, columns=('player', 'address', 'state', 'route'), show='headings', height=4)
         for key, label, width in [('player', 'Puesto y jugador', 220), ('address', 'Dirección ZeroTier', 200), ('state', 'Estado', 125), ('route', 'Ruta estimada / RTT', 220)]:
             self.roster.heading(key, text=label)
@@ -146,12 +158,13 @@ class DonRoomsDialog(tk.Toplevel):
             if not Path(config['state_dir']).is_dir():
                 raise ValueError('Selecciona la carpeta de estados de la instancia abierta de PCSX2.')
             if config['role'] == 'guest':
-                config['room_id'] = DonRoomClient.validate_reference(config['room_id'])
-            write_json(DATA_DIR/'don-online.json', {k: str(config[k]) for k in self.v})
+                config['room_id'] = self.client_class.validate_reference(config['room_id'])
+            write_json(self.settings_file, {**{k: str(config[k]) for k in self.v}, 'profiles_root': str(self.publish_root)})
         except (ValueError, OSError) as error:
             self.status.set(str(error))
             return
         config['cache_dir'] = str(DATA_DIR)
+        config['game'] = self.game.slug
         self.busy = True
         self.app._set_buttons(True)
         self.connect.configure(state='disabled')
@@ -162,26 +175,65 @@ class DonRoomsDialog(tk.Toplevel):
         self.status.set('Conectando tu cuenta y preparando la sala libre…')
         self.pending_stop = threading.Event()
         def work():
+            diagnostics = None
             try:
-                client = DonRoomClient.authenticate(config['url'], identity)
+                diagnostics = SessionLog(DATA_DIR, config)
+                diagnostics.protect(identity)
+                self.messages.put(('log', f'Archivo de diagnóstico: {diagnostics.path}'))
+                client = self.client_class.authenticate(config['url'], identity)
+                diagnostics.protect(client.ticket)
                 if self.pending_stop.is_set():
                     self.messages.put(('done', 'Conexión cancelada.'))
                     return
-                session = OnlineSession(client, config, self.messages)
+                session = OnlineSession(client, config, self.messages, diagnostics=diagnostics)
                 self.session = session
                 if self.pending_stop.is_set():
                     session.stop()
                 session.run()
             except Exception as error:
+                if diagnostics is not None:
+                    diagnostics.exception('authentication_or_startup')
                 self.messages.put(('error', str(error)))
                 self.messages.put(('done', 'No se pudo conectar la sala.'))
+            finally:
+                if diagnostics is not None:
+                    diagnostics.close()
+        threading.Thread(target=work, daemon=False).start()
+
+    def prepare_adapter(self):
+        if self.busy:
+            return
+        iso = filedialog.askopenfilename(parent=self, title='ISO Digimon USA del administrador',
+                                         filetypes=[('Imagen ISO', '*.iso')])
+        if not iso:
+            return
+        # This is an administrator preparation action. Ordinary host/guest
+        # connections never need to choose an ISO or compile a hook.
+        self.busy = True
+        self.app._set_buttons(True)
+        self.connect.configure(state='disabled')
+        self.prepare.configure(state='disabled')
+        self.publish.configure(state='disabled')
+        self.pending_stop = threading.Event()
+        self.status.set('Preparando el adaptador local; la ISO permanece intacta…')
+        def work():
+            try:
+                from build_digimon import build
+                from datetime import datetime
+                folder = DATA_DIR/'digimon'/('adapter-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
+                metadata = build(iso, folder)
+                self.messages.put(('adapter_prepared', {'boot': metadata['boot_path'], 'profiles': str(folder/'profiles')}))
+            except Exception as error:
+                self.messages.put(('error', str(error)))
+            finally:
+                self.messages.put(('done', 'Preparación del adaptador terminada.'))
         threading.Thread(target=work, daemon=False).start()
 
     def prepare_state(self):
         if self.busy:
             return
         profile_root = self.publish_root
-        child = DonSetupDialog(self, adapter_path=profile_root.parent/'adapter.json', profiles_dir=profile_root)
+        child = DonSetupDialog(self, adapter_path=profile_root.parent/'adapter.json', profiles_dir=profile_root, game=self.game.slug)
         child.port.set(self.v['pine_slot'].get())
         child.directory.set(self.v['state_dir'].get())
         child.wait_visibility()
@@ -209,15 +261,26 @@ class DonRoomsDialog(tk.Toplevel):
         self.status.set('Verificando la cuenta administradora y los perfiles…')
         def work():
             try:
-                client = DonRoomClient.authenticate(url, identity)
+                client = self.client_class.authenticate(url, identity)
                 if not client.can_publish:
                     raise ValueError('Solo la cuenta administradora puede publicar los estados iniciales.')
-                selected = {n: manifest_for(folder, n)[0] for n in (2, 3, 4)}
+                selected = {}
+                for n in (2, 3, 4):
+                    source_count = 4 if self.game.slug == 'digimon' else n
+                    if not list((Path(folder)/f'{source_count}p').glob('*/profile.json')):
+                        continue
+                    profile, manifest = (shared_profile_for(folder, n) if self.game.slug == 'digimon'
+                                         else manifest_for(folder, n))
+                    if manifest['game'] != self.game.game:
+                        raise ValueError('La carpeta contiene perfiles de otro juego.')
+                    selected[n] = (profile, manifest)
+                if not selected:
+                    raise ValueError('Captura al menos un estado inicial antes de publicar.')
                 with tempfile.TemporaryDirectory(prefix='don-publish-', dir=DATA_DIR) as temporary:
-                    for n, profile in selected.items():
+                    for n, (profile, manifest) in selected.items():
                         if self.pending_stop.is_set():
                             break
-                        package = make_package(profile, Path(temporary)/f'{n}p.zip')
+                        package = make_package(profile, Path(temporary)/f'{n}p.zip', manifest=manifest)
                         publish_profile(client, n, package)
                         self.messages.put(('log', f'Estado inicial de {n} jugadores publicado en Django.'))
             except Exception as error:
@@ -233,6 +296,20 @@ class DonRoomsDialog(tk.Toplevel):
     def copy_code(self):
         self.clipboard_clear()
         self.clipboard_append(self.v['room_id'].get())
+
+    def open_logs(self):
+        import os
+        import subprocess
+        import sys
+        directory = DATA_DIR/'logs'/self.game.slug
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            if os.name == 'nt':
+                os.startfile(str(directory))
+            else:
+                subprocess.Popen(['open' if sys.platform == 'darwin' else 'xdg-open', str(directory)])
+        except OSError as error:
+            self.status.set(f'Registros: {directory} · {error}')
 
     def stop(self):
         if self.busy:
@@ -264,7 +341,12 @@ class DonRoomsDialog(tk.Toplevel):
                 kind, value = self.messages.get_nowait()
             except queue.Empty:
                 break
-            if kind == 'room':
+            if kind == 'adapter_prepared':
+                self.publish_root = Path(value['profiles'])
+                write_json(self.settings_file, {**{k: v.get() for k, v in self.v.items()}, 'profiles_root': str(self.publish_root)})
+                self.status.set('Adaptador preparado. ELF: '+value['boot'])
+                self.app._log(self.game.short+': ELF para captura: '+value['boot'], 'info')
+            elif kind == 'room':
                 self.v['room_id'].set(value.get('code', value['id']))
                 self.v['players'].set(str(value['capacity']))
                 previous_routes = {iid: self.roster.set(iid, 'route') for iid in self.roster.get_children()}
@@ -294,8 +376,8 @@ class DonRoomsDialog(tk.Toplevel):
                 if self.closing:
                     self.destroy()
                     return
-                self.app._log('D.O.N: '+value, 'info')
+                self.app._log(self.game.short+': '+value, 'info')
             else:
                 self.status.set(value)
-                self.app._log('D.O.N: '+value, 'error' if kind == 'error' else 'info')
+                self.app._log(self.game.short+': '+value, 'error' if kind == 'error' else 'info')
         self.after(100, self.poll)

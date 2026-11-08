@@ -82,7 +82,7 @@ class DonOnlineTests(unittest.TestCase):
         directory.mkdir()
         existing = directory/'previous.09.p2s'
         existing.write_bytes(b'previous state')
-        with patch('don_online.DonCore') as factory:
+        with patch('don_core.DonCore') as factory:
             factory.return_value.frozen.return_value = True
             load_initial(pine, self.metadata, self.manifest, self.selected['state'], directory)
         pine.load_state.assert_called_once_with(8)
@@ -114,7 +114,7 @@ class DonOnlineTests(unittest.TestCase):
             if path == target:
                 raise locked
             return original_unlink(path, *args, **kwargs)
-        with patch('don_online.DonCore') as factory:
+        with patch('don_core.DonCore') as factory:
             factory.return_value.frozen.return_value = True
             with patch.object(Path, 'unlink', autospec=True, side_effect=unlink):
                 core = load_initial(pine, self.metadata, self.manifest, self.selected['state'], directory)
@@ -177,7 +177,7 @@ class DonOnlineTests(unittest.TestCase):
             self.assertEqual(api.call_args.args[2], '/api/netplay/don/access/')
             self.assertEqual(api.call_args.kwargs['extra_headers'], {'X-Netplay-Session': 'launcher-session'})
             client.create(None, 3)
-            self.assertEqual(api.call_args.args[2:4], ('/api/netplay/don/sessions/', {'capacity': 3, 'delay': 3}))
+            self.assertEqual(api.call_args.args[2:4], ('/api/netplay/don/sessions/', {'capacity': 3, 'delay': 3, 'network_protocol': 'don-bridge-v1'}))
             self.assertEqual(client.ticket, 'casual-ticket')
             self.assertFalse(any('/events/' in call.args[2] for call in api.call_args_list))
 
@@ -187,8 +187,10 @@ class DonOnlineTests(unittest.TestCase):
             client.base_path = DonRoomClient.base_path
             room = {'id': '12345678-1234-1234-1234-123456789abc', 'manifest': self.manifest,
                     'package_sha256': hashlib.sha256(self.package.read_bytes()).hexdigest(),
-                    'package_size': self.package.stat().st_size, 'status': 'lobby', 'session_epoch': 'epoch'}
+                    'package_size': self.package.stat().st_size, 'status': 'lobby', 'session_epoch': 'epoch',
+                    'network_protocol': 'don-bridge-v1'}
             client.create.return_value = client.request.return_value = room
+            client.resolve_room.return_value = {'id': room['id']}
             pine.game_id.return_value, pine.status.return_value = 'SLPS-25675', 0
             config = {'role': role, 'room_id': room['id'], 'players': 2, 'pine_slot': 28011,
                       'state_dir': str(self.root), 'cache_dir': str(self.root)}

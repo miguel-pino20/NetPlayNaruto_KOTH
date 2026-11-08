@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MODULES = ("appdata core_link discord_auth hill i18n koth_client launcher launcher_account "
            "launcher_avatar launcher_core launcher_koth launcher_theme lockstep netlink netplay "
            "node pine release_info rooms simgame spectator statesync updater wire zerotier_networks "
-           "build_don disc_image don_adapter don_core don_profiles don_setup don_online don_routing launcher_don mips_link multiplayer_client").split()
+           "build_don disc_image don_adapter don_core don_profiles don_setup don_online don_routing don_diagnostics game_adapters digimon_adapter digimon_core digimon_prepare_players build_digimon launcher_don mips_link multiplayer_client").split()
 
 
 def run(*args, **kwargs):
@@ -57,6 +57,8 @@ def main():
         command += ["--add-data", f"{path}{os.pathsep}."]
     command += ["--add-data", f"{ROOT / 'windows/README.md'}{os.pathsep}."]
     command += ["--add-data", f"{ROOT / 'UPDATES.md'}{os.pathsep}."]
+    for hook in ("don_hook", "digimon_hook"):
+        command += ["--add-data", f"{ROOT / hook}{os.pathsep}{hook}"]
     for module in MODULES:
         command += ["--hidden-import", module]
     command += ["--hidden-import", "PIL.ImageTk", ROOT / "windows/windows_start.py"]

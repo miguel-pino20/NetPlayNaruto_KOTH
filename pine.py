@@ -30,9 +30,8 @@ class PineError(Exception):
     pass
 
 
-BUSY_HINT = ('PCSX2 did not answer. Most likely ANOTHER program is already connected to PINE (PCSX2 serves one client '
-             'at a time): an old PowerShell window still running a script of this kit or probe_un5.py, or gen_pnach.py. '
-             'Close them (Ctrl+C), or find them with:  netstat -ano | findstr 28011   and   Get-Process python')
+BUSY_HINT = ('PCSX2 no respondió a PINE dentro del tiempo límite. Puede estar bloqueado u ocupado, '
+             'o existir otra herramienta conectada a PINE; este mensaje no confirma la causa.')
 
 
 class Pine:
@@ -40,6 +39,7 @@ class Pine:
         self.slot = slot
         self.timeout = timeout
         self.sock = None
+        self.endpoint = f'127.0.0.1:{slot}' if os.name == 'nt' else f'ranura {slot}'
 
     def connect(self):
         if os.name == 'nt':
@@ -62,6 +62,7 @@ class Pine:
                 s.settimeout(self.timeout)
                 try:
                     s.connect(str(path))
+                    self.endpoint = str(path)
                     break
                 except OSError as error:
                     s.close()
@@ -99,9 +100,26 @@ class Pine:
         return buf
 
     def _transact(self, body):
-        self.sock.sendall(struct.pack('<I', len(body) + 4) + body)
-        size = struct.unpack('<I', self._recv_exact(4))[0]
-        reply = self._recv_exact(size - 4)
+        if self.sock is None:
+            raise PineError('La conexión PINE está cerrada; vuelve a conectar la sala.')
+        op = body[0]
+        command = {READ8: 'leer8', READ16: 'leer16', READ32: 'leer32', READ64: 'leer64',
+                   WRITE8: 'escribir8', WRITE16: 'escribir16', WRITE32: 'escribir32',
+                   WRITE64: 'escribir64', STATUS: 'estado', SAVE_STATE: 'guardar estado',
+                   LOAD_STATE: 'cargar estado', GAME_ID: 'identificar juego'}.get(op, f'opcode {op:#x}')
+        if op in range(8) and len(body) >= 5:
+            command += f' @ {struct.unpack_from("<I", body, 1)[0]:08X}'
+        try:
+            self.sock.sendall(struct.pack('<I', len(body) + 4) + body)
+            size = struct.unpack('<I', self._recv_exact(4))[0]
+            if not 5 <= size <= 16*1024*1024:
+                raise PineError('PINE devolvió un tamaño de respuesta inválido.')
+            reply = self._recv_exact(size - 4)
+        except (PineError, OSError) as error:
+            # After a timeout/partial reply the byte stream cannot safely be
+            # reused: a delayed response could be mistaken for the next one.
+            self.close()
+            raise PineError(f'{error} [PINE {self.endpoint}; {command}]') from None
         if reply[0] != 0:
             raise PineError('PINE command failed (bad address or no game running)')
         return reply[1:]

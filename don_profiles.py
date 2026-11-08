@@ -7,7 +7,8 @@ import struct
 import zipfile
 from pathlib import Path
 
-from build_don import BASE, SHARED_SIZE
+from build_don import SHARED_SIZE
+from game_adapters import get_game, validate_metadata
 
 
 PORTABLE_FIELDS = ('schema', 'adapter', 'experimental', 'online_verified', 'hash_kind',
@@ -22,16 +23,25 @@ def validate_state(state, metadata, players):
         if archive.getinfo('eeMemory.bin').file_size != 32*1024*1024:
             raise ValueError('El estado no contiene la RAM de EE completa.')
         memory = archive.read('eeMemory.bin')
+    game = validate_metadata(metadata)
+    BASE = game.base
     base = metadata['shared_base']
     if not BASE <= base <= BASE+metadata['reserve_size']-SHARED_SIZE:
         raise ValueError('El bloque compartido está fuera de la reserva.')
     header = struct.unpack_from('<16I', memory, base)
-    if (header[:3] != (0x34504E44, 1, SHARED_SIZE) or header[3:6] != (1, 0, 1)
-            or header[8] != 0 or header[9] != 1 or header[13] != players):
+    compatible_counts = (players, 4) if game.slug == 'digimon' else (players,)
+    if (header[:3] != (game.magic, 1, SHARED_SIZE) or header[3:6] != (1, 0, 1)
+            or header[8] != 0 or header[9] != 1 or header[13] not in compatible_counts):
         raise ValueError('El estado no está congelado en frame 0 para esta cantidad de jugadores.')
     size = metadata['code_size']
     if not 0 < size <= base-BASE or hashlib.sha256(memory[BASE:BASE+size]).hexdigest() != metadata['code_sha256']:
         raise ValueError('El estado contiene otra compilación del hook.')
+    if game.slug == 'digimon':
+        from build_digimon import ARENA_REFERENCES
+        for high, _, new_high, low, _, new_low in ARENA_REFERENCES:
+            if (struct.unpack_from('<I', memory, high)[0] != new_high or
+                    struct.unpack_from('<I', memory, low)[0] != new_low):
+                raise ValueError('El estado Digimon no reserva la memoria del adaptador en el asignador del juego.')
 
 
 def create_profile(state, metadata, players, emulator, destination):
@@ -39,20 +49,24 @@ def create_profile(state, metadata, players, emulator, destination):
         raise ValueError('Se requieren 2–4 jugadores y la versión exacta de PCSX2.')
     state, destination = Path(state), Path(destination)
     validate_state(state, metadata, players)
+    game = validate_metadata(metadata)
     portable = {key: metadata[key] for key in PORTABLE_FIELDS}
+    if game.slug == 'digimon':
+        portable['arena_reservation'] = metadata['arena_reservation']
+        portable['pad_layout'] = metadata['pad_layout']
     symbols_data = (json.dumps(portable, sort_keys=True, indent=2)+'\n').encode()
-    manifest = {'game': 'don', 'crc': metadata['boot_crc'], 'disc_sha256': metadata['disc_sha256'],
+    manifest = {'game': game.game, 'crc': metadata['boot_crc'], 'disc_sha256': metadata['disc_sha256'],
                 'state_sha256': hashlib.sha256(state.read_bytes()).hexdigest(),
                 'symbols_sha256': hashlib.sha256(symbols_data).hexdigest(),
                 'adapter': metadata['adapter'], 'emulator': emulator,
-                'pads': [{'port': 1, 'slot': slot+1} for slot in range(players)]}
+                'pads': game.pads(players)}
     destination.mkdir(parents=True, exist_ok=True)
     # Never silently replace the initial state/manifest for an existing profile.
     if any((destination/name).exists() for name in ('manifest.json', 'symbols.json', 'profile.json')):
         raise ValueError('El perfil de destino ya existe; usa otra carpeta para esta revisión.')
     (destination/'symbols.json').write_bytes(symbols_data)
     (destination/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
-    profile = {'players': players, 'screen': 'organicense', 'state': str(state.resolve()),
+    profile = {'players': players, 'screen': game.screen, 'state': str(state.resolve()),
                'manifest': str((destination/'manifest.json').resolve()),
                'symbols': str((destination/'symbols.json').resolve()), 'online_verified': False}
     (destination/'profile.json').write_text(json.dumps(profile, indent=2)+'\n')
@@ -78,10 +92,11 @@ def select_profile(root, players, expected_adapter=None):
     symbols_path = folder/'symbols.json'
     symbols_data = symbols_path.read_bytes()
     symbols = json.loads(symbols_data)
-    local_state = folder/'DON-organicense.p2s'
+    game = get_game(manifest['game'])
+    local_state = folder/game.state_name
     state = local_state if local_state.is_file() else Path(profile['state'])
-    if (profile['players'] != players or manifest['game'] != 'don' or
-            manifest['pads'] != [{'port': 1, 'slot': n+1} for n in range(players)] or
+    if (profile['players'] != players or manifest['adapter'] != game.adapter or
+            manifest['pads'] != game.pads(players) or
             manifest['adapter'] != symbols['adapter'] or manifest['crc'] != symbols['boot_crc']):
         raise ValueError('El perfil no corresponde a esta cantidad de jugadores y adaptador.')
     if (hashlib.sha256(state.read_bytes()).hexdigest() != manifest['state_sha256'] or
@@ -105,7 +120,10 @@ def index_profiles(root, expected_adapter=None):
     entries = {}
     for count in (2, 3, 4):
         entries[str(count)] = select_profile(root, count, expected_adapter)
-    result = {'schema': 1, 'game': 'don', 'profiles': entries, 'online_verified': False}
+    games = {json.loads(Path(p['manifest']).read_text())['game'] for p in entries.values()}
+    if len(games) != 1:
+        raise ValueError('El catálogo mezcla perfiles de juegos distintos.')
+    result = {'schema': 1, 'game': games.pop(), 'profiles': entries, 'online_verified': False}
     temporary = root/'catalog.json.tmp'
     temporary.write_text(json.dumps(result, indent=2)+'\n')
     os.replace(temporary, root/'catalog.json')

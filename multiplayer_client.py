@@ -42,14 +42,15 @@ class RoomClient:
 
 class DonRoomClient(RoomClient):
     """Casual rooms authenticated by the launcher account, with no event ticket."""
-    base_path = '/api/netplay/don/sessions/'
+    api_prefix = '/api/netplay/don/'
+    base_path = api_prefix+'sessions/'
 
     @classmethod
     def authenticate(cls, url, session):
         if not session:
             raise ValueError('Inicia sesión con Discord en el launcher.')
         url = validate_url(url)
-        result = api_call(url, 'POST', '/api/netplay/don/access/', {},
+        result = api_call(url, 'POST', cls.api_prefix+'access/', {},
                           extra_headers={'X-Netplay-Session': session})
         client = cls(url, result.get('ticket'))
         client.can_publish = result.get('can_publish') is True
@@ -84,13 +85,18 @@ class DonRoomClient(RoomClient):
         try:
             return {'id': str(UUID(reference))}
         except ValueError:
-            return api_call(self.url, 'GET', '/api/netplay/don/resolve/?'+urlencode({'q': reference}),
+            return api_call(self.url, 'GET', self.api_prefix+'resolve/?'+urlencode({'q': reference}),
                             token=self.ticket)
 
     def request(self, room_id, action=None, body=None):
         if action in ('join', 'sync'):
             body = {**(body or {}), 'network_protocol': 'don-bridge-v1'}
         return super().request(room_id, action, body)
+
+
+class DigimonRoomClient(DonRoomClient):
+    api_prefix = '/api/netplay/digimon/'
+    base_path = api_prefix+'sessions/'
 
 
 def watch(client, room_id, manifest, address, port=47400, ready=False):
@@ -131,9 +137,11 @@ def make_node(snapshot, core, *, experimental_don=False):
     disc = manifest.get('disc_sha256')
     if not isinstance(disc, str) or len(disc) != 64 or any(c not in '0123456789abcdef' for c in disc):
         raise ValueError('La sala no identifica la ISO completa; crea una sala con el manifest actualizado.')
-    experimental = (experimental_don is True and manifest.get('game') == 'don'
-                    and manifest.get('adapter') == 'don-experimental-input-v1'
-                    and getattr(core, 'adapter_id', None) == 'don-experimental-input-v1')
+    compatible = {'don': 'don-experimental-input-v1',
+                  'digimon-rumble-arena-2': 'digimon-experimental-input-v1'}
+    experimental = (experimental_don is True and manifest.get('game') in compatible
+                    and manifest.get('adapter') == compatible.get(manifest.get('game'))
+                    and getattr(core, 'adapter_id', None) == manifest.get('adapter'))
     if getattr(core, 'simulation_hashes', True) is False and not experimental:
         raise ValueError('Este adaptador solo verifica controles; falta validar el estado del juego para online.')
     if getattr(core, 'capacity', capacity) != capacity:
@@ -165,7 +173,7 @@ def make_node(snapshot, core, *, experimental_don=False):
     bridge = None
     if snapshot.get('network_protocol') == 'don-bridge-v1':
         if not experimental:
-            raise ValueError('El puente está disponible únicamente para D.O.N experimental.')
+            raise ValueError('El puente requiere un adaptador experimental conocido.')
         from don_routing import BridgeSocket
         bridge = BridgeSocket(snapshot)
     try:

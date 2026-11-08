@@ -336,6 +336,9 @@ class Launcher(tk.Tk):
 
         self.don_setup_btn = PillButton(inner, text='D.O.N · online experimental (2–4)', command=self.don_setup)
         self.don_setup_btn.pack(fill='x', pady=(6, 0))
+        self.digimon_setup_btn = PillButton(inner, text='Digimon Rumble Arena 2 · 2–4 jugadores',
+                                            command=lambda: self.don_setup(game='digimon'))
+        self.digimon_setup_btn.pack(fill='x', pady=(6, 0))
 
         # PREPARAR PARTIDA e Ferramentas: so para o dono (ver _sync_admin)
         self.admin_box = tk.Frame(inner, bg=PANEL)
@@ -362,7 +365,7 @@ class Launcher(tk.Tk):
         self.release_btn.pack(fill="x")
         self._note(self.tools, tr("note.tools"))
 
-    def don_setup(self):
+    def don_setup(self, game="don"):
         if self.backend.running or self._koth_pending:
             messagebox.showinfo('D.O.N', 'Detén la sesión de netplay actual antes de preparar otro juego.', parent=self)
             return
@@ -371,7 +374,7 @@ class Launcher(tk.Tk):
             dialog.lift()
             return
         from launcher_don import DonRoomsDialog
-        self.don_setup_dialog = DonRoomsDialog(self)
+        self.don_setup_dialog = DonRoomsDialog(self, game=game)
 
     def _sync_admin(self):
         # o servidor decide quem e o dono (campo admin da conta); aqui o bloco so aparece/some
@@ -490,6 +493,9 @@ class Launcher(tk.Tk):
             messagebox.showerror(tr("dlg.game_title"), tr("dlg.game_pine", exc=exc))
             return None
         if game is None:
+            if crc == '568A5C78':
+                messagebox.showinfo('Digimon', 'Usa «Digimon Rumble Arena 2 · 2–4 jugadores» para crear una sala o unirte.', parent=self)
+                return None
             if crc == '82EA02B7':
                 messagebox.showinfo('D.O.N', 'Usa «D.O.N · online experimental (2–4)» para crear una sala o unirte.', parent=self)
                 return None

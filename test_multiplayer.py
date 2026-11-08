@@ -164,7 +164,7 @@ class MultiplayerClientTests(unittest.TestCase):
         sock = MemorySocket({}, ('10.147.0.1', 47400))
         host = Node(FourPadCore(0), 1, 0, 0, [0, 1, 2, 3], sock=sock, roster_locked=True, generic=True)
         peer = host.add_expected_peer(2, 1, ('10.147.0.2', 47400))
-        host._on_data(peer, {'acks': [0]*4, 'blocks': [(2, 4, [NEUTRAL])], 'hashes': []})
+        host._on_data(peer, {'frame': 4, 'acks': [0]*4, 'blocks': [(2, 4, [NEUTRAL])], 'hashes': []})
         self.assertNotIn(4, host.known[2])
 
     def test_four_nodes_over_real_loopback_udp(self):

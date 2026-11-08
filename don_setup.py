@@ -8,7 +8,8 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from don_core import DonCore, prepare_state
+from don_core import prepare_state
+from game_adapters import get_game, validate_metadata
 from don_profiles import create_profile
 from pine import Pine
 
@@ -39,16 +40,18 @@ def latest_state_directory(pine_slot=28011):
 
 
 class DonSetupDialog(tk.Toplevel):
-    def __init__(self, parent, *, adapter_path=None, profiles_dir=None):
+    def __init__(self, parent, *, adapter_path=None, profiles_dir=None, game="don"):
+        self.game = get_game(game)
         super().__init__(parent)
-        self.title('D.O.N · estado inicial')
+        self.title(self.game.short+' · estado inicial')
         self.resizable(False, False)
         if parent.winfo_viewable():
             self.transient(parent)
         self.busy = False
         self.results = queue.Queue()
         self.players = tk.StringVar(value='')
-        self.adapter = tk.StringVar(value=str(adapter_path or ROOT/'build/don/adapter.json'))
+        default_adapter = ROOT/'build/don/adapter.json' if self.game.slug == 'don' else ROOT/'build/digimon/adapter-v1/adapter.json'
+        self.adapter = tk.StringVar(value=str(adapter_path or default_adapter))
         self.profiles_dir = Path(profiles_dir) if profiles_dir else None
         self.directory = tk.StringVar(value=latest_state_directory())
         self.port = tk.StringVar(value='28011')
@@ -56,13 +59,16 @@ class DonSetupDialog(tk.Toplevel):
         self.status = tk.StringVar(value='Selecciona cuántos jugadores se conectarán.')
         box = ttk.Frame(self, padding=18)
         box.pack(fill='both', expand=True)
-        ttk.Label(box, text='D.O.N · preparar estado compartido', font=('', 13, 'bold')).grid(
+        ttk.Label(box, text=self.game.short+' · preparar estado compartido', font=('', 13, 'bold')).grid(
             row=0, column=0, columnspan=3, sticky='w', pady=(0, 12))
-        ttk.Label(box, text='Jugadores que se conectarán').grid(row=1, column=0, sticky='w')
+        ttk.Label(box, text='Puestos del estado común' if self.game.slug == 'digimon' else
+                  'Jugadores que se conectarán').grid(row=1, column=0, sticky='w')
         self.count = ttk.Combobox(box, textvariable=self.players, values=('2', '3', '4'), state='readonly', width=8)
         self.count.grid(row=1, column=1, sticky='w', pady=6)
-        ttk.Label(box, text='En «Organícense», deja esa cantidad de puestos en JUGADOR\n'
-                            'y los restantes como CPU o desactivados. Reanuda PCSX2 antes de capturar.').grid(
+        if self.game.slug == 'digimon':
+            self.count.configure(values=('4',))
+            self.players.set('4')
+        ttk.Label(box, text=self.game.capture_hint+'\nReanuda PCSX2 antes de capturar.').grid(
             row=2, column=0, columnspan=3, sticky='w', pady=(3, 12))
         for row, label, variable, browse in (
             (3, 'Perfil experimental (adapter.json)', self.adapter, self.browse_adapter),
@@ -80,9 +86,59 @@ class DonSetupDialog(tk.Toplevel):
         ttk.Button(box, text='Cerrar', command=self.close).grid(row=7, column=2, sticky='e')
         ttk.Label(box, text='Preparación experimental. Todavía no inicia partidas online.').grid(
             row=8, column=0, columnspan=3, sticky='w', pady=(12, 0))
-        self.players.trace_add('write', lambda *_: self.capture.configure(
-            state='normal' if self.players.get() in ('2', '3', '4') and not self.busy else 'disabled'))
+        self.join = None
+        if self.game.slug == 'digimon':
+            self.first_open = tk.StringVar(value='2')
+            self.join = ttk.Button(box, text='Incorporar jugadores con un solo mando',
+                                   command=self.join_players, state='disabled')
+            self.join.grid(row=9, column=0, columnspan=3, sticky='w', pady=(10, 0))
+            ttk.Label(box, text='Usar en selección de personajes, con P1 dentro y el resto OPEN.\n'
+                                'Guarda un respaldo y envía X a los demás puestos; confirma la pantalla antes de capturar.').grid(
+                row=10, column=0, columnspan=3, sticky='w', pady=5)
+            ttk.Label(box, text='Primer puesto que sigue OPEN').grid(row=11, column=0, sticky='w')
+            ttk.Combobox(box, textvariable=self.first_open, values=('2', '3', '4'),
+                         state='readonly', width=5).grid(row=11, column=1, sticky='w')
+        self.players.trace_add('write', self.update_buttons)
+        self.update_buttons()
         self.protocol('WM_DELETE_WINDOW', self.close)
+
+    def update_buttons(self, *_):
+        state = 'normal' if self.players.get() in ('2', '3', '4') and not self.busy else 'disabled'
+        self.capture.configure(state=state)
+        if self.join is not None:
+            self.join.configure(state=state)
+
+    def join_players(self):
+        if self.busy or self.players.get() not in ('2', '3', '4'):
+            return
+        try:
+            port = int(self.port.get())
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            self.status.set('Introduce una ranura PINE válida.')
+            return
+        count = int(self.players.get())
+        first_player = int(self.first_open.get())
+        if first_player > count:
+            self.status.set('El primer puesto OPEN debe estar dentro del total de jugadores.')
+            return
+        adapter, directory = self.adapter.get(), self.directory.get()
+        self.busy = True
+        self.count.configure(state='disabled')
+        self.update_buttons()
+        self.status.set('Respaldando la selección e incorporando los puestos virtuales…')
+        def work():
+            try:
+                from digimon_prepare_players import prepare_players
+                if validate_metadata(json.loads(Path(adapter).read_text())) != self.game:
+                    raise ValueError('Selecciona el adaptador de Digimon corregido.')
+                report = prepare_players(adapter, directory, count, pine_slot=port, first_player=first_player)
+                self.results.put((True, {'action': 'join', 'backup': report['local_backup']}))
+            except Exception as error:
+                self.results.put((False, str(error)))
+        threading.Thread(target=work, daemon=False).start()
+        self.after(100, self.poll)
 
     def browse_adapter(self):
         path = filedialog.askopenfilename(parent=self, filetypes=[('Perfil del adaptador', '*.json')])
@@ -116,17 +172,19 @@ class DonSetupDialog(tk.Toplevel):
         output = profile_root/f'{count}p'/datetime.now().strftime('%Y%m%d-%H%M%S')
         self.busy = True
         self.count.configure(state='disabled')
-        self.capture.configure(state='disabled')
-        self.status.set('Capturando el estado de «Organícense» y comprobando la cantidad de jugadores…')
+        self.update_buttons()
+        self.status.set('Capturando el estado inicial para '+self.game.short+'…')
 
         def work():
             pine = Pine(port, timeout=3)
             try:
                 metadata = json.loads(Path(adapter).read_text())
                 pine.connect()
-                core = DonCore(pine, metadata)
+                if validate_metadata(metadata) != self.game:
+                    raise ValueError('El adaptador corresponde a otro juego.')
+                core = self.game.core(pine, metadata)
                 version = pine.version()
-                snapshot = prepare_state(core, directory, output/'DON-organicense.p2s', capacity=count)
+                snapshot = prepare_state(core, directory, output/self.game.state_name, capacity=count)
                 result = create_profile(snapshot['path'], metadata, count, version, output)
                 self.results.put((True, result['manifest']))
             except Exception as error:
@@ -145,8 +203,11 @@ class DonSetupDialog(tk.Toplevel):
             return
         self.busy = False
         self.count.configure(state='readonly')
-        self.capture.configure(state='normal')
-        self.status.set(('Estado y perfil preparados:\n' if ok else 'No se pudo preparar el estado:\n')+result)
+        self.update_buttons()
+        if ok and isinstance(result, dict) and result.get('action') == 'join':
+            self.status.set('Pulsaciones enviadas. Confirma los jugadores en pantalla antes de capturar.\nRespaldo: '+result['backup'])
+        else:
+            self.status.set(('Estado y perfil preparados:\n' if ok else 'No se pudo completar la preparación:\n')+result)
 
     def close(self):
         if self.busy:

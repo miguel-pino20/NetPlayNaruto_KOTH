@@ -83,9 +83,11 @@ def main():
     modules = ("appdata core_link discord_auth hill i18n koth_client launcher launcher_account "
                "launcher_avatar launcher_core launcher_koth launcher_theme lockstep netlink netplay "
                "node pine release_info rooms simgame spectator statesync updater wire zerotier_networks "
-               "build_don disc_image don_adapter don_core don_profiles don_setup don_online don_routing launcher_don mips_link multiplayer_client").split()
+               "build_don disc_image don_adapter don_core don_profiles don_setup don_online don_routing don_diagnostics game_adapters digimon_adapter digimon_core digimon_prepare_players build_digimon launcher_don mips_link multiplayer_client").split()
     for module in modules:
         shutil.copy2(ROOT / f"{module}.py", project / f"{module}.py")
+    for hook in ("don_hook", "digimon_hook"):
+        shutil.copytree(ROOT / hook, project / hook)
     for name in ("2 - PCSX2 Flatpak.sh", "symbols_un6.json", "README.md", "UPDATES.md"):
         shutil.copy2(ROOT / name, project / name)
     shutil.copy2(ROOT / "appimage/appimage_start.py", project / "appimage_start.py")
