@@ -26,8 +26,8 @@ def main():
     args = parser.parse_args()
     if sys.platform != "win32" or struct.calcsize("P") != 8:
         raise RuntimeError("Usa Python de Windows de 64 bits, en Windows o mediante Wine.")
-    if sys.version_info < (3, 10):
-        raise RuntimeError("Se necesita Python 3.10 o superior.")
+    if sys.version_info < (3, 11):
+        raise RuntimeError("Se necesita Python 3.11 o superior para Pillow 13.")
     build = ROOT / "build/windows"
     build.mkdir(parents=True, exist_ok=True)
     env_dir = build / "venv"

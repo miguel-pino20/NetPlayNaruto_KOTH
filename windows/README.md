@@ -2,7 +2,7 @@
 
 ## Ejecutar el proyecto descargado con Git
 
-Instala Python de Windows **de 64 bits, 3.10 o posterior**, con Tcl/Tk y pip
+Instala Python de Windows **de 64 bits, entre 3.11 y 3.15**, con Tcl/Tk y pip
 (opciones normales del instalador de https://www.python.org/downloads/windows/).
 Clona o actualiza el repositorio y abre **`1 - Run.bat`** desde su carpeta.
 
@@ -12,12 +12,19 @@ validar esas pruebas. No hace falta generar ni subir archivos de `dist/`
 para probar cada cambio.
 
 El script utiliza el codigo local y crea su propio entorno **`.venv-win`**.
+Elige explicitamente una version compatible con **Pillow 13.0.0**, incluido
+Python 3.15. Las dependencias se
+descargan como paquetes precompilados: no necesitas instalar Visual C++ Build Tools.
 Instala las dependencias de `windows/requirements-run.txt` solo cuando faltan o
 no coinciden con las versiones declaradas. La primera preparacion necesita
 Internet; despues puede abrirse con las dependencias ya disponibles.
 La carpeta `.venv` de Linux no se utiliza ni se copia por Git. Si se encuentra
 un `.venv-win` que no funciona en esa maquina, se conserva como copia de respaldo
 y se crea uno nuevo.
+
+Si fallo la instalacion anterior con Python 3.15 y Pillow 12, actualiza el
+proyecto por Git y vuelve a abrir `1 - Run.bat`. El entorno de Python 3.15 se
+reutiliza y Pillow se actualiza a 13.0.0; no hace falta cambiar de Python.
 
 El arranque no descarga ni sobrescribe fuentes desde GitHub, no compila un EXE
 y no abre PCSX2. Abre PCSX2 manualmente, carga el juego y activa PINE antes de
@@ -47,7 +54,7 @@ funcionamiento habitual. Consulta [actualizaciones automáticas](../UPDATES.md).
 
 ## Construir en Windows
 
-Con Python de Windows x64 (3.10 o posterior) instalado y acceso a Internet,
+Con Python de Windows x64 (3.11 o posterior) instalado y acceso a Internet,
 desde la raíz del proyecto:
 
 ```powershell

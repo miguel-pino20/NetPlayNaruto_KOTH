@@ -18,7 +18,7 @@ REQUIREMENTS = ROOT / 'windows' / 'requirements-run.txt'
 
 def usable_environment(python, environment):
     code = ('import sys, tkinter, ssl, venv; '
-            'assert sys.version_info >= (3, 10) and sys.maxsize > 2**32; '
+            'assert (3, 11) <= sys.version_info < (3, 16) and sys.maxsize > 2**32; '
             'assert sys.prefix != sys.base_prefix')
     try:
         return subprocess.run([str(python), '-I', '-c', code], env=environment,
@@ -45,8 +45,8 @@ def dependencies_ready(python, environment):
 
 
 def main():
-    if sys.platform != 'win32' or sys.version_info < (3, 10) or sys.maxsize <= 2**32:
-        raise RuntimeError('Se necesita Python de Windows de 64 bits, version 3.10 o posterior.')
+    if sys.platform != 'win32' or not (3, 11) <= sys.version_info < (3, 16) or sys.maxsize <= 2**32:
+        raise RuntimeError('Se necesita Python de Windows de 64 bits, de 3.11 a 3.15, con Tcl/Tk.')
     environment = dict(os.environ)
     for name in ('PYTHONHOME', 'PYTHONPATH'):
         environment.pop(name, None)
@@ -68,7 +68,7 @@ def main():
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if pip.returncode:
             subprocess.run([str(python), '-m', 'ensurepip'], env=environment, check=True)
-        subprocess.run([str(python), '-m', 'pip', 'install', '--timeout', '20', '--retries', '1',
+        subprocess.run([str(python), '-m', 'pip', 'install', '--only-binary=:all:', '--timeout', '20', '--retries', '1',
                         '-r', str(REQUIREMENTS)], env=environment, check=True)
         if not dependencies_ready(python, environment):
             raise RuntimeError('No se pudieron preparar las dependencias del launcher.')

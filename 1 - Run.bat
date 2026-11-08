@@ -25,14 +25,17 @@ if not errorlevel 1 (
     goto run
 )
 
-call :probe_python "py" "-3"
-if not errorlevel 1 (
-    set "UN5_PYTHON=py"
-    set "UN5_PYTHON_ARGS=-3"
-    goto run
+rem Prefer an explicit supported version, not the newest Python installed.
+for %%V in (3.15 3.14 3.13 3.12 3.11) do (
+    call :probe_python "py" "-%%V"
+    if not errorlevel 1 (
+        set "UN5_PYTHON=py"
+        set "UN5_PYTHON_ARGS=-%%V"
+        goto run
+    )
 )
 
-for %%V in (314 313 312 311 310) do (
+for %%V in (315 314 313 312 311) do (
     call :probe_python "%LocalAppData%\Programs\Python\Python%%V\python.exe" ""
     if not errorlevel 1 (
         set "UN5_PYTHON=%LocalAppData%\Programs\Python\Python%%V\python.exe"
@@ -63,8 +66,8 @@ for /f "delims=" %%P in ('where python 2^>nul') do (
 )
 
 echo.
-echo No se encontro Python de Windows de 64 bits con Tcl/Tk, version 3.10 o posterior.
-echo Instala Python desde https://www.python.org/downloads/windows/
+echo No se encontro Python de Windows de 64 bits con Tcl/Tk, version entre 3.11 y 3.15.
+echo Instala Python de 64 bits con Tcl/Tk desde https://www.python.org/downloads/windows/
 echo Incluye Tcl/Tk e IDLE, pip y el launcher de Python.
 echo Despues vuelve a ejecutar este archivo.
 goto failure
@@ -85,7 +88,7 @@ exit /b 0
 rem Skip the Windows Store alias; it is not an installed Python runtime.
 echo "%~1" | findstr /i /c:"WindowsApps" >nul
 if not errorlevel 1 exit /b 1
-"%~1" %~2 -I -c "import sys, tkinter, venv, ssl; assert sys.version_info >= (3, 10) and sys.maxsize > 2**32; assert sys.argv[1] != 'venv' or sys.prefix != sys.base_prefix" "%~3" >nul 2>&1
+"%~1" %~2 -I -c "import sys, tkinter, venv, ssl; assert (3, 11) <= sys.version_info < (3, 16) and sys.maxsize > 2**32; assert sys.argv[1] != 'venv' or sys.prefix != sys.base_prefix" "%~3" >nul 2>&1
 exit /b %ERRORLEVEL%
 
 :missing_files
