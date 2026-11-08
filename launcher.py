@@ -334,6 +334,9 @@ class Launcher(tk.Tk):
         self.zerotier_btn = PillButton(inner, text=tr('zt.button'), command=self.zerotier)
         self.zerotier_btn.pack(fill='x', pady=(6, 0))
 
+        self.don_setup_btn = PillButton(inner, text='D.O.N · estado inicial (2–4)', command=self.don_setup)
+        self.don_setup_btn.pack(fill='x', pady=(6, 0))
+
         # PREPARAR PARTIDA e Ferramentas: so para o dono (ver _sync_admin)
         self.admin_box = tk.Frame(inner, bg=PANEL)
         self.prepare_btn = PillButton(self.admin_box, text=tr("btn.prepare"), command=self.prepare)
@@ -358,6 +361,17 @@ class Launcher(tk.Tk):
         self.release_btn = PillButton(self.tools, text=tr("btn.release"), command=self.release_game)
         self.release_btn.pack(fill="x")
         self._note(self.tools, tr("note.tools"))
+
+    def don_setup(self):
+        if self.backend.running:
+            messagebox.showinfo('D.O.N', 'Detén la sesión de netplay actual antes de preparar otro juego.', parent=self)
+            return
+        dialog = getattr(self, 'don_setup_dialog', None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.lift()
+            return
+        from don_setup import DonSetupDialog
+        self.don_setup_dialog = DonSetupDialog(self)
 
     def _sync_admin(self):
         # o servidor decide quem e o dono (campo admin da conta); aqui o bloco so aparece/some

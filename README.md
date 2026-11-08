@@ -1,5 +1,10 @@
 # UN5 Netplay Launcher
 
+Desarrollo experimental de salas para 2–4 jugadores: [MULTIPLAYER.md](MULTIPLAYER.md).
+La coordinación y el hook experimental de D.O.N están implementados. El launcher
+fuente permite preparar estados para 2–4 jugadores; falta validar el combate
+entre emuladores antes de habilitar su online.
+
 Los compilados comprueban las releases de GitHub al abrirse y se actualizan
 automáticamente si hay una versión posterior para su plataforma.
 La versión y el repositorio se configuran en `release_info.py`.

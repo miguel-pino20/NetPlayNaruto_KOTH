@@ -82,7 +82,8 @@ def main():
     # Include source files, never a virtualenv, account/session data, BIOS or games.
     modules = ("appdata core_link discord_auth hill i18n koth_client launcher launcher_account "
                "launcher_avatar launcher_core launcher_koth launcher_theme lockstep netlink netplay "
-               "node pine release_info rooms simgame spectator statesync updater wire zerotier_networks").split()
+               "node pine release_info rooms simgame spectator statesync updater wire zerotier_networks "
+               "build_don disc_image don_adapter don_core don_profiles don_setup mips_link multiplayer_client").split()
     for module in modules:
         shutil.copy2(ROOT / f"{module}.py", project / f"{module}.py")
     for name in ("2 - PCSX2 Flatpak.sh", "symbols_un6.json", "README.md", "UPDATES.md"):

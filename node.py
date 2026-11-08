@@ -89,13 +89,14 @@ class Peer:
 class Node:
     def __init__(self, core, member, slot, bind_port, active, delay=3, tag='00' * 8, name='', host=None,
                  expect=None, loss=0.0, bind='0.0.0.0', first_capture=0, sock=None, relay=None, cands=None,
-                 punch_s=2.5, relay_only=False, epoch=0):
+                 punch_s=2.5, relay_only=False, epoch=0, roster_locked=False, generic=False):
         """member: 1 for the host, 2.. for guests.  slot: this PC's input slot.  active: slots that have a player.
         host: (ip, port) of the host when this PC is a guest, None for the host.
         Online mode (rendezvous server): sock = the UDP socket the server already saw (same NAT mapping), relay =
         ((server ip, port), 8-byte token): packets go straight to the peer and, when nothing comes back for punch_s
         seconds, through the server's relay. cands = extra direct addresses of the host (its LAN addresses)."""
         self.core, self.member, self.slot, self.active = core, member, slot, list(active)
+        self.roster_locked, self.generic = roster_locked, generic
         self.delay, self.tag, self.name, self.loss = delay, tag, name, loss
         self.session = wire.session_id(tag, delay, epoch)
         self.is_host = host is None
@@ -314,7 +315,7 @@ class Node:
                     continue
                 if peer is not None and peer.slot is not None and slot != peer.slot:
                     continue
-                if peer is None and self.is_host and self.relay is None:   # online: peers come from the server
+                if peer is None and self.is_host and self.relay is None and not self.roster_locked:
                     taken = {p.slot for p in self.peers.values()} | {self.slot}
                     if slot is None or slot not in self.active or slot in taken or m['member'] == 1:
                         continue
@@ -351,6 +352,8 @@ class Node:
         peer.confirmed = True
         peer.ack = [max(a, b) for a, b in zip(peer.ack, m['acks'])]
         for slot, first, items in m['blocks']:
+            if self.roster_locked and self.is_host and slot != peer.slot:
+                continue                                  # a guest only owns its assigned input slot
             if slot == self.slot or slot not in self.known:
                 continue
             k = self.known[slot]
@@ -523,7 +526,7 @@ class Node:
         while self.checked < top:
             vals = {m: self.reports[m].get(self.checked) for m in [self.member, *self.peers]}
             if len(set(vals.values())) > 1:
-                if NULL_STATE_HASH in vals.values():         # a scene change (no player objects on one PC): not a desync
+                if not self.generic and NULL_STATE_HASH in vals.values():
                     self.soft_log.append((self.checked, vals))
                 else:
                     self.desync_log.append((self.checked, vals))
@@ -603,8 +606,9 @@ class Node:
                 return
         self._capture()
         self._publish()
-        self._tick_step()
-        self._tick_barrier()
+        if not self.generic:
+            self._tick_step()
+            self._tick_barrier()
         self._hash_step()
         self._send_data()
         self._sel_send()

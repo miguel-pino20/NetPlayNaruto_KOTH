@@ -54,6 +54,7 @@ class Pine:
             # Flatpak can place the socket in its own runtime directory.
             paths = list(dict.fromkeys((base / name,
                                         base / 'app/net.pcsx2.PCSX2' / name,
+                                        base / '.flatpak/net.pcsx2.PCSX2/xdg-run' / name,
                                         Path('/tmp') / name)))
             failures = []
             for path in paths:
@@ -125,6 +126,12 @@ class Pine:
         data = self._transact(bytes([GAME_ID]))
         n = int.from_bytes(data[:4], 'little')
         return data[4:4 + n].split(b'\0')[0].decode('ascii', 'replace')
+
+    def version(self):
+        """PCSX2 build string from the standard PINE MsgVersion command."""
+        data = self._transact(bytes([0x8]))
+        n = int.from_bytes(data[:4], 'little')
+        return data[4:4+n].split(b'\0')[0].decode('utf-8', 'replace')
 
     def game_crc(self):
         """CRC do jogo aberto, como o PCSX2 mostra (PINE MsgUUID, 0xD), ex.: 'C071D4C1'."""
