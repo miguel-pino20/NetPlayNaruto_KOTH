@@ -13,7 +13,8 @@ from unittest.mock import Mock, patch
 from build_don import BASE, RESERVE, SHARED_SIZE
 from don_adapter import CRC, ELF_SHA256
 from discord_auth import AccountError
-from don_online import OnlineSession, load_initial, make_package, manifest_for, state_request, unpack_package
+from don_online import (OnlineSession, _cleanup_loading_copy, load_initial, make_package,
+                        manifest_for, state_request, unpack_package)
 from don_profiles import create_profile
 from multiplayer_client import RoomClient, DonRoomClient, make_node
 import test_multiplayer as fixtures
@@ -96,6 +97,33 @@ class DonOnlineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'misma versión'):
             load_initial(pine, self.metadata, self.manifest, self.selected['state'], self.root)
         pine.load_state.assert_not_called()
+
+    def test_windows_locked_loading_copy_does_not_abort_a_loaded_game(self):
+        pine = Mock()
+        pine.version.return_value = self.manifest['emulator']
+        pine.game_id.return_value = 'SLPS-25675'
+        pine.game_crc.return_value = CRC
+        pine.status.return_value = 0
+        directory = self.root/'windows-sstates'
+        directory.mkdir()
+        target = directory/f'SLPS-25675 ({CRC}).09.p2s'
+        original_unlink = Path.unlink
+        locked = PermissionError('File is still open in PCSX2')
+        locked.winerror = 32
+        def unlink(path, *args, **kwargs):
+            if path == target:
+                raise locked
+            return original_unlink(path, *args, **kwargs)
+        with patch('don_online.DonCore') as factory:
+            factory.return_value.frozen.return_value = True
+            with patch.object(Path, 'unlink', autospec=True, side_effect=unlink):
+                core = load_initial(pine, self.metadata, self.manifest, self.selected['state'], directory)
+            self.assertIs(core, factory.return_value)
+            self.assertTrue(target.is_file())
+            self.assertEqual(core.loading_copy, (target, self.manifest['state_sha256']))
+            _cleanup_loading_copy(core)
+            self.assertFalse(target.exists())
+            self.assertIsNone(core.loading_copy)
 
     def test_cancel_before_start_has_no_api_or_pine_side_effects(self):
         client, events = Mock(), queue.Queue()

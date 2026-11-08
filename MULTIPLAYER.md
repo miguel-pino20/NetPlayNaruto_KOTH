@@ -30,6 +30,8 @@ normal de UN5/UN6 y KOTH continúa separado.
 El estado descargado se conserva en la carpeta de estados como
 `DON-inicial-<cantidad>p-<hash>.p2s`. Para cargarlo se usa además una ranura libre,
 sin sustituir estados anteriores, y se elimina solo esa copia numerada temporal.
+En Windows, si PCSX2 mantiene abierto el archivo, la limpieza se reintenta
+durante la sesión y al terminar; el bloqueo del archivo no cancela la partida.
 Los perfiles centrales y el paquete fijado para cada sala permanecen en Django.
 Detener/cerrar devuelve los controles locales y retira la disponibilidad. La
 pérdida de API durante 15 segundos o de avance durante 30 detiene la sesión.

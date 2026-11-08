@@ -123,6 +123,24 @@ def package_request(client, path, *, upload=None, destination=None, expected_sha
         raise AccountError(str(detail), error.code) from None
 
 
+def _remove_loading_copy(target, expected_sha):
+    """An open PCSX2 file can be locked on Windows; cleanup is never fatal."""
+    try:
+        if not target.is_file() or sha256_file(target) != expected_sha:
+            return True  # Gone or changed: never delete somebody else's state.
+        target.unlink()
+        return True
+    except OSError:
+        return False  # PCSX2, antivirus or a sync service may still hold it.
+
+
+def _cleanup_loading_copy(core):
+    pending = getattr(core, 'loading_copy', None)
+    if isinstance(pending, tuple) and len(pending) == 2:
+        if _remove_loading_copy(*pending):
+            core.loading_copy = None
+
+
 def load_initial(pine, metadata, manifest, state, state_dir, timeout=25):
     """Load a shared snapshot into stock PCSX2; the snapshot carries the hook.
 
@@ -151,13 +169,24 @@ def load_initial(pine, metadata, manifest, state, state_dir, timeout=25):
     target = directory/f"{metadata['source_serial']} ({pine.game_crc()}).{slot:02}.p2s"
     with cached.open('rb') as source, target.open('xb') as output:
         shutil.copyfileobj(source, output)
+    loaded = None
     try:
+        # A previous failed attempt can have left this exact hook frozen at
+        # frame 0. Release it so only a newly loaded snapshot can pass frozen().
+        try:
+            previous = DonCore(pine, metadata)
+        except ValueError:
+            previous = None  # Ordinary PCSX2 has no hook until the state loads.
+        if previous is not None and previous.get('active'):
+            previous.stop()
         pine.load_state(slot)
         deadline = time.monotonic()+timeout
         while time.monotonic() < deadline:
             try:
                 core = DonCore(pine, metadata)
                 if core.frozen(len(manifest['pads'])) and pine.status() == 0:
+                    loaded = core
+                    core.loading_copy = (target, manifest['state_sha256'])
                     return core
             except ValueError:
                 pass
@@ -170,8 +199,9 @@ def load_initial(pine, metadata, manifest, state, state_dir, timeout=25):
             pass
         raise
     finally:
-        if target.is_file() and sha256_file(target) == manifest['state_sha256']:
-            target.unlink()
+        removed = _remove_loading_copy(target, manifest['state_sha256'])
+        if removed and loaded is not None:
+            loaded.loading_copy = None
 
 
 class OnlineSession:
@@ -255,7 +285,11 @@ class OnlineSession:
                 heartbeat.start()
                 expected_epoch = self.snapshot['session_epoch']
                 released, last_progress, previous_frame, next_log = False, time.monotonic(), 0, 0
+                next_cleanup = time.monotonic()+1
                 while not self.cancel.is_set():
+                    if time.monotonic() >= next_cleanup:
+                        _cleanup_loading_copy(core)
+                        next_cleanup = time.monotonic()+2
                     room = self.snapshot
                     if time.monotonic()-self.last_success > 15:
                         raise ValueError('Se perdió la API durante 15 segundos; partida detenida.')
@@ -306,6 +340,8 @@ class OnlineSession:
                 pine.close()
             if heartbeat is not None:
                 heartbeat.join(timeout=10)
+            if core is not None:
+                _cleanup_loading_copy(core)
             if self.room_id:
                 try:
                     if owner:
