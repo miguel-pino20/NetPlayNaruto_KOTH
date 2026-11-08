@@ -1,0 +1,2 @@
+# Native Windows command scripts must keep CRLF when cloned on either OS.
+*.bat text eol=crlf

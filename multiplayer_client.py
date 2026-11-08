@@ -18,6 +18,7 @@ from node import Node
 
 
 class RoomClient:
+    base_path = '/api/netplay/sessions/'
     def __init__(self, url, ticket):
         self.url, self.ticket = validate_url(url), ticket
         if not ticket:
@@ -26,16 +27,37 @@ class RoomClient:
     def create(self, manifest, capacity, delay=3):
         if capacity not in (2, 3, 4):
             raise ValueError('Selecciona 2, 3 o 4 jugadores.')
-        return api_call(self.url, 'POST', '/api/netplay/sessions/',
+        return api_call(self.url, 'POST', self.base_path,
                         {'manifest': manifest, 'capacity': capacity, 'delay': delay}, token=self.ticket)
 
     def request(self, room_id, action=None, body=None):
         room_id = str(UUID(str(room_id)))
         if action not in (None, 'join', 'sync', 'start', 'leave', 'close'):
             raise ValueError('Acción de sala no válida.')
-        path = f'/api/netplay/sessions/{room_id}/' + (f'{action}/' if action else '')
+        path = f'{self.base_path}{room_id}/' + (f'{action}/' if action else '')
         return api_call(self.url, 'POST' if action else 'GET', path,
                         (body or {}) if action else None, token=self.ticket)
+
+
+class DonRoomClient(RoomClient):
+    """Casual rooms authenticated by the launcher account, with no event ticket."""
+    base_path = '/api/netplay/don/sessions/'
+
+    @classmethod
+    def authenticate(cls, url, session):
+        if not session:
+            raise ValueError('Inicia sesión con Discord en el launcher.')
+        url = validate_url(url)
+        result = api_call(url, 'POST', '/api/netplay/don/access/', {},
+                          extra_headers={'X-Netplay-Session': session})
+        client = cls(url, result.get('ticket'))
+        client.can_publish = result.get('can_publish') is True
+        return client
+
+    def create(self, manifest, capacity, delay=3):
+        if capacity not in (2, 3, 4):
+            raise ValueError('Selecciona 2, 3 o 4 jugadores.')
+        return api_call(self.url, 'POST', self.base_path, {'capacity': capacity, 'delay': delay}, token=self.ticket)
 
 
 def watch(client, room_id, manifest, address, port=47400, ready=False):
@@ -59,7 +81,7 @@ def watch(client, room_id, manifest, address, port=47400, ready=False):
             pass  # The server will expire presence if it cannot receive the final heartbeat.
 
 
-def make_node(snapshot, core):
+def make_node(snapshot, core, *, experimental_don=False):
     """Create a locked star roster only after the API has started the session.
 
     The caller must keep heartbeats running and close the node if ready becomes
@@ -76,7 +98,10 @@ def make_node(snapshot, core):
     disc = manifest.get('disc_sha256')
     if not isinstance(disc, str) or len(disc) != 64 or any(c not in '0123456789abcdef' for c in disc):
         raise ValueError('La sala no identifica la ISO completa; crea una sala con el manifest actualizado.')
-    if getattr(core, 'simulation_hashes', True) is False:
+    experimental = (experimental_don is True and manifest.get('game') == 'don'
+                    and manifest.get('adapter') == 'don-experimental-input-v1'
+                    and getattr(core, 'adapter_id', None) == 'don-experimental-input-v1')
+    if getattr(core, 'simulation_hashes', True) is False and not experimental:
         raise ValueError('Este adaptador solo verifica controles; falta validar el estado del juego para online.')
     if getattr(core, 'capacity', capacity) != capacity:
         raise ValueError('El estado inicial fue preparado para otra cantidad de jugadores.')
@@ -85,7 +110,8 @@ def make_node(snapshot, core):
     players = sorted(snapshot['players'], key=lambda p: p['slot'])
     if ([p['slot'] for p in players] != list(range(capacity))
             or [p['member'] for p in players] != list(range(1, capacity + 1))
-            or len({p['participant_id'] for p in players}) != capacity
+            or len({p.get('player_id', p.get('participant_id')) for p in players}) != capacity
+            or any(p.get('player_id', p.get('participant_id')) is None for p in players)
             or len(manifest['pads']) != capacity):
         raise ValueError('La lista de puestos no es válida.')
     for p in players:

@@ -334,7 +334,7 @@ class Launcher(tk.Tk):
         self.zerotier_btn = PillButton(inner, text=tr('zt.button'), command=self.zerotier)
         self.zerotier_btn.pack(fill='x', pady=(6, 0))
 
-        self.don_setup_btn = PillButton(inner, text='D.O.N · estado inicial (2–4)', command=self.don_setup)
+        self.don_setup_btn = PillButton(inner, text='D.O.N · online experimental (2–4)', command=self.don_setup)
         self.don_setup_btn.pack(fill='x', pady=(6, 0))
 
         # PREPARAR PARTIDA e Ferramentas: so para o dono (ver _sync_admin)
@@ -363,15 +363,15 @@ class Launcher(tk.Tk):
         self._note(self.tools, tr("note.tools"))
 
     def don_setup(self):
-        if self.backend.running:
+        if self.backend.running or self._koth_pending:
             messagebox.showinfo('D.O.N', 'Detén la sesión de netplay actual antes de preparar otro juego.', parent=self)
             return
         dialog = getattr(self, 'don_setup_dialog', None)
         if dialog is not None and dialog.winfo_exists():
             dialog.lift()
             return
-        from don_setup import DonSetupDialog
-        self.don_setup_dialog = DonSetupDialog(self)
+        from launcher_don import DonRoomsDialog
+        self.don_setup_dialog = DonRoomsDialog(self)
 
     def _sync_admin(self):
         # o servidor decide quem e o dono (campo admin da conta); aqui o bloco so aparece/some
@@ -490,6 +490,9 @@ class Launcher(tk.Tk):
             messagebox.showerror(tr("dlg.game_title"), tr("dlg.game_pine", exc=exc))
             return None
         if game is None:
+            if crc == '82EA02B7':
+                messagebox.showinfo('D.O.N', 'Usa «D.O.N · online experimental (2–4)» para crear una sala o unirte.', parent=self)
+                return None
             self._log(tr("log.game_unknown", crc=crc or "?"), "error")
             messagebox.showerror(tr("dlg.game_title"),
                                  tr("dlg.game_unknown", crc=crc or "?", un5=core.UN5_CRC, un6=core.UN6_CRC))
@@ -686,6 +689,8 @@ class Launcher(tk.Tk):
         state = "disabled" if running else "normal"
         for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn, self.hill_btn, self.zerotier_btn):
             b.configure(state=state)
+        if hasattr(self, 'don_setup_btn'):
+            self.don_setup_btn.configure(state=state)
         # PREPARE: so o dono (o servidor decide quem e o dono; o launcher so esconde o botao)
         self.prepare_btn.configure(state="normal" if (not running and self.backend.is_admin()) else "disabled")
         self.stop_btn.configure(state="normal" if running and not self._koth_pending else "disabled")

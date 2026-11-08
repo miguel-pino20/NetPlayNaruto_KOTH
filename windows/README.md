@@ -1,5 +1,32 @@
 # UN5 Netplay para Windows x64
 
+## Ejecutar el proyecto descargado con Git
+
+Instala Python de Windows **de 64 bits, 3.10 o posterior**, con Tcl/Tk y pip
+(opciones normales del instalador de https://www.python.org/downloads/windows/).
+Clona o actualiza el repositorio y abre **`1 - Run.bat`** desde su carpeta.
+
+Durante el desarrollo se comparte y actualiza el codigo mediante Git, se
+prueba en las dos maquinas y se compila/publica una release solo despues de
+validar esas pruebas. No hace falta generar ni subir archivos de `dist/`
+para probar cada cambio.
+
+El script utiliza el codigo local y crea su propio entorno **`.venv-win`**.
+Instala las dependencias de `windows/requirements-run.txt` solo cuando faltan o
+no coinciden con las versiones declaradas. La primera preparacion necesita
+Internet; despues puede abrirse con las dependencias ya disponibles.
+La carpeta `.venv` de Linux no se utiliza ni se copia por Git. Si se encuentra
+un `.venv-win` que no funciona en esa maquina, se conserva como copia de respaldo
+y se crea uno nuevo.
+
+El arranque no descarga ni sobrescribe fuentes desde GitHub, no compila un EXE
+y no abre PCSX2. Abre PCSX2 manualmente, carga el juego y activa PINE antes de
+conectar una partida. Los datos y registros del launcher se guardan en
+`%APPDATA%\UN5 Netplay`. No copies sesiones personales ni entornos virtuales
+entre maquinas; inicia sesion con tu cuenta en el Windows de destino.
+
+## Ejecutable independiente
+
 Comparte únicamente `dist/UN5-Netplay-Windows-x64.exe`.
 El jugador lo abre con doble clic: inicia solo el launcher de netplay.
 No ejecuta ni incluye PCSX2, Flatpak, `.sh` ni `.bat`.

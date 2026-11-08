@@ -1,6 +1,6 @@
 """Set these values before building and publishing a numbered GitHub release."""
 
-VERSION = "0.1.1A"
+VERSION = "0.1.3A"
 REPOSITORY = "miguel-pino20/NetPlayNaruto_KOTH"
 INCLUDE_PRERELEASES = True
 

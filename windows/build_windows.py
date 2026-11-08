@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MODULES = ("appdata core_link discord_auth hill i18n koth_client launcher launcher_account "
            "launcher_avatar launcher_core launcher_koth launcher_theme lockstep netlink netplay "
            "node pine release_info rooms simgame spectator statesync updater wire zerotier_networks "
-           "build_don disc_image don_adapter don_core don_profiles don_setup mips_link multiplayer_client").split()
+           "build_don disc_image don_adapter don_core don_profiles don_setup don_online launcher_don mips_link multiplayer_client").split()
 
 
 def run(*args, **kwargs):

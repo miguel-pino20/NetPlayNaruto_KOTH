@@ -1,9 +1,13 @@
 # UN5 Netplay Launcher
 
 Desarrollo experimental de salas para 2–4 jugadores: [MULTIPLAYER.md](MULTIPLAYER.md).
-La coordinación y el hook experimental de D.O.N están implementados. El launcher
-fuente permite preparar estados para 2–4 jugadores; falta validar el combate
-entre emuladores antes de habilitar su online.
+Desde 0.1.3A, **D.O.N · online experimental (2–4)** crea salas libres, sin eventos
+ni inscripción en torneos. Usa D.O.N ya abierto en PCSX2, sin seleccionar una ISO.
+Host e invitados descargan desde Django el estado inicial para 2, 3 o 4 jugadores
+y lo guardan en la carpeta de estados de PCSX2; ZeroTier transporta los mandos. El modo verifica
+las entradas, pero todavía no certifica la sincronía del estado del combate.
+Requiere actualizar Django y aplicar `0014_don_independent_rooms`. Un administrador
+publica los tres perfiles una vez desde la pestaña «PCSX2 y administración».
 
 Los compilados comprueban las releases de GitHub al abrirse y se actualizan
 automáticamente si hay una versión posterior para su plataforma.

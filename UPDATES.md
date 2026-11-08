@@ -2,7 +2,7 @@
 
 Los paquetes de Windows y Linux consultan las releases públicas del repositorio
 configurado al abrir el launcher, antes de iniciar netplay o PCSX2.
-El punto de partida de esta implementación es **0.1.1A**.
+El código del actualizador está incluido desde **0.1.0A**.
 
 Cuando existe una versión posterior para la plataforma actual:
 
@@ -39,6 +39,11 @@ por ejemplo `0.1.2A` o `v0.1.2A`. También se admiten versiones como
 `0.1.2-alpha.1`, `0.1.2-beta.1`, `0.1.2-rc.1` y `0.1.2`.
 La comparación es numérica: `0.1.10A` es posterior a `0.1.9A`.
 Las etiquetas sin número, como `Alpha`, se omiten.
+También se rechazan etiquetas como `Alpha0.1.1A`: el nombre visible de la
+release puede ser descriptivo, pero su **tag** debe ser `0.1.1A` o `v0.1.1A`.
+Si una publicación no aparece en el launcher anterior, comprueba primero ese
+tag y los cuatro archivos adjuntos. Corregir solo el nombre visible no cambia
+la etiqueta que consulta el actualizador.
 
 1. Compila y comprueba las aplicaciones.
 2. Crea una release en borrador en el repositorio configurado.

@@ -54,6 +54,8 @@ un5_stop_*.flag
 __pycache__/
 *.py[cod]
 .venv/
+.venv-win/
+.venv-win-backup-*/
 venv/
 .pytest_cache/
 .mypy_cache/

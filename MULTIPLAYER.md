@@ -1,12 +1,71 @@
 # Salas de 2–4 jugadores por Django y ZeroTier
 
-Estado: coordinación implementada y red probada con un juego simulado de cuatro
-mandos. El hook experimental de D.O.N pasó una prueba de 180 frames en PCSX2
-2.8.2, además de las pruebas de su puente C/Python para 2, 3 y 4 jugadores.
-Falta verificar el estado del combate y el determinismo entre emuladores;
-el cliente bloquea este adaptador para online mientras solo tenga hashes de
-controles. El launcher tiene una herramienta para preparar estados de D.O.N,
-además de conservar su flujo de UN5/UN6 y KOTH.
+Desde 0.1.3A hay una vista propia **D.O.N · online experimental (2–4)** para
+crear salas libres, unirse por código y comenzar partidas, sin eventos ni inscripciones.
+Usa el juego abierto en PCSX2 y descarga el paquete inicial
+en Django y transporta los mandos por ZeroTier. Los hashes verifican entradas,
+no el estado de la simulación: se mantiene `online_verified=False`. El flujo
+normal de UN5/UN6 y KOTH continúa separado.
+
+## Usar el online experimental de D.O.N
+
+1. Actualizar la API Django con los módulos de salas y archivos, y aplicar
+   `python manage.py migrate` (incluye `0014_don_independent_rooms`). Un administrador
+   publica una vez los estados de 2, 3 y 4 jugadores desde la pestaña de administración.
+2. Abrir D.O.N en PCSX2 v2.8.2 en todos los PCs. Activar PINE y el
+   Multitap del puerto 1. Cada PC usa su mando físico 1A; la sala asigna P1–P4.
+3. Iniciar sesión con la cuenta del launcher y abrir **D.O.N · online experimental (2–4)**.
+4. Host: escoger 2, 3 o 4 jugadores y la dirección ZeroTier; pulsar **Crear sala**.
+5. Invitados: seleccionar **Invitado**, pegar el código compartido por el host,
+   elegir su dirección ZeroTier y unirse.
+   No necesitan los perfiles del host, su ELF ni un compilador: el snapshot
+   compartido instala el hook al cargarse en PCSX2 normal.
+6. Django sirve el mismo paquete tanto al host como a cada invitado. El cliente
+   comprueba hashes del paquete/estado, serial/CRC del juego abierto, hook y versión
+   de emulador antes de quedar listo. No se solicita ni calcula un hash de una ISO
+   local seleccionada; el CRC compartido por ediciones no verifica sus datos distintos.
+   El host pulsa
+   **Iniciar partida** cuando todos los puestos están listos.
+
+El estado descargado se conserva en la carpeta de estados como
+`DON-inicial-<cantidad>p-<hash>.p2s`. Para cargarlo se usa además una ranura libre,
+sin sustituir estados anteriores, y se elimina solo esa copia numerada temporal.
+Los perfiles centrales y el paquete fijado para cada sala permanecen en Django.
+Detener/cerrar devuelve los controles locales y retira la disponibilidad. La
+pérdida de API durante 15 segundos o de avance durante 30 detiene la sesión.
+
+La prueba completa `build/don/online-e2e-results.json` usó dos PCSX2 normales,
+la API Django de localhost y UDP sobre una dirección ZeroTier de esta misma
+PC. El host llegó a frame 949 (946 hashes de entradas comprobados) y el invitado
+a 952. No acredita una prueba entre dos PCs físicas ni determinismo completo.
+
+La prueba del flujo independiente está en `build/don/independent-e2e-results.json`:
+el host y el invitado descargaron el perfil central sin rutas de ISO ni perfiles
+locales en sus configuraciones. Llegaron a frame 950 (950 hashes de entradas
+comparados) y 954. La base temporal tenía cero torneos y cero participantes.
+
+## API de salas libres D.O.N (0.1.3A)
+
+`POST /api/netplay/don/access/` verifica `X-Netplay-Session` con el servidor
+principal y devuelve un ticket específico de salas libres. No crea inscripciones
+ni eventos. Los endpoints siguientes requieren `Authorization: Bearer <ticket>`.
+
+- `GET /api/netplay/don/profiles/`: catálogo de perfiles centrales.
+- `POST /api/netplay/don/profiles/<2|3|4>/state/`: solo administrador publica el paquete.
+- `GET /api/netplay/don/profiles/<2|3|4>/state/`: descarga del perfil central.
+- `POST /api/netplay/don/sessions/`: crea con `capacity` y `delay`, fijando el perfil central actual.
+- `GET .../sessions/<uuid>/`: consulta; solo miembros.
+- `POST .../sessions/<uuid>/<join|sync|start|leave|close>/`: gestión de puestos y partida.
+- `GET .../sessions/<uuid>/state/`: miembro descarga el paquete fijado para esa sala.
+
+Los modelos `DonRoom`, `DonSeat` y `DonProfile` no dependen de `Tournament` ni
+`Participant`. Publicar una nueva revisión no cambia el perfil de una sala existente.
+Una cuenta administradora del servidor principal o una cuenta staff de Django
+puede publicar; no se eleva el rol staff de Django por el rol del launcher.
+En esta instalación, los perfiles para la publicación inicial están en `build/don/profiles`.
+
+Las secciones siguientes documentan también la API genérica anterior, conservada
+para compatibilidad. El launcher de D.O.N ya no utiliza sus tickets de eventos.
 
 ## Responsabilidades
 
@@ -20,7 +79,7 @@ además de conservar su flujo de UN5/UN6 y KOTH.
   estado del juego. En D.O.N la barrera y los controles ya están implementados;
   por ahora sus hashes solo acreditan igualdad de las entradas.
 
-Las salas están asociadas a un torneo existente para reutilizar sus tickets.
+Las salas de la API genérica anterior están asociadas a un torneo para reutilizar sus tickets.
 No cambian la cola, los puntos, los resultados ni los turnos de KOTH. Un KOTH con
 cuatro contendientes simultáneos necesitará además reglas y resultados propios.
 
@@ -39,6 +98,8 @@ activo del mismo torneo. Los puestos internos son 0–3; los miembros de red son
 | `POST .../<uuid>/start/` | Creador inicia cuando todos están listos |
 | `POST .../<uuid>/leave/` | Invitado abandona antes del inicio |
 | `POST .../<uuid>/close/` | Creador cierra la sala |
+| `POST .../<uuid>/state/` | Host publica el paquete inicial inmutable |
+| `GET .../<uuid>/state/` | Miembro descarga el paquete autenticado |
 
 Crear requiere, por ejemplo, `{"capacity":4,"delay":3,"manifest":...}`.
 `sync` requiere `{"address":"10.147.0.1","port":47400,"ready":true,"manifest":...}`.
@@ -63,8 +124,8 @@ API durante ese plazo, cambia la sesión, se cierra la sala o `ready` pasa a fal
 
 ## Cliente de desarrollo
 
-La migración `0012_multiplayer_sessions` debe aplicarse en Django antes de usar
-la API. No se ha ejecutado contra la base de datos del usuario.
+Las migraciones `0012_multiplayer_sessions` y `0013_multiplayer_state_package`
+deben aplicarse antes de usar la API. No se han ejecutado contra la base del usuario.
 
 Con el ticket existente en la variable `UN5_HILL_TICKET` y un `manifest.json`
 preparado con los datos reales:
@@ -79,6 +140,9 @@ Cada participante mantiene `watch` abierto; hace heartbeat cada dos segundos.
 Ctrl+C retira su disponibilidad. El creador puede usar otra terminal con
 `start UUID_DE_SALA`, `status UUID_DE_SALA` o `close UUID_DE_SALA`. Estos comandos
 solo coordinan: no cargan un save state ni ejecutan una partida de PCSX2.
+Desde 0.1.2A, iniciar también requiere publicar antes el paquete por
+`POST .../<uuid>/state/`. La vista gráfica de D.O.N automatiza la subida,
+descarga y carga; la herramienta CLI de coordinación no realiza esos pasos.
 
 `make_node(snapshot, core)` crea la red usando el roster autorizado por Django.
 Rechaza el `PineCore` actual para cuatro jugadores. Un adaptador debe declarar
@@ -86,7 +150,9 @@ Rechaza el `PineCore` actual para cuatro jugadores. Un adaptador debe declarar
 `captured`, `publish` y `hashes` de `node.py`. También debe resolver su carga,
 congelación, liberación y restauración del juego. La integración que llame a esta
 función debe mantener los heartbeats y cerrar el nodo cuando la sala deje de
-estar lista. No conectar este contrato directamente al hook de Naruto: su bloque
+estar lista. `don_online.py` implementa este ciclo y activa únicamente D.O.N con
+`experimental_don=True`; el rechazo por defecto del adaptador de hashes de
+entradas se conserva para los demás usos. No conectar este contrato al hook de Naruto: su bloque
 de memoria solo tiene dos entradas.
 
 ## Trabajo pendiente para D.O.N
@@ -108,9 +174,8 @@ de memoria solo tiene dos entradas.
    Los tres perfiles se restauraron en la instancia experimental PINE 28012 y
    pasaron 60 fotogramas de prueba local cada uno. Esto no acredita sincronía
    de combate entre emuladores. Informe: `build/don/restore-test-results.json`.
-4. La interfaz ya solicita 2–4 jugadores al preparar el estado. Falta conectar
-   las partidas de D.O.N a las salas y al flujo gráfico de arranque, probarlas
-   entre PCs y generar nuevos paquetes de distribución.
+4. Hecho: interfaz de salas e inicio experimental, transferencia por Django y
+   prueba completa entre dos instancias. Falta probar entre PCs distintas.
 5. Hecho: SHA256 de la ISO completa obligatorio en las salas nuevas. Las versiones
    japonesa y latina comparten ejecutable, pero sus datos pueden diferir.
 
@@ -192,9 +257,8 @@ La prueba carga el estado en una ranura libre y devuelve el control local al
 terminar. Requiere la instancia con el ejecutable experimental y su carpeta
 de estados correspondiente. Puede repetirse con `--players 3` o `4`.
 
-La interfaz y las listas de módulos para empaquetar están actualizadas; no se
-han recompilado ni publicado AppImage/EXE nuevos. La herramienta gráfica y la
-captura de estados no habilitan todavía una sesión online de D.O.N.
+La captura inicial sigue siendo una herramienta separada, accesible desde la
+vista de salas. El modo online experimental lo ejecuta `don_online.py`.
 
 ### Prueba entre dos instancias locales
 
@@ -223,8 +287,8 @@ de simulación no certificada. Hay diferencias de RAM y de presentación en las
 capturas. La RAM completa incluye temporizadores, DMA y renderizado asíncrono;
 sus diferencias no demuestran por sí solas desincronía del combate. Falta
 identificar y comparar estado lógico del juego en un punto estable, verificar
-revancha y probar ZeroTier entre PCs. Se mantiene el bloqueo de online del
-adaptador hasta completar esa validación.
+revancha y probar ZeroTier entre PCs. El adaptador conserva el bloqueo por
+defecto; solo la nueva vista habilita explícitamente la sesión experimental.
 
 ## Perfil y diagnóstico de D.O.N
 

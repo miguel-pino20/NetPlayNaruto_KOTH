@@ -1,178 +1,112 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
 chcp 65001 >nul
-setlocal
-cd /d "%~dp0"
-title UN5 Netplay Launcher
+title UN5 Netplay - proyecto local
 
-echo ========================================
-echo       UN5 Netplay Launcher
-echo ========================================
-echo.
+pushd "%~dp0"
+if errorlevel 1 goto folder_error
 
-:: ==================================================
-:: AUTOMATIC GITHUB UPDATER
-:: ==================================================
+set "PYTHONHOME="
+set "PYTHONPATH="
+set "PYTHONNOUSERSITE=1"
+set "PYTHONUTF8=1"
+set "PYTHONDONTWRITEBYTECODE=1"
+set "UN5_SOURCE_HELPER=%~dp0windows\run_source.py"
 
-echo Checking for launcher updates...
+if not exist "%UN5_SOURCE_HELPER%" goto missing_files
+if not exist "%~dp0windows\requirements-run.txt" goto missing_files
+if not exist "%~dp0windows\windows_start.py" goto missing_files
+if not exist "%~dp0launcher.py" goto missing_files
 
-set "REPO_API=https://api.github.com/repos/zMath3usMSF/UN5-Netplay/commits/main"
-set "UPDATE_ZIP=%TEMP%\UN5NetplayUpdate.zip"
-set "UPDATE_DIR=%TEMP%\UN5NetplayUpdate"
-set "UPDATE_MARKER=%~dp0.update_commit"
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
- "$ErrorActionPreference='Stop';" ^
- "try {" ^
- "  $headers=@{'User-Agent'='UN5-Netplay-Updater'};" ^
- "  $commit=Invoke-RestMethod -Uri '%REPO_API%' -Headers $headers -TimeoutSec 10;" ^
- "  $sha=$commit.sha;" ^
- "  $old='';" ^
- "  if(Test-Path -LiteralPath '%UPDATE_MARKER%') {$old=(Get-Content -LiteralPath '%UPDATE_MARKER%' -Raw).Trim()};" ^
- "  if($old -eq $sha) {Write-Host 'Launcher is already up to date.'; exit 0};" ^
- "  Write-Host 'Update found. Downloading...';" ^
- "  Invoke-WebRequest -Uri 'https://github.com/zMath3usMSF/UN5-Netplay/archive/refs/heads/main.zip' -OutFile '%UPDATE_ZIP%' -TimeoutSec 60;" ^
- "  if(Test-Path '%UPDATE_DIR%') {Remove-Item '%UPDATE_DIR%' -Recurse -Force};" ^
- "  Expand-Archive -LiteralPath '%UPDATE_ZIP%' -DestinationPath '%UPDATE_DIR%' -Force;" ^
- "  $src=Get-ChildItem '%UPDATE_DIR%' -Directory | Select-Object -First 1;" ^
- "  if(!$src -or !(Test-Path (Join-Path $src.FullName 'launcher.py'))) {throw 'Invalid update archive: launcher.py not found'};" ^
- "  $root=(Get-Location).Path;" ^
- "  $exclude=@('.git','.venv','venv','__pycache__','.vscode','.idea');" ^
- "  $files=Get-ChildItem -LiteralPath $src.FullName -File -Recurse;" ^
- "  foreach($f in $files) {" ^
- "    $rel=$f.FullName.Substring($src.FullName.Length+1);" ^
- "    $parts=$rel -split '[\\/]';" ^
- "    $skip=$false;" ^
- "    foreach($p in $parts) {" ^
- "      if($exclude -contains $p -or $p -match '\.bak($|[0-9])' -or $p -match '\.bak_seguranca$' -or $p -match '\.p2s$' -or $p -in @('config.json','session.json','symbols.json') -or $p -match '\.(key|pem)$' -or $p -eq '.env' -or $p -eq '.update_commit') {$skip=$true}" ^
- "    };" ^
- "    if($skip) {continue};" ^
- "    $target=Join-Path $root $rel;" ^
- "    $parent=Split-Path $target -Parent;" ^
- "    if(!(Test-Path -LiteralPath $parent)) {New-Item -ItemType Directory -Path $parent -Force | Out-Null};" ^
- "    Copy-Item -LiteralPath $f.FullName -Destination $target -Force;" ^
- "  };" ^
- "  Set-Content -LiteralPath '%UPDATE_MARKER%' -Value $sha -NoNewline;" ^
- "  Write-Host 'Update completed successfully.';" ^
- "} catch {" ^
- "  Write-Host ('WARNING: Update failed: ' + $_.Exception.Message);" ^
- "  Write-Host 'Continuing with the installed version...';" ^
- "} finally {" ^
- "  Remove-Item -LiteralPath '%UPDATE_ZIP%' -Force -ErrorAction SilentlyContinue;" ^
- "  Remove-Item -LiteralPath '%UPDATE_DIR%' -Recurse -Force -ErrorAction SilentlyContinue;" ^
- "}"
-
-echo.
-
-:: ==================================================
-:: CHECK FOR PYTHON
-:: ==================================================
-
-where python >nul 2>&1
+call :probe_python "%~dp0.venv-win\Scripts\python.exe" "" "venv"
 if not errorlevel 1 (
-    set "PYTHON_CMD=python"
-    goto CHECK_PYTHON
+    set "UN5_PYTHON=%~dp0.venv-win\Scripts\python.exe"
+    set "UN5_PYTHON_ARGS="
+    goto run
 )
 
-where py >nul 2>&1
+call :probe_python "py" "-3"
 if not errorlevel 1 (
-    set "PYTHON_CMD=py"
-    goto CHECK_PYTHON
+    set "UN5_PYTHON=py"
+    set "UN5_PYTHON_ARGS=-3"
+    goto run
 )
 
-echo Python is not installed.
-echo Downloading the official Python installer...
-echo.
+for %%V in (314 313 312 311 310) do (
+    call :probe_python "%LocalAppData%\Programs\Python\Python%%V\python.exe" ""
+    if not errorlevel 1 (
+        set "UN5_PYTHON=%LocalAppData%\Programs\Python\Python%%V\python.exe"
+        set "UN5_PYTHON_ARGS="
+        goto run
+    )
+    call :probe_python "%ProgramFiles%\Python%%V\python.exe" ""
+    if not errorlevel 1 (
+        set "UN5_PYTHON=%ProgramFiles%\Python%%V\python.exe"
+        set "UN5_PYTHON_ARGS="
+        goto run
+    )
+    call :probe_python "%SystemDrive%\Python%%V\python.exe" ""
+    if not errorlevel 1 (
+        set "UN5_PYTHON=%SystemDrive%\Python%%V\python.exe"
+        set "UN5_PYTHON_ARGS="
+        goto run
+    )
+)
 
-set "INSTALLER=%TEMP%\python-installer.exe"
-
-curl -fL "https://www.python.org/ftp/python/3.13.7/python-3.13.7-amd64.exe" -o "%INSTALLER%"
-if errorlevel 1 (
-    echo ERROR: Failed to download Python.
-    echo Install it manually from:
-    echo https://www.python.org/downloads/windows/
-    pause
-    exit /b 1
+for /f "delims=" %%P in ('where python 2^>nul') do (
+    call :probe_python "%%P" ""
+    if not errorlevel 1 (
+        set "UN5_PYTHON=%%P"
+        set "UN5_PYTHON_ARGS="
+        goto run
+    )
 )
 
 echo.
-echo Installing Python...
-start /wait "" "%INSTALLER%" /passive InstallAllUsers=0 PrependPath=1 Include_launcher=1
+echo No se encontro Python de Windows de 64 bits con Tcl/Tk, version 3.10 o posterior.
+echo Instala Python desde https://www.python.org/downloads/windows/
+echo Incluye Tcl/Tk e IDLE, pip y el launcher de Python.
+echo Despues vuelve a ejecutar este archivo.
+goto failure
 
-set "PATH=%LocalAppData%\Programs\Python\Python313;%LocalAppData%\Programs\Python\Python313\Scripts;%PATH%"
+:run
+echo.
+echo UN5 Netplay - usando el proyecto local, sin descargar actualizaciones de codigo.
+echo No se generara ningun EXE ni se abrira PCSX2 automaticamente.
+echo.
+"%UN5_PYTHON%" %UN5_PYTHON_ARGS% -I "%UN5_SOURCE_HELPER%" %*
+set "UN5_RESULT=%ERRORLEVEL%"
+if not "%UN5_RESULT%"=="0" goto launch_error
+popd
+endlocal
+exit /b 0
 
-where python >nul 2>&1
-if not errorlevel 1 (
-    set "PYTHON_CMD=python"
-    goto CHECK_PYTHON
-)
+:probe_python
+rem Skip the Windows Store alias; it is not an installed Python runtime.
+echo "%~1" | findstr /i /c:"WindowsApps" >nul
+if not errorlevel 1 exit /b 1
+"%~1" %~2 -I -c "import sys, tkinter, venv, ssl; assert sys.version_info >= (3, 10) and sys.maxsize > 2**32; assert sys.argv[1] != 'venv' or sys.prefix != sys.base_prefix" "%~3" >nul 2>&1
+exit /b %ERRORLEVEL%
 
-where py >nul 2>&1
-if not errorlevel 1 (
-    set "PYTHON_CMD=py"
-    goto CHECK_PYTHON
-)
+:missing_files
+echo Faltan archivos del proyecto. Actualiza el repositorio completo con Git.
+goto failure
 
-echo ERROR: Python could not be detected after installation.
+:launch_error
+echo.
+echo El launcher termino con un error. Revisa el mensaje anterior.
+echo Si la ventana llego a abrirse, consulta tambien el registro:
+echo "%APPDATA%\UN5 Netplay\launcher.log"
+goto failure
+
+:failure
 pause
+popd
+endlocal
 exit /b 1
 
-:CHECK_PYTHON
-echo Checking Python installation...
-%PYTHON_CMD% --version
-if errorlevel 1 (
-    echo ERROR: Python is not working correctly.
-    pause
-    exit /b 1
-)
-
-echo.
-echo Checking Pillow...
-
-%PYTHON_CMD% -c "from PIL import Image, ImageDraw, ImageTk" >nul 2>&1
-if not errorlevel 1 goto CHECK_CERTIFI
-
-echo Pillow is missing. Installing...
-%PYTHON_CMD% -m pip install --upgrade Pillow
-
-if errorlevel 1 (
-    echo ERROR: Failed to install Pillow.
-    pause
-    exit /b 1
-)
-
-%PYTHON_CMD% -c "from PIL import Image, ImageDraw, ImageTk" >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Pillow installation could not be verified.
-    pause
-    exit /b 1
-)
-
-:: ==================================================
-:: CERTIFICATES (certifi): fixes "CERTIFICATE_VERIFY_FAILED"
-:: Installed/updated on every start. Not fatal if it fails (no internet, etc.).
-:: ==================================================
-:CHECK_CERTIFI
-echo.
-echo Updating TLS certificates (certifi)...
-%PYTHON_CMD% -m pip install --upgrade --quiet certifi
-if errorlevel 1 (
-    echo WARNING: Could not update certifi. Continuing anyway...
-)
-
-:RUN_LAUNCHER
-echo.
-echo All dependencies are ready.
-echo Starting launcher...
-echo.
-
-%PYTHON_CMD% "%~dp0launcher.py"
-
-if errorlevel 1 (
-    echo.
-    echo The program exited with an error.
-    echo Copy the error message above for support.
-)
-
-echo.
+:folder_error
+echo No se pudo abrir la carpeta del proyecto.
 pause
 endlocal
+exit /b 1

@@ -39,7 +39,7 @@ def latest_state_directory(pine_slot=28011):
 
 
 class DonSetupDialog(tk.Toplevel):
-    def __init__(self, parent):
+    def __init__(self, parent, *, adapter_path=None, profiles_dir=None):
         super().__init__(parent)
         self.title('D.O.N · estado inicial')
         self.resizable(False, False)
@@ -48,7 +48,8 @@ class DonSetupDialog(tk.Toplevel):
         self.busy = False
         self.results = queue.Queue()
         self.players = tk.StringVar(value='')
-        self.adapter = tk.StringVar(value=str(ROOT/'build/don/adapter.json'))
+        self.adapter = tk.StringVar(value=str(adapter_path or ROOT/'build/don/adapter.json'))
+        self.profiles_dir = Path(profiles_dir) if profiles_dir else None
         self.directory = tk.StringVar(value=latest_state_directory())
         self.port = tk.StringVar(value='28011')
         self.port.trace_add('write', self.update_directory)
@@ -111,7 +112,8 @@ class DonSetupDialog(tk.Toplevel):
             self.status.set('Introduce una ranura PINE entre 1 y 65535.')
             return
         count, adapter, directory = int(self.players.get()), self.adapter.get(), self.directory.get()
-        output = Path(adapter).resolve().parent/'profiles'/f'{count}p'/datetime.now().strftime('%Y%m%d-%H%M%S')
+        profile_root = self.profiles_dir or Path(adapter).resolve().parent/'profiles'
+        output = profile_root/f'{count}p'/datetime.now().strftime('%Y%m%d-%H%M%S')
         self.busy = True
         self.count.configure(state='disabled')
         self.capture.configure(state='disabled')
