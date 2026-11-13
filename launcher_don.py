@@ -42,7 +42,7 @@ class DonRoomsDialog(tk.Toplevel):
         if isinstance(saved.get('profiles_root'), str):
             self.publish_root = Path(saved['profiles_root'])
         initial = {'role': 'host', 'players': '2', 'room_id': '',
-                   'url': app.v['hill_url'].get() or 'https://narutimateonline.sytes.net',
+                   'url': app.v['hill_url'].get() or 'https://narutimateonline.servegame.com/',
                    'state_dir': app.cfg().get('state_dir') or latest_state_directory(), 'pine_slot': '28011', 'port': '47400'}
         for key in initial:
             if isinstance(saved.get(key), str):

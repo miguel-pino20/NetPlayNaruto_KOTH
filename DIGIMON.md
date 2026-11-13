@@ -40,7 +40,7 @@ congelado en frame cero y mantiene neutrales los puestos sin participante.
 La caché de PCSX2 reutiliza el mismo estado entre cantidades de jugadores.
 
 El estado común capturado en `profiles/4p/20261108-160902-open/` se publicó para
-las tres capacidades en `https://narutimateonline.sytes.net` y se descargó con
+las tres capacidades en `https://narutimateonline.servegame.com/` y se descargó con
 verificación de paquete, estado y símbolos. Su SHA-256 es
 `39a97359bb56a9b5a53a3386d637fe9ea81692085150843654ec9fbc2bb8b64c`.
 Los resultados están en `build/digimon/shared-state-publication-result.json` y

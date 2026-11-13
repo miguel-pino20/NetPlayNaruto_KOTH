@@ -56,7 +56,7 @@ Django coordina los turnos. Las peleas de KOTH conectan directamente por ZeroTie
 con 3 frames de delay. Los participantes en espera también pueden observar por
 ZeroTier en su propio PCSX2. HOST/GUEST fuera de KOTH conserva el servidor principal.
 
-La URL pública de Django es `https://narutimateonline.sytes.net`.
+La URL pública de Django es `https://narutimateonline.servegame.com/`.
 El launcher corrige automáticamente el dominio anterior mal escrito
 (`narultimateonline.sytes.net`) en las configuraciones guardadas.
 

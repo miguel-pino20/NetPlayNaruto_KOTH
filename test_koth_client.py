@@ -28,7 +28,7 @@ class KothClientTests(unittest.TestCase):
         self.assertNotEqual(self.store.member('https://other.example.test', 2)['key'], first['key'])
 
     def test_typo_in_shipped_domain_is_repaired_without_changing_custom_servers(self):
-        self.assertEqual(DEFAULT_URL, 'https://narutimateonline.sytes.net')
+        self.assertEqual(DEFAULT_URL, 'https://narutimateonline.servegame.com/')
         self.assertEqual(site_url('https://narultimateonline.sytes.net/'), DEFAULT_URL)
         self.assertEqual(site_url('http://narultimateonline.sytes.net:8077'), 'http://narutimateonline.sytes.net:8077')
         self.assertEqual(site_url(self.url), self.url)

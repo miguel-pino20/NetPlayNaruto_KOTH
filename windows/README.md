@@ -79,6 +79,12 @@ Estas comprobaciones no sustituyen una partida de prueba en Windows.
 
 ## Construir desde Linux mediante Wine
 
+Con el prefijo del proyecto preparado en `.windows-cache/wine` y Python en
+`C:\Python313`, ejecuta `./build.sh windows` (o `./build.sh` para ambas plataformas).
+Necesita `python3 -m pip` en Linux. Comprueba los wheels contra las versiones de
+`requirements-build.txt` y descarga en `.windows-cache/wheels` los que falten
+antes de iniciar Wine. Si la caché está completa, funciona sin conexión.
+
 Se necesita Python **de Windows**, no el Python de Linux. Se puede instalar en
 un prefijo Wine dedicado al proyecto, por ejemplo `.windows-cache/wine`.
 Ejecuta el mismo constructor con ese Python mediante Wine; para construir sin

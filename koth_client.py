@@ -8,7 +8,7 @@ from appdata import write_json
 from discord_auth import AccountError, api_call
 from hill import validate_url
 
-DEFAULT_URL = 'https://narutimateonline.sytes.net'
+DEFAULT_URL = 'https://narutimateonline.servegame.com/'
 LEGACY_HOST = 'narultimateonline.sytes.net'
 
 
