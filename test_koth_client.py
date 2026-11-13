@@ -28,9 +28,14 @@ class KothClientTests(unittest.TestCase):
         self.assertNotEqual(self.store.member('https://other.example.test', 2)['key'], first['key'])
 
     def test_typo_in_shipped_domain_is_repaired_without_changing_custom_servers(self):
-        self.assertEqual(DEFAULT_URL, 'https://narutimateonline.servegame.com/')
+        self.assertEqual(DEFAULT_URL, 'https://narutimateonline.servegame.com')
         self.assertEqual(site_url('https://narultimateonline.sytes.net/'), DEFAULT_URL)
-        self.assertEqual(site_url('http://narultimateonline.sytes.net:8077'), 'http://narutimateonline.sytes.net:8077')
+        self.assertEqual(site_url('http://narultimateonline.sytes.net:8077'), 'http://narutimateonline.servegame.com:8077')
+        self.assertEqual(site_url('https://narutimateonline.sytes.net/'), DEFAULT_URL)
+        self.assertEqual(site_url(DEFAULT_URL + '/'), DEFAULT_URL)
+        self.assertEqual(site_url(DEFAULT_URL), DEFAULT_URL)
+        self.assertEqual(site_url('https://narutimateonline.sytes.net:8443/custom/'),
+                         DEFAULT_URL + ':8443/custom')
         self.assertEqual(site_url(self.url), self.url)
         self.assertEqual(site_url('https://narultimateonline.sytes.net.example.test'),
                          'https://narultimateonline.sytes.net.example.test')
@@ -38,16 +43,25 @@ class KothClientTests(unittest.TestCase):
     def test_saved_configuration_url_is_repaired(self):
         import launcher_core
         config = Path(self.directory.name)/'launcher.json'
-        config.write_text(json.dumps({'hill_url': 'https://narultimateonline.sytes.net'}))
-        with patch.object(launcher_core, 'CONFIG_FILE', config):
-            self.assertEqual(launcher_core.load_config()['hill_url'], DEFAULT_URL)
+        for host in ('narultimateonline.sytes.net', 'narutimateonline.sytes.net'):
+            with self.subTest(host=host):
+                config.write_text(json.dumps({'hill_url': 'https://' + host}))
+                with patch.object(launcher_core, 'CONFIG_FILE', config):
+                    self.assertEqual(launcher_core.load_config()['hill_url'], DEFAULT_URL)
 
     def test_membership_key_is_preserved_when_correcting_the_old_default(self):
-        old_key = 'https://narultimateonline.sytes.net/events/2'
         credential = {'key': 'a'*32, 'ticket': 'sample-ticket'}
-        self.path.write_text(json.dumps({old_key: credential}))
-        self.assertEqual(self.store.member(DEFAULT_URL, 2), credential)
-        self.assertEqual(self.store.member('https://narultimateonline.sytes.net', 2), credential)
+        for host in ('narultimateonline.sytes.net', 'narutimateonline.sytes.net',
+                     'narutimateonline.servegame.com'):
+            for slash in ('', '/'):
+                with self.subTest(host=host, slash=slash):
+                    old_key = 'https://' + host + slash + '/events/2'
+                    self.path.write_text(json.dumps({old_key: credential}))
+                    self.assertEqual(self.store.member(DEFAULT_URL, 2), credential)
+                    self.assertEqual(self.store.member(DEFAULT_URL + '/', 2), credential)
+                    self.store.save_ticket(DEFAULT_URL, 2, 'updated-ticket')
+                    self.assertEqual(self.store.member(DEFAULT_URL, 2)['ticket'], 'updated-ticket')
+                    self.assertNotEqual(self.store.member(DEFAULT_URL, 3)['key'], credential['key'])
 
     @patch('koth_client.api_call')
     def test_lost_enrollment_response_retries_with_same_key(self, api):
@@ -60,6 +74,18 @@ class KothClientTests(unittest.TestCase):
         enroll(self.url, self.event, 'Player', MembershipStore(self.path))
         self.assertEqual(api.call_args.args[3]['registration_key'], first_key)
         self.assertEqual(self.store.member(self.url, 2)['ticket'], 'new-ticket')
+
+    @patch('multiplayer_client.api_call')
+    def test_game_rooms_authenticate_against_the_migrated_server(self, api):
+        from multiplayer_client import DonRoomClient, DigimonRoomClient
+        api.return_value = {'ticket': 'room-ticket'}
+        for client_type in (DonRoomClient, DigimonRoomClient):
+            with self.subTest(game=client_type.__name__):
+                client = client_type.authenticate('https://narutimateonline.sytes.net/', 'session')
+                self.assertEqual(api.call_args.args[0], DEFAULT_URL)
+                self.assertEqual(client.url, DEFAULT_URL)
+                custom = client_type.authenticate(self.url, 'session')
+                self.assertEqual(custom.url, self.url)
 
     @patch('koth_client.api_call')
     def test_version_conflict_refreshes_event_once_without_duplicate_identity(self, api):

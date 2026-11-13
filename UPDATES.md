@@ -26,6 +26,43 @@ El diagnóstico queda en `updater.log`, dentro de la carpeta de datos de UN5 Net
 
 ## Publicar una actualización
 
+### Generar las notas
+
+El script `generate_release_notes.py` usa Python 3.10 o posterior y Git local,
+sin dependencias adicionales ni acceso a Internet. Lee la versión y los nombres
+de los paquetes de `release_info.py` y genera un borrador:
+
+```bash
+python3 generate_release_notes.py
+```
+
+La salida predeterminada es `dist/RELEASE_NOTES-VERSION.md`; no modifica
+`RELEASE_NOTES.md`. Busca la etiqueta de versión anterior alcanzable desde HEAD.
+Si no hay etiquetas, busca un commit cuyo título sea una versión anterior,
+como `0.1.5A`. Sin una referencia anterior, incluye todo el historial.
+Los cambios se describen con los títulos de los commits y enlaces a GitHub.
+
+Opciones útiles:
+
+```bash
+# Elegir el inicio del intervalo y añadir una descripción para los jugadores:
+python3 generate_release_notes.py --since 0.1.5A --highlight "Migración automática del servidor anterior"
+
+# Revisar también los archivos versionados con cambios pendientes de commit:
+python3 generate_release_notes.py --include-uncommitted --stdout
+
+# Guardar directamente en el archivo principal, reemplazando el contenido:
+python3 generate_release_notes.py --output RELEASE_NOTES.md --force
+```
+
+`--since` acepta una etiqueta o un hash de commit existente. `--highlight` se
+puede repetir. El script termina con un error si el archivo de salida existe,
+salvo que se indique `--force`. En Windows, usa `py` en lugar de `python3`.
+Revisa el borrador y completa la sección de validación: el generador no ejecuta
+pruebas, no comprueba los binarios y no publica la release.
+
+### Compilar y publicar
+
 Edita `release_info.py` antes de compilar:
 
 ```python

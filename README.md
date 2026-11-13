@@ -57,8 +57,10 @@ con 3 frames de delay. Los participantes en espera también pueden observar por
 ZeroTier en su propio PCSX2. HOST/GUEST fuera de KOTH conserva el servidor principal.
 
 La URL pública de Django es `https://narutimateonline.servegame.com/`.
-El launcher corrige automáticamente el dominio anterior mal escrito
-(`narultimateonline.sytes.net`) en las configuraciones guardadas.
+El launcher migra automáticamente los dominios anteriores
+(`narutimateonline.sytes.net` y `narultimateonline.sytes.net`) en las
+configuraciones guardadas de KOTH, D.O.N y Digimon. Conserva los servidores
+personalizados y las credenciales de inscripción existentes.
 
 1. En Django, instala la actualización y ejecuta `python manage.py migrate`.
 2. Todos deben estar autorizados en la misma red ZeroTier. El host debe permitir

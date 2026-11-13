@@ -13,6 +13,7 @@ from don_diagnostics import SessionLog
 from don_setup import DonSetupDialog, latest_state_directory
 from multiplayer_client import DonRoomClient, DigimonRoomClient
 from game_adapters import get_game
+from koth_client import DEFAULT_URL, site_url
 
 ROOT = Path(__file__).resolve().parent
 
@@ -42,11 +43,15 @@ class DonRoomsDialog(tk.Toplevel):
         if isinstance(saved.get('profiles_root'), str):
             self.publish_root = Path(saved['profiles_root'])
         initial = {'role': 'host', 'players': '2', 'room_id': '',
-                   'url': app.v['hill_url'].get() or 'https://narutimateonline.servegame.com/',
+                   'url': app.v['hill_url'].get() or DEFAULT_URL,
                    'state_dir': app.cfg().get('state_dir') or latest_state_directory(), 'pine_slot': '28011', 'port': '47400'}
         for key in initial:
             if isinstance(saved.get(key), str):
                 initial[key] = saved[key]
+        try:
+            initial['url'] = site_url(initial['url'])
+        except (ValueError, TypeError):
+            pass  # Keep invalid input visible so the user can correct it.
         self.v = {k: tk.StringVar(value=value) for k, value in initial.items()}
         self.status = tk.StringVar(value='Crea una sala o únete con el código de 6 caracteres o la IP ZeroTier del host.')
         box = ttk.Frame(self, padding=18)

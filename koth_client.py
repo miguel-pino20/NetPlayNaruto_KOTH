@@ -8,16 +8,17 @@ from appdata import write_json
 from discord_auth import AccountError, api_call
 from hill import validate_url
 
-DEFAULT_URL = 'https://narutimateonline.servegame.com/'
+DEFAULT_URL = 'https://narutimateonline.servegame.com'
 LEGACY_HOST = 'narultimateonline.sytes.net'
+LEGACY_HOSTS = (LEGACY_HOST, 'narutimateonline.sytes.net')
 
 
 def site_url(url):
-    """Repair the misspelled default shipped previously; preserve custom sites."""
+    """Migrate former public hosts; preserve custom ports, paths and servers."""
     url = validate_url(url)
     parts = urlsplit(url)
-    if parts.hostname == LEGACY_HOST:
-        authority = 'narutimateonline.sytes.net'
+    if parts.hostname in LEGACY_HOSTS:
+        authority = urlsplit(DEFAULT_URL).hostname
         if parts.port is not None:
             authority += f':{parts.port}'
         return urlunsplit(parts._replace(netloc=authority))
@@ -39,8 +40,20 @@ class MembershipStore:
         key = f'{site_url(url)}/events/{int(event_id)}'
         data = self._read()
         member = data.get(key)
-        if not isinstance(member, dict) and key.startswith(DEFAULT_URL+'/'):
-            member = data.get(key.replace('narutimateonline.sytes.net', LEGACY_HOST, 1))
+        if not isinstance(member, dict):
+            # Old releases stored credentials under either former domain.
+            # Normalize the URL, including its trailing slash, before comparing.
+            for old_key, old_member in data.items():
+                old_url, separator, old_event = old_key.rpartition('/events/')
+                if not separator or old_event != str(int(event_id)):
+                    continue
+                try:
+                    matches = site_url(old_url) == site_url(url)
+                except (ValueError, TypeError):
+                    continue
+                if matches and isinstance(old_member, dict):
+                    member = old_member
+                    break
         if not isinstance(member, dict) or not isinstance(member.get('key'), str):
             member = {'key': uuid4().hex, 'ticket': ''}
         if data.get(key) != member:

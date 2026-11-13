@@ -14,14 +14,14 @@ from uuid import UUID
 from urllib.parse import urlencode
 
 from discord_auth import AccountError, api_call
-from hill import validate_url
+from koth_client import site_url
 from node import Node
 
 
 class RoomClient:
     base_path = '/api/netplay/sessions/'
     def __init__(self, url, ticket):
-        self.url, self.ticket = validate_url(url), ticket
+        self.url, self.ticket = site_url(url), ticket
         if not ticket:
             raise ValueError('Falta el ticket de participante.')
 
@@ -49,7 +49,7 @@ class DonRoomClient(RoomClient):
     def authenticate(cls, url, session):
         if not session:
             raise ValueError('Inicia sesión con Discord en el launcher.')
-        url = validate_url(url)
+        url = site_url(url)
         result = api_call(url, 'POST', cls.api_prefix+'access/', {},
                           extra_headers={'X-Netplay-Session': session})
         client = cls(url, result.get('ticket'))
