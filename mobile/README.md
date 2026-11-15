@@ -1,6 +1,6 @@
 # Naruto Netplay Android · Python/Kivy
 
-Versión 0.4.6. Reutiliza el protocolo y el núcleo Python de PC. No incluye D.O.N,
+Versión 0.1.8A (compartida con Windows y Linux). Reutiliza el protocolo y el núcleo Python de PC. No incluye D.O.N,
 Digimon, BIOS, juegos, estados empaquetados ni credenciales.
 
 ## Descargar un estado para pasarlo manualmente a ARMSX2
@@ -124,3 +124,13 @@ prueba completa con P2 real y comparación de hashes, configuración de mandos,
 espectadores y medición prolongada de RAM, CPU, batería y FPS. No confundir una
 prueba de diagnóstico o handshake con una pelea validada. Ver `VALIDATION.md` y
 `../ANDROID_PLAN.md`.
+
+
+## Actualizaciones
+
+Al abrir consulta las Releases públicas del repositorio configurado en
+`release_info.py`. Una versión posterior muestra un aviso para descargar el APK;
+Conexión también permite Buscar, Descargar e Instalar. Requiere APK y SHA256
+publicados con los nombres de ASSET_NAMES. La instalación solicita confirmación
+de Android y conserva los datos si el APK es compatible y mantiene la firma.
+Consulta [UPDATES.md](../UPDATES.md) antes de publicar.

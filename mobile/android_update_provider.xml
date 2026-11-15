@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.un5.narutonetplay.updateprovider">
+    <application>
+        <provider android:name="org.un5.narutonetplay.UpdateProvider"
+            android:authorities="org.un5.narutonetplay.updates"
+            android:exported="false" android:grantUriPermissions="true" />
+    </application>
+</manifest>

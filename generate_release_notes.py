@@ -78,7 +78,7 @@ def generate_notes(root, version, repository, assets, since=None,
             lines.extend('- ' + markdown(path) for path in paths)
     lines += ['', '## Descargas', '', '| Plataforma | Archivo |', '| --- | --- |']
     for platform, name in assets.items():
-        label = {'linux': 'Linux x86_64', 'windows': 'Windows x64'}.get(platform, platform)
+        label = {'linux': 'Linux x86_64', 'windows': 'Windows x64', 'android': 'Android ARM64'}.get(platform, platform)
         lines.append(f'| {markdown(label)} | {markdown(name)} |')
     lines += ['', 'Adjunta también el archivo `.sha256` correspondiente a cada paquete.', '',
               'Los paquetes incluyen Python y sus dependencias. PCSX2, BIOS y juegos se configuran por separado.', '',

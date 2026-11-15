@@ -1,7 +1,7 @@
 # Actualizaciones automáticas de los compilados
 
-Los paquetes de Windows y Linux consultan las releases públicas del repositorio
-configurado al abrir el launcher, antes de iniciar netplay o PCSX2.
+Los paquetes de Windows, Linux y Android consultan las releases públicas del repositorio
+configurado al abrir la aplicación. PC comprueba antes de iniciar netplay o PCSX2; Android consulta en segundo plano y muestra un aviso.
 El código del actualizador está incluido desde **0.1.0A**.
 
 Cuando existe una versión posterior para la plataforma actual:
@@ -71,7 +71,7 @@ REPOSITORY = "miguel-pino20/NetPlayNaruto_KOTH"
 INCLUDE_PRERELEASES = True
 ```
 
-Usa la misma versión en los dos builds y en la etiqueta de la release de GitHub,
+Usa la misma versión en los tres builds y en la etiqueta de la release de GitHub,
 por ejemplo `0.1.2A` o `v0.1.2A`. También se admiten versiones como
 `0.1.2-alpha.1`, `0.1.2-beta.1`, `0.1.2-rc.1` y `0.1.2`.
 La comparación es numérica: `0.1.10A` es posterior a `0.1.9A`.
@@ -138,3 +138,50 @@ py -m unittest discover -s windows -p test_update_integration.py
 
 No publican releases ni abren PCSX2. La prueba de Windows reemplaza una copia del
 ejecutable mientras está abierto y comprueba el reinicio y la limpieza del respaldo.
+
+
+## Publicación unificada desde 0.1.8A
+
+`release_info.py` es la fuente compartida de VERSION, REPOSITORY y ASSET_NAMES.
+Android lee la versión de ese mismo archivo. Aumenta también ANDROID_VERSION_CODE
+en cada publicación Android; no lo reduzcas al cambiar la numeración visible.
+
+Compila las tres plataformas con `./build.sh all`; solo Android con
+`./build.sh android` o `bash mobile/build_apk.sh`. Requiere los toolchains descritos
+en los README de cada plataforma. Los seis archivos de la release son:
+
+```text
+UN5-Netplay-Windows-x64.exe
+UN5-Netplay-Windows-x64.exe.sha256
+UN5-Netplay-x86_64.AppImage
+UN5-Netplay-x86_64.AppImage.sha256
+UN5-Netplay-Android-arm64-debug.apk
+UN5-Netplay-Android-arm64-debug.apk.sha256
+```
+
+Publica una release pública en `miguel-pino20/NetPlayNaruto_KOTH`, tag
+`v0.1.8A` para esta entrega; adjunta los seis archivos sin renombrarlos. Subirlos
+al árbol del repositorio sin crear una Release no sirve al comprobador.
+En las próximas entregas usa un tag superior, por ejemplo `v0.1.9A`.
+El repositorio admite prereleases porque INCLUDE_PRERELEASES está habilitado.
+
+### Android
+
+Desde 0.1.8A consulta GitHub al abrir y permite consultar manualmente desde
+Conexión. Una versión nueva muestra aviso con Descargar/Más tarde. La descarga
+comprueba tamaño, SHA256 y estructura APK, y conserva la descarga anterior si falla.
+El botón Instalar entrega únicamente el APK verificado al instalador de Android
+mediante un proveedor privado de lectura. Android solicita autorizar la instalación
+desde Naruto Netplay y confirmar la actualización. No instala silenciosamente.
+La descarga e instalación se bloquean mientras la app registra una partida activa.
+
+Los usuarios de los APK 0.4.x deben instalar 0.1.8A manualmente una vez: esos
+APKs todavía no incluyen el comprobador. La nueva versión tiene versionCode
+1026407, superior a los anteriores, y conserva el paquete y la firma.
+**Conserva la misma clave de firma Android** para las futuras actualizaciones;
+no distribuyas un APK firmado con otra clave si quieres actualizar conservando datos.
+La verificación definitiva de firma y compatibilidad la hace el instalador Android.
+El APK actual está firmado con la clave debug del entorno de compilación.
+
+No se ha publicado ninguna release desde esta tarea. La prueba de actualización
+real desde una release futura requiere publicar sus assets y validar la instalación.

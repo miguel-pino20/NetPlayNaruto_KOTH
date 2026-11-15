@@ -1,10 +1,26 @@
 # UN5 Netplay Launcher
 
-## Agradecimientos
+## Agradecimientos / Acknowledgements / Agradecimentos
+
+**Español**
 
 Este proyecto está basado en [UN5-Netplay de zMath3usMSF](https://github.com/zMath3usMSF/UN5-Netplay/).
 Agradecemos a **Matheus Silva (zMath3usMSF)**, creador original, por desarrollar
 y compartir la base que hizo posible continuar este trabajo.
+
+**English**
+
+This project is based on [UN5-Netplay by zMath3usMSF](https://github.com/zMath3usMSF/UN5-Netplay/).
+We thank **Matheus Silva (zMath3usMSF)**, the original creator, for developing
+and sharing the foundation that made it possible to continue this work.
+
+**Português (Brasil)**
+
+Este projeto é baseado no [UN5-Netplay de zMath3usMSF](https://github.com/zMath3usMSF/UN5-Netplay/).
+Agradecemos a **Matheus Silva (zMath3usMSF)**, criador original, por desenvolver
+e compartilhar a base que tornou possível dar continuidade a este trabalho.
+
+## Acerca del proyecto
 
 Base Android en Python/Kivy: [instrucciones y alcance](mobile/README.md),
 [validación del APK](mobile/VALIDATION.md) y [plan de integración](ANDROID_PLAN.md).
@@ -19,8 +35,8 @@ automáticamente si hay una versión posterior para su plataforma.
 La versión y el repositorio se configuran en `release_info.py`.
 Consulta [cómo publicar actualizaciones](UPDATES.md).
 
-Para compilar Linux y Windows desde Linux con el Wine preparado del proyecto,
-ejecuta `./build.sh`. También admite `./build.sh linux` y `./build.sh windows`.
+Para compilar Linux, Windows y Android desde Linux con el Wine preparado del proyecto,
+ejecuta `./build.sh`. También admite `./build.sh linux`, `./build.sh windows` y `./build.sh android`.
 Lee la versión de `release_info.py` y genera los paquetes y sus SHA256 en `dist/`.
 
 ## Windows: un solo ejecutable

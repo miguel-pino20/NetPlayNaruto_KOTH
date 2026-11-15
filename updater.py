@@ -163,6 +163,14 @@ def verify_payload(path, digest, platform):
             calculated.update(chunk)
     if calculated.hexdigest() != digest:
         raise UpdateError("La descarga no coincide con su SHA256; se conserva la versión instalada.")
+    if platform == "android":
+        import zipfile
+        try:
+            with zipfile.ZipFile(path) as apk:
+                if not {'AndroidManifest.xml', 'classes.dex'} <= set(apk.namelist()):
+                    raise UpdateError('La descarga no contiene un APK Android válido.')
+        except zipfile.BadZipFile:
+            raise UpdateError('La descarga no es un APK Android válido.') from None
     if platform == "linux" and not (header.startswith(b"\x7fELF") and header[8:11] == b"AI\x02"):
         raise UpdateError("La descarga no es un AppImage válido.")
     if platform == "windows" and not header.startswith(b"MZ"):
@@ -175,7 +183,7 @@ def download_release(release, stage, platform, progress, cancelled):
     if len(checksum_data) > 4096:
         raise UpdateError("El archivo SHA256 es demasiado grande.")
     digest = parse_checksum(checksum_data, release.asset_name)
-    payload = stage / ("payload.exe" if platform == "windows" else "payload.AppImage")
+    payload = stage / {"windows": "payload.exe", "linux": "payload.AppImage", "android": "payload.apk"}[platform]
     count = 0
     with _response(release.asset_url, 15) as response, payload.open("xb") as target:
         while True:

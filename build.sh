@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compila los paquetes de Linux y Windows desde Linux, sin abrir el launcher.
+# Compila los paquetes de Linux, Windows y Android desde Linux, sin abrir el launcher.
 set -euo pipefail
 
 project_root="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
@@ -7,9 +7,10 @@ cd -- "$project_root"
 
 usage() {
     cat <<'HELP'
-Uso: ./build.sh [all|linux|windows]
+Uso: ./build.sh [all|linux|windows|android]
 
-Sin argumentos compila Linux y Windows.
+Sin argumentos compila Linux, Windows y Android.
+  ./build.sh android   Solo APK Android ARM64
   ./build.sh linux     Solo AppImage
   ./build.sh windows   Solo EXE mediante el Wine preparado del proyecto
 
@@ -26,7 +27,7 @@ fi
 build_target="${1:-all}"
 case "$build_target" in
     -h|--help) usage; exit 0 ;;
-    all|linux|windows) ;;
+    all|linux|windows|android) ;;
     *) usage >&2; exit 2 ;;
 esac
 
@@ -104,13 +105,18 @@ if [[ "$build_target" == all || "$build_target" == windows ]]; then
         wine 'C:\Python313\python.exe' windows/build_windows.py --wheel-dir "$windows_wheels"
 fi
 
+if [[ "$build_target" == all || "$build_target" == android ]]; then
+    printf '\nCompilando Android APK…\n'
+    bash mobile/build_apk.sh
+fi
+
 PYTHONDONTWRITEBYTECODE=1 python3 - "$build_target" <<'PY'
 import hashlib
 from pathlib import Path
 import sys
 from release_info import ASSET_NAMES
 
-platforms = ('linux', 'windows') if sys.argv[1] == 'all' else (sys.argv[1],)
+platforms = ('linux', 'windows', 'android') if sys.argv[1] == 'all' else (sys.argv[1],)
 for platform in platforms:
     path = Path('dist') / ASSET_NAMES[platform]
     checksum = Path(str(path) + '.sha256')

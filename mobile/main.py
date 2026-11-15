@@ -21,6 +21,8 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.image import Image
+from kivy.uix.popup import Popup
+from release_info import VERSION
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
@@ -31,7 +33,7 @@ from backend import configure_storage, https_url, validate_address, pine_diagnos
 
 
 class MobileApp(App):
-    title = 'Naruto Netplay · Base Android'
+    title = 'Naruto Netplay · ' + VERSION
     # Elementos Directo / ZeroTier
     def build(self):
         configure_storage(self.user_data_dir)
@@ -70,6 +72,14 @@ class MobileApp(App):
         root.add_widget(self.label('Base Android · PINE / ZeroTier / KOTH', 26))
         tabs = TabbedPanel(do_default_tab=False, tab_width=dp(72))
         self.connection = self.page(tabs, 'Conexión')
+        self.available_release = None
+        self.label_in(self.connection, 'Versión ' + VERSION, 16, 36)
+        self.update_label = self.label_in(self.connection, 'Actualizaciones de GitHub', 14, 70)
+        self.button(self.connection, 'Buscar actualizaciones', self.check_updates)
+        self.update_download_button = self.button(self.connection, 'Descargar actualización', self.download_update)
+        self.update_download_button.disabled = True
+        self.update_install_button = self.button(self.connection, 'Instalar actualización', self.install_update)
+        self.update_install_button.disabled = True
         self.label_in(self.connection, 'ARMSX2 local', 20)
         self.field(self.connection, 'pine_slot', 'Puerto PINE', '28011', numeric=True)
         self.button(self.connection, 'Probar PINE (solo lectura)', self.test_pine)
@@ -158,6 +168,8 @@ class MobileApp(App):
             self.account.acct_restore()
             self.watch_account()
         self.watch_host()
+        if platform == 'android':
+            Clock.schedule_once(lambda _: self.check_updates(automatic=True), 2)
         return root
 
     def label(self, text, height=48, size=14):
@@ -239,6 +251,80 @@ class MobileApp(App):
             https_url(self.inputs['koth_url'].text)
             self.persist()
             self.say('Configuración guardada. La conectividad ZeroTier aún debe probarse en una partida.')
+        except Exception as error:
+            self.say(str(error))
+
+    def check_updates(self, automatic=False):
+        if self.busy:
+            if automatic and not self.closed:
+                Clock.schedule_once(lambda _: self.check_updates(automatic=True), 10)
+            return
+        from updater import find_update
+        def check():
+            try:
+                return find_update('android'), ''
+            except Exception as error:
+                return None, str(error)
+        self.update_label.text = 'Buscando actualizaciones…'
+        def show(result):
+            release, error = result
+            if error:
+                self.update_label.text = 'No se pudo comprobar: ' + error
+                return
+            self.say('Consulta de actualizaciones completada.')
+            self.available_release = release
+            self.update_download_button.disabled = release is None
+            self.update_label.text = ('Disponible: ' + release.version if release else
+                                      'No hay una actualización posterior a ' + VERSION)
+            if release and automatic:
+                content = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+                content.add_widget(self.label('Nueva versión ' + release.version + '. ¿Descargar APK?', 70))
+                popup = Popup(title='Actualización disponible', content=content,
+                              size_hint=(0.92, None), height=dp(240))
+                def download():
+                    popup.dismiss()
+                    self.download_update()
+                self.button(content, 'Descargar', download)
+                self.button(content, 'Más tarde', popup.dismiss)
+                popup.open()
+        self.run_job(check, show)
+
+    def update_allowed(self):
+        from host import ACTIVE
+        state = load_preferences(Path(self.user_data_dir) / 'host-status.json')
+        if state.get('phase') in ACTIVE:
+            self.say('Detén la partida antes de descargar o instalar una actualización.')
+            return False
+        return True
+
+    def download_update(self):
+        if not self.available_release or not self.update_allowed():
+            return
+        from updates import download_update
+        release = self.available_release
+        self.update_label.text = 'Descargando ' + release.version + ' y verificando SHA256…'
+        def fetch():
+            try:
+                return download_update(self.user_data_dir, release), ''
+            except Exception as error:
+                return None, str(error)
+        def ready(result):
+            _, error = result
+            if error:
+                self.update_label.text = 'No se pudo descargar: ' + error
+                self.say(error)
+                self.update_install_button.disabled = True
+                return
+            self.update_label.text = 'APK ' + release.version + ' verificado. Pulsa Instalar actualización.'
+            self.update_install_button.disabled = False
+        self.run_job(fetch, ready)
+
+    def install_update(self):
+        if platform != 'android' or not self.update_allowed():
+            return
+        from updates import install_update
+        try:
+            self.say(install_update(self.user_data_dir))
         except Exception as error:
             self.say(str(error))
 

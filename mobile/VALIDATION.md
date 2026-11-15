@@ -248,3 +248,23 @@ ARMSX2 recuperó status 0 / SLUS-55606 / CRC 688C83D6. Después el cliente carg�
 el slot 1 y completó la conexión. Simulación inicial ~28–30 pasos/s, RTT
 ~190–210 ms y esperas puntuales; sin DESYNC en la muestra inicial.
 Pendiente confirmación física de controles de ambos participantes y partida completa.
+
+
+## 0.1.8A — versión común y actualizador Android
+
+- VERSION y ASSET_NAMES compartidos desde release_info.py; Android versionName
+  0.1.8A, versionCode 1026407 (> 1026406 de 0.4.6). Conserva paquete y firma.
+- Actualización sobre 0.4.5 instalada en Infinix X6855 con adb install -r sin
+  desinstalar. Preferencias y archivos existentes conservados, arranque correcto.
+- Consulta real a GitHub sin actualización Android posterior publicada; comprobación
+  automática y pantalla de versión observadas en el dispositivo.
+- Selección de release por plataforma, APK con SHA256/tamaño/formato verificados,
+  conservación de descarga previa si falla y ausencia de versiones posteriores
+  cubiertas por pruebas. Suite raíz: 111 pruebas pasan.
+- Proveedor de instalación privado y de solo lectura para un único archivo fijo;
+  no expone carpetas de usuario. Manifest fusionado y clase Java compilados en APK.
+- Instalación exige permiso para instalar desde esta app y confirmación Android.
+- Windows/Linux compilados 0.1.8A con sus comprobaciones internas correctas.
+- Pendiente: publicación de release futura y prueba real completa desde GitHub
+  hasta instalación mediante la interfaz Android. No se publicó desde esta tarea.
+- No se probó ni se cambió una partida durante las pruebas del actualizador.
