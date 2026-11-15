@@ -87,7 +87,6 @@ def generate_notes(root, version, repository, assets, since=None,
               '- Windows: abre PCSX2 manualmente y carga el juego.',
               '- Linux: requiere PCSX2 mediante Flatpak (`net.pcsx2.PCSX2`).',
               '- Los modos ZeroTier requieren ZeroTier instalado y conectado a la red.', '',
-              'Las salas D.O.N y Digimon siguen siendo experimentales.', '',
               '## Validación', '',
               'Pendiente de documentar las pruebas realizadas para esta versión. '
               'Este generador no compila ni verifica los paquetes.']

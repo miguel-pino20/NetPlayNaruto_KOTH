@@ -88,3 +88,10 @@ Desktop.ini
 *~
 *.swp
 *.swo
+
+# Android / Kivy local build environment
+mobile/.buildozer/
+mobile/bin/
+mobile/.toolchain/
+*.apk
+*.aab

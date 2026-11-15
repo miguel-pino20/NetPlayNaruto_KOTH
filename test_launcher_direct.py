@@ -54,3 +54,18 @@ class DirectLauncherTests(unittest.TestCase):
             self.assertEqual(args[args.index('--server')+1], core.SERVER_ADDR)
             self.assertNotIn('--bind-address', args)
 
+
+class NarutoRoomListingTests(unittest.TestCase):
+    def test_room_listing_keeps_naruto_and_legacy_rooms_only(self):
+        from types import SimpleNamespace
+        backend = core.Backend.__new__(core.Backend)
+        backend._online_busy = False
+        backend._online_at = 0
+        data = {'rooms': [{'id': 'un5', 'game': 'un5'}, {'id': 'un6', 'game': 'un6'},
+                          {'id': 'legacy'}, {'id': 'other', 'game': 'unsupported'}, None]}
+        with patch('launcher_core.api_call', return_value=data), \
+                patch('launcher_core.threading.Thread', side_effect=lambda target, daemon: SimpleNamespace(start=target)):
+            backend.poll_rooms()
+        self.assertEqual([r['id'] for r in backend.online_rooms], ['un5', 'un6', 'legacy'])
+        self.assertEqual(backend.online_error, '')
+        self.assertFalse(backend._online_busy)

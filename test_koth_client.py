@@ -75,18 +75,6 @@ class KothClientTests(unittest.TestCase):
         self.assertEqual(api.call_args.args[3]['registration_key'], first_key)
         self.assertEqual(self.store.member(self.url, 2)['ticket'], 'new-ticket')
 
-    @patch('multiplayer_client.api_call')
-    def test_game_rooms_authenticate_against_the_migrated_server(self, api):
-        from multiplayer_client import DonRoomClient, DigimonRoomClient
-        api.return_value = {'ticket': 'room-ticket'}
-        for client_type in (DonRoomClient, DigimonRoomClient):
-            with self.subTest(game=client_type.__name__):
-                client = client_type.authenticate('https://narutimateonline.sytes.net/', 'session')
-                self.assertEqual(api.call_args.args[0], DEFAULT_URL)
-                self.assertEqual(client.url, DEFAULT_URL)
-                custom = client_type.authenticate(self.url, 'session')
-                self.assertEqual(custom.url, self.url)
-
     @patch('koth_client.api_call')
     def test_version_conflict_refreshes_event_once_without_duplicate_identity(self, api):
         api.side_effect = [AccountError('Changed', 409), {'id': 2, 'version': 9},

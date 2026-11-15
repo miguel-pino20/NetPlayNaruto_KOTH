@@ -586,7 +586,7 @@ class Backend(DiscordMixin):
             try:
                 data = api_call(SERVER_URL, "GET", "/rooms", timeout=4.0)
                 now = time.monotonic()
-                self.online_rooms = [dict(r, fetched=now) for r in data.get("rooms", []) if isinstance(r, dict)]
+                self.online_rooms = [dict(r, fetched=now) for r in data.get("rooms", []) if isinstance(r, dict) and r.get("game", "un5") in ("un5", "un6")]
                 self.online_error = ""
             except Exception as exc:                      # noqa: BLE001 - mostrado no card Rooms
                 self.online_rooms, self.online_error = [], str(exc)

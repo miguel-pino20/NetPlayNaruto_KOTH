@@ -1,13 +1,18 @@
 # UN5 Netplay Launcher
 
-Desarrollo experimental de salas para 2–4 jugadores: [MULTIPLAYER.md](MULTIPLAYER.md).
-Desde 0.1.3A, **D.O.N · online experimental (2–4)** crea salas libres, sin eventos
-ni inscripción en torneos. Usa D.O.N ya abierto en PCSX2, sin seleccionar una ISO.
-Host e invitados descargan desde Django el estado inicial para 2, 3 o 4 jugadores
-y lo guardan en la carpeta de estados de PCSX2; ZeroTier transporta los mandos. El modo verifica
-las entradas, pero todavía no certifica la sincronía del estado del combate.
-Requiere actualizar Django y aplicar `0014_don_independent_rooms`. Un administrador
-publica los tres perfiles una vez desde la pestaña «PCSX2 y administración».
+## Agradecimientos
+
+Este proyecto está basado en [UN5-Netplay de zMath3usMSF](https://github.com/zMath3usMSF/UN5-Netplay/).
+Agradecemos a **Matheus Silva (zMath3usMSF)**, creador original, por desarrollar
+y compartir la base que hizo posible continuar este trabajo.
+
+Base Android en Python/Kivy: [instrucciones y alcance](mobile/README.md),
+[validación del APK](mobile/VALIDATION.md) y [plan de integración](ANDROID_PLAN.md).
+Incluye host P1 directo experimental con control flotante, diagnóstico PINE,
+consulta de eventos y flujo Discord. El combate PC ↔ Android sigue pendiente
+de validación completa con ARMSX2.
+
+La aplicación de PC incluye únicamente Naruto UN5/UN6, KOTH y ZeroTier.
 
 Los compilados comprueban las releases de GitHub al abrirse y se actualizan
 automáticamente si hay una versión posterior para su plataforma.
@@ -59,7 +64,7 @@ ZeroTier en su propio PCSX2. HOST/GUEST fuera de KOTH conserva el servidor princ
 La URL pública de Django es `https://narutimateonline.servegame.com/`.
 El launcher migra automáticamente los dominios anteriores
 (`narutimateonline.sytes.net` y `narultimateonline.sytes.net`) en las
-configuraciones guardadas de KOTH, D.O.N y Digimon. Conserva los servidores
+configuraciones guardadas de KOTH. Conserva los servidores
 personalizados y las credenciales de inscripción existentes.
 
 1. En Django, instala la actualización y ejecuta `python manage.py migrate`.

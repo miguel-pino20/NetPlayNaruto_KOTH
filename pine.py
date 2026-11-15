@@ -5,12 +5,15 @@ Command: u8 opcode | args (little endian)
 Reply:   u32 total_size | u8 result (0 = ok, 0xFF = fail) | data...
 
 Enable in PCSX2: Settings > Advanced > Enable PINE (default slot 28011).
-Windows: TCP 127.0.0.1:<slot>.  Linux: unix socket $XDG_RUNTIME_DIR/pcsx2.sock (or /tmp/pcsx2.sock).
+Windows/Android: TCP 127.0.0.1:<slot>. Linux: unix socket $XDG_RUNTIME_DIR/pcsx2.sock (or /tmp/pcsx2.sock).
+Use transport='tcp' explicitly for ARMSX2 diagnostics on another Python host.
 """
 import os
 from pathlib import Path
 import socket
 import struct
+import sys
+import json
 
 READ8, READ16, READ32, READ64 = 0, 1, 2, 3
 WRITE8, WRITE16, WRITE32, WRITE64 = 4, 5, 6, 7
@@ -35,19 +38,30 @@ BUSY_HINT = ('PCSX2 no respondió a PINE dentro del tiempo límite. Puede estar 
 
 
 class Pine:
-    def __init__(self, slot=28011, timeout=5.0):
+    def __init__(self, slot=28011, timeout=5.0, transport=None):
         self.slot = slot
         self.timeout = timeout
         self.sock = None
-        self.endpoint = f'127.0.0.1:{slot}' if os.name == 'nt' else f'ranura {slot}'
+        self.transport = transport or ('tcp' if os.name == 'nt' or hasattr(sys, 'getandroidapilevel') else 'unix')
+        if self.transport not in ('tcp', 'unix'):
+            raise ValueError('PINE transport must be tcp or unix')
+        self.endpoint = f'127.0.0.1:{slot}' if self.transport == 'tcp' else f'ranura {slot}'
 
     def connect(self):
-        if os.name == 'nt':
+        if self.transport == 'tcp':
             try:
                 s = socket.create_connection(('127.0.0.1', self.slot), timeout=self.timeout)
             except ConnectionRefusedError:
                 raise PineError(f'nothing listens on PINE port {self.slot}: is PCSX2 open with a game running and '
                                 f'Settings > Advanced > Enable PINE ticked (slot {self.slot})?') from None
+            except socket.timeout:
+                raise PineError(
+                    f'Tiempo de espera al abrir TCP 127.0.0.1:{self.slot} '
+                    f'({self.timeout:g} s). No se pudo establecer la conexión; '
+                    'todavía no se envió ningún comando PINE. '
+                    'Comprueba PINE y el puerto, reinicia el emulador y abre el juego. '
+                    'La pausa del juego no confirma la causa de este fallo.'
+                ) from None
         else:
             base = Path(os.environ.get('XDG_RUNTIME_DIR') or '/tmp')
             name = 'pcsx2.sock' + (f'.{self.slot}' if self.slot != 28011 else '')
@@ -77,7 +91,7 @@ class Pine:
                     'Tried: ' + '; '.join(failures)
                 ) from None
         s.settimeout(self.timeout)                       # never wait forever for a PCSX2 that does not answer
-        if os.name == 'nt':
+        if self.transport == 'tcp':
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.sock = s
         return self
@@ -163,6 +177,31 @@ class Pine:
 
     def load_state(self, slot):
         self._transact(bytes([LOAD_STATE, slot]))
+
+    @staticmethod
+    def _setting_string(text):
+        raw = text.encode('utf-8')
+        if len(raw) > 4096:
+            raise ValueError('Setting string too long')
+        return struct.pack('<I', len(raw)) + raw
+
+    @staticmethod
+    def _setting_reply(data):
+        if len(data) < 5:
+            raise PineError('ARMSX2 devolvió una respuesta de configuración incompleta.')
+        size = int.from_bytes(data[:4], 'little')
+        if not 1 <= size <= len(data) - 4 or data[4 + size - 1] != 0:
+            raise PineError('ARMSX2 devolvió una cadena de configuración inválida.')
+        return data[4:4 + size - 1].decode('utf-8')
+
+    def armsx2_get_setting(self, section, key):
+        """ARMSX2 extension 0x11. Not part of the PCSX2 PINE standard."""
+        return self._setting_reply(self._transact(b'\x11' + self._setting_string(section) + self._setting_string(key)))
+
+    def armsx2_set_setting(self, section, key, value):
+        """ARMSX2 extension 0x12; persists the setting and queues ApplySettings."""
+        body = b'\x12' + b''.join(self._setting_string(v) for v in (section, key, value))
+        return json.loads(self._setting_reply(self._transact(body)))
 
     # ---- batch: several commands in one round trip (important for speed) --------------------
     def batch(self, ops):
