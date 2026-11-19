@@ -1159,6 +1159,8 @@ def main(argv=None):
         q.add_argument('--relay-only', action='store_true', help='send game packets only through the principal relay')
         q.add_argument('--bind-address', default='0.0.0.0', help='local IPv4 for direct UDP connections')
         q.add_argument('--spectator-port', type=int, default=0, help='TCP port for read-only spectators (0 = off)')
+        if name == 'watch':
+            q.add_argument('--preloaded-state', action='store_true', help=argparse.SUPPRESS)
         if name == 'host':
             q.add_argument('--expect-guest-ip', default='', help=argparse.SUPPRESS)
             q.add_argument('--room-file', default=None, help=argparse.SUPPRESS)

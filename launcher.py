@@ -896,6 +896,10 @@ class Launcher(tk.Tk):
         Switch(dialog, tr('hill.spectators'), self.v['hill_spectators']).pack(anchor='w', pady=(10, 0))
         tk.Label(dialog, text=tr("hill.note"), bg=PANEL, fg=MUTED, wraplength=480, justify="left").pack(pady=12)
 
+        if self.backend.session:
+            tk.Label(dialog, text=tr('koth.address_rule'), bg=PANEL, fg=MUTED,
+                     wraplength=480, justify='left').pack(anchor='w', pady=(0, 8))
+
         def connect():
             try:
                 url = site_url(values["url"].get().strip())
@@ -932,7 +936,7 @@ class Launcher(tk.Tk):
                     from koth_client import MembershipStore, enroll as enroll_event
                     try:
                         result = enroll_event(url, event, name, MembershipStore(core.DATA_DIR/'koth-memberships.json'), ticket,
-                                              netplay_session=netplay_session)
+                                              netplay_session=netplay_session, address=address if netplay_session else '')
                         self.backend.q.put(('koth_enroll', url, address, result, ''))
                     except Exception as error:
                         self.backend.q.put(('koth_enroll', url, address, None, str(error)))
@@ -950,7 +954,7 @@ class Launcher(tk.Tk):
                     def link():
                         from koth_client import link_account
                         try:
-                            result = link_account(url, ticket, netplay_session)
+                            result = link_account(url, ticket, netplay_session, address=address)
                             self.backend.q.put(('koth_enroll', url, address, result, ''))
                         except Exception as error:
                             self.backend.q.put(('koth_enroll', url, address, None, str(error)))
@@ -1144,6 +1148,9 @@ class Launcher(tk.Tk):
                         self.koth_panel.status.configure(text=error, fg=RED)
                         messagebox.showerror(tr('hill.title'), error)
                     else:
+                        if result.get('address_changed'):
+                            self._log(tr('koth.address_changed', deducted=result['points_deducted'],
+                                         points=result['points']), 'info')
                         self._begin_hill(url, address, result['ticket'], result['event'])
                 elif kind == "exit":
                     self._on_exit(ev[1])

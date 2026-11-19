@@ -25,8 +25,8 @@ def show_notification(transport='direct', role='host'):
                                        PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT)
     Builder = autoclass('android.app.Notification$Builder')
     notification = (Builder(service, channel_id).setSmallIcon(service.getApplicationInfo().icon)
-                    .setContentTitle('Naruto Netplay · ' + ('Host P1' if role == 'host' else 'Cliente P2'))
-                    .setContentText('Sala UN5 · esperando jugador 2' if transport == 'server' else 'Esperando jugador 2 · UDP 47400')
+                    .setContentTitle('Naruto Netplay · ' + ({'host': 'Host P1', 'guest': 'Cliente P2', 'koth': 'KOTH'}[role]))
+                    .setContentText('Coordinando turnos con Django' if role == 'koth' else 'Sala UN5 · esperando jugador 2' if transport == 'server' else 'Esperando jugador 2 · UDP 47400')
                     .setContentIntent(pending).setOngoing(True).build())
     service.startForeground(1, notification)
 
@@ -69,6 +69,8 @@ def main():
             self.pending = (self.pending + text)[-4000:]
             while '\n' in self.pending:
                 line, self.pending = self.pending.split('\n', 1)
+                if config.get('role') == 'koth':
+                    continue
                 if line.startswith('host: waiting'):
                     report('waiting', 'HOST P1 · UDP 47400 · delay 3\n' + line)
                 elif line.startswith('host: room '):
@@ -94,9 +96,13 @@ def main():
         show_notification(config.get('transport', 'direct'), config.get('role', 'host'))
         from floating import create_overlay
         overlay = create_overlay(config)
-        report('starting', 'Host P1 iniciando. Vuelve a ARMSX2 y pulsa Reanudar.')
-        code = run_host(config, report)
-        report('stopped' if code == 0 else 'error', f'Host finalizado (código {code}).')
+        if config.get('role') == 'koth':
+            from koth import run_koth
+            code = run_koth(config, report)
+        else:
+            report('starting', 'Host P1 iniciando. Vuelve a ARMSX2 y pulsa Reanudar.')
+            code = run_host(config, report)
+        report('stopped' if code == 0 else 'error', f'Sesión finalizada (código {code}).')
     except InterruptedError as error:
         report('stopped', str(error))
     except BaseException as error:

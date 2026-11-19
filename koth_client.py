@@ -82,11 +82,14 @@ def get_event(url, event_id):
     return api_call(site_url(url), 'GET', f'/api/netplay/events/{int(event_id)}/', timeout=4)
 
 
-def enroll(url, event, name, store, fallback_ticket='', netplay_session=''):
+def enroll(url, event, name, store, fallback_ticket='', netplay_session='', *, address=''):
     url = site_url(url)
+    require_address_session(address, netplay_session)
     event_id = int(event['id'])
     member = store.member(url, event_id)
     body = {'version': event['version'], 'name': name, 'registration_key': member['key']}
+    if address:
+        body['zerotier_address'] = address
     ticket = member.get('ticket') or fallback_ticket
     for attempt in range(2):
         try:
@@ -97,6 +100,7 @@ def enroll(url, event, name, store, fallback_ticket='', netplay_session=''):
                 raise AccountError('Actualiza Django para vincular tu cuenta de Discord con el participante del netplay.')
             if not result.get('ticket') or not isinstance(result.get('event'), dict):
                 raise AccountError('Django no devolvió la inscripción KOTH esperada.')
+            check_address_result(result, address)
             store.save_ticket(url, event_id, result['ticket'])
             return result
         except AccountError as error:
@@ -105,9 +109,21 @@ def enroll(url, event, name, store, fallback_ticket='', netplay_session=''):
             body['version'] = get_event(url, event_id)['version']
 
 
-def link_account(url, ticket, netplay_session):
+def require_address_session(address, session):
+    if address and not session:
+        raise AccountError('Inicia sesión con Discord para conectar a KOTH.')
+
+
+def check_address_result(result, address):
+    if address and result.get('zerotier_address') != address:
+        raise AccountError('Django no confirmó la IP de ZeroTier. Actualiza el servidor KOTH.')
+
+
+def link_account(url, ticket, netplay_session, *, address=''):
+    require_address_session(address, netplay_session)
+    body = {'zerotier_address': address} if address else {}
     try:
-        result = api_call(site_url(url), 'POST', '/api/netplay/link-account/', {}, token=ticket, timeout=12,
+        result = api_call(site_url(url), 'POST', '/api/netplay/link-account/', body, token=ticket, timeout=12,
                           extra_headers={'X-Netplay-Session': netplay_session})
     except AccountError as error:
         if error.code == 404:
@@ -115,4 +131,5 @@ def link_account(url, ticket, netplay_session):
         raise
     if not result.get('account_linked') or not result.get('ticket'):
         raise AccountError('Django no confirmó la vinculación de tu cuenta de Discord.')
+    check_address_result(result, address)
     return result

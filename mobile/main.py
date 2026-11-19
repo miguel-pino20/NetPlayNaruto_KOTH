@@ -1,4 +1,5 @@
 """Naruto Netplay mobile foundation (Kivy/Python)."""
+import hashlib
 import os
 import sys
 import time
@@ -25,6 +26,7 @@ from kivy.uix.popup import Popup
 from release_info import VERSION
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
+from kivy.uix.togglebutton import ToggleButton
 from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
 from kivy.uix.spinner import Spinner
 from kivy.uix.switch import Switch
@@ -59,6 +61,7 @@ class MobileApp(App):
         self.busy = False
         self.closed = False
         self.auth_timer = None
+        self.discord_verified = False
         self.host_timer = None
         self.account = make_account('https://un5netplay.duckdns.org')
         self.inputs = {}
@@ -133,14 +136,11 @@ class MobileApp(App):
         self.server_box = BoxLayout(orientation='vertical', spacing=dp(10), size_hint_y=None)
         self.server_box.bind(minimum_height=self.server_box.setter('height'))
         self.button(self.server_box, 'Actualizar salas UN5', self.refresh_rooms)
-        self.room_choices = {}
+        self.selected_room_id = ''
         self.rooms_box = BoxLayout(orientation='vertical', spacing=dp(6), size_hint_y=None)
         self.rooms_box.bind(minimum_height=self.rooms_box.setter('height'))
         self.label_in(self.rooms_box, 'Pulsa Actualizar salas para buscar jugadores.', 14, 50)
         self.server_box.add_widget(self.rooms_box)
-        self.room_input = TextInput(text=self.prefs.get('client_room', ''), hint_text='Código de sala',
-                                    multiline=False, size_hint_y=None, height=dp(48))
-        self.server_box.add_widget(self.room_input)
         self.client_transport.bind(text=self.on_transport_change)
         self.on_transport_change(self.client_transport, self.client_transport.text)
         self.button(client, 'Conectar como jugador 2', self.start_client)
@@ -153,8 +153,24 @@ class MobileApp(App):
 
         koth = self.page(tabs, 'KOTH')
         self.field(koth, 'koth_url', 'Servidor KOTH (HTTPS)', 'https://narutimateonline.servegame.com')
-        self.button(koth, 'Consultar eventos', self.list_events)
-        self.events = self.label_in(koth, 'Consulta manual, sin sondeo continuo.\nInscripción y partidas pendientes de integración.', 14, 240)
+        self.button(koth, 'Actualizar eventos', self.list_events)
+        self.koth_choices = {}
+        self.koth_events_url = None
+        self.koth_selected_id = None
+        self.koth_events_box = BoxLayout(orientation='vertical', spacing=dp(6), size_hint_y=None)
+        self.koth_events_box.bind(minimum_height=self.koth_events_box.setter('height'))
+        self.label_in(self.koth_events_box, 'Pulsa Actualizar eventos para buscar torneos.', 14, 50)
+        koth.add_widget(self.koth_events_box)
+        self.koth_game = Spinner(text=self.prefs.get('koth_game', self.game.text), values=('un5', 'un6'),
+                                 size_hint_y=None, height=dp(48))
+        koth.add_widget(self.koth_game)
+        self.koth_join = self.button(koth, 'Inscribirme y conectar', self.join_koth)
+        self.button(koth, 'Volver a ARMSX2', self.open_emulator)
+        self.button(koth, 'Desconectar de KOTH', self.stop_koth)
+        self.koth_status = self.label_in(koth, 'KOTH desconectado.', 14, 110)
+        self.koth_info = self.label_in(koth, '', 14, 92)
+        self.inputs['koth_url'].bind(text=self.refresh_koth_entry)
+        self.refresh_koth_entry()
         account = self.page(tabs, 'Discord')
         self.account_label = self.label_in(account, 'Sin sesión verificada', 17, 70)
         self.login_button = self.button(account, 'Iniciar sesión con Discord', self.login)
@@ -233,12 +249,12 @@ class MobileApp(App):
         from appdata import write_json
         self.prefs = {key: field.text.strip() for key, field in self.inputs.items()}
         self.prefs['game'] = self.game.text
+        self.prefs['koth_game'] = self.koth_game.text
         self.prefs['overlay'] = self.overlay.active
         self.prefs['transport'] = 'server' if self.host_transport.text == 'Servidor UN5' else 'direct'
         self.prefs['client_transport'] = 'server' if self.client_transport.text == 'Servidor UN5' else 'direct'
         self.prefs['client_game'] = self.client_game.text
         self.prefs['guest_host'] = self.host_ip.text.strip()
-        self.prefs['client_room'] = self.room_input.text.strip()
         write_json(self.prefs_path, self.prefs, private=True)
 
     def save_connection(self):
@@ -341,20 +357,119 @@ class MobileApp(App):
         slot = self.inputs['pine_slot'].text
         self.run_job(lambda: pine_diagnostics(slot, android=platform == 'android'), self.say)
 
+    def refresh_koth_entry(self, *_):
+        self.koth_join.disabled = True
+        if not self.discord_verified or not self.account.session:
+            self.koth_info.text = 'Inicia sesión con Discord para inscribirte y conectar.'
+        elif self.koth_events_url != self.inputs['koth_url'].text.strip().rstrip('/'):
+            self.koth_info.text = 'Actualiza los eventos del servidor KOTH.'
+        elif self.koth_selected_id not in self.koth_choices:
+            self.koth_info.text = 'Selecciona un evento disponible.'
+        else:
+            self.koth_join.disabled = False
+            self.koth_info.text = 'Si tu IP de ZeroTier registrada cambia, perderás hasta 1 punto.'
+
     def list_events(self):
         try:
-            url = https_url(self.inputs['koth_url'].text)
+            source = self.inputs['koth_url'].text.strip().rstrip('/')
+            url = https_url(source)
             self.persist()
-        except Exception as error:
+        except ValueError as error:
             self.say(str(error))
             return
         from koth_client import list_events
+
         def show(events):
-            lines = [f"#{event.get('id', '?')} · {event.get('name', event.get('title', 'Evento'))}" for event in events[:30]]
-            self.events.text = '\n'.join(lines) or 'No hay eventos disponibles.'
-            self.events.height = dp(max(140, len(lines) * 30))
-            self.say('Eventos consultados. Entrar en la cola se habilitará después de validar NetPad.')
+            statuses = {'draft': 'Preparación', 'running': 'En curso'}
+            if self.koth_events_url != source:
+                self.koth_selected_id = None
+            self.koth_choices = {event['id']: event for event in events if event.get('status') in statuses}
+            self.koth_events_url = source
+            if self.koth_selected_id not in self.koth_choices:
+                self.koth_selected_id = None
+            self.koth_events_box.clear_widgets()
+            if not self.koth_choices:
+                self.label_in(self.koth_events_box, 'No hay eventos disponibles.', 14, 50)
+            for event_id, event in self.koth_choices.items():
+                button = ToggleButton(text=f"{event['name']} · {statuses[event['status']]}",
+                                      group=self.koth_events_box, allow_no_selection=False,
+                                      state='down' if event_id == self.koth_selected_id else 'normal',
+                                      size_hint_y=None, height=dp(48), font_size=dp(15))
+                button.bind(on_release=lambda _, selected=event_id: self.select_koth_event(selected))
+                self.koth_events_box.add_widget(button)
+            self.refresh_koth_entry()
+            self.say(f'Eventos disponibles: {len(self.koth_choices)}')
+
         self.run_job(lambda: list_events(url), show)
+
+    def select_koth_event(self, event_id):
+        self.koth_selected_id = event_id
+        self.refresh_koth_entry()
+
+    def join_koth(self):
+        if self.busy:
+            self.say('Espera a que termine la consulta actual.')
+            return
+        self.refresh_koth_entry()
+        if self.koth_join.disabled:
+            return
+        from appdata import DATA_DIR
+        from koth_client import MembershipStore, enroll
+        try:
+            url = https_url(self.koth_events_url)
+            configured_address = self.inputs['zt_address'].text.strip()
+            if not configured_address:
+                self.say('KOTH requiere tu IPv4 de ZeroTier. Configúrala en la pestaña Conexión.')
+                return
+            try:
+                address = validate_address(configured_address)
+            except ValueError as error:
+                raise ValueError('Revisa la IPv4 de ZeroTier en la pestaña Conexión.') from error
+            self.persist()
+        except (ValueError, OSError) as error:
+            self.say(str(error))
+            return
+        if platform == 'android' and self.active_mobile_session():
+            self.say('Ya hay una conexión activa. Desconéctala antes de cambiar de evento o IP.')
+            return
+        try:
+            slot = int(self.inputs['pine_slot'].text)
+            if not 1 <= slot <= 65535:
+                raise ValueError
+        except ValueError:
+            self.say('Revisa el puerto PINE en la pestaña Conexión.')
+            return
+        session = self.account.session
+        account = self.account.account or {}
+        name = account.get('nick') or account.get('username') or 'Cuenta Discord'
+        identity = account.get('id')
+        if not identity:
+            self.say('No se pudo identificar tu cuenta. Vuelve a iniciar sesión con Discord.')
+            return
+        account_key = hashlib.sha256(str(identity).encode()).hexdigest()
+        store = MembershipStore(DATA_DIR / f'mobile-koth-{account_key}.json')
+        event = self.koth_choices[self.koth_selected_id]
+
+        config = {'directory': self.user_data_dir, 'game': self.koth_game.text, 'pine_slot': slot,
+                  'address': address, 'transport': 'direct', 'role': 'koth', 'url': url,
+                  'nick': name, 'overlay': False, 'event_name': event['name'],
+                  'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
+
+        def show(result):
+            message = f"Inscripción confirmada en {result['event']['name']}. Puntos: {result['points']}."
+            if result['address_changed']:
+                message += f" IP actualizada. Puntos descontados: {result['points_deducted']}."
+            self.say(message)
+            if platform == 'android':
+                self.launch_mobile_service(dict(config, koth_ticket=result['ticket']), return_to_game=False)
+
+        self.run_job(lambda: enroll(url, event, name, store, netplay_session=session, address=address), show)
+
+    def stop_koth(self):
+        state = load_preferences(Path(self.user_data_dir) / 'host-status.json')
+        if state.get('role') == 'koth':
+            (Path(self.user_data_dir) / 'host.stop').touch()
+            self.say('Desconexión de KOTH solicitada.')
 
     def login(self):
         if self.auth_timer:
@@ -380,7 +495,9 @@ class MobileApp(App):
         self.login_button.disabled = False
         account = self.account.account or {}
         name = account.get('nick') or account.get('username') or 'Cuenta Discord'
-        self.account_label.text = f'Sesión: {name}' if ok and self.account.session else 'Sin sesión verificada'
+        self.discord_verified = bool(ok and self.account.session)
+        self.account_label.text = f'Sesión: {name}' if self.discord_verified else 'Sin sesión verificada'
+        self.refresh_koth_entry()
         self.say(f'Cuenta: {operation} completado.' if ok else str(error))
 
     def cancel_login(self):
@@ -395,6 +512,8 @@ class MobileApp(App):
         state = load_preferences(path)
         self.host_status.text = state.get('message', 'Host detenido.')
         self.client_status.text = self.host_status.text
+        if state.get('role') == 'koth':
+            self.koth_status.text = self.host_status.text
         if state.get('phase') in ('starting', 'preparing', 'waiting', 'playing', 'stopping'):
             updated = state.get('time')
             if isinstance(updated, (int, float)) and time.time() - updated > 12:
@@ -421,17 +540,10 @@ class MobileApp(App):
                                                Uri.parse('package:' + activity.getPackageName())))
                 self.say('Permite Mostrar sobre otras apps, vuelve y pulsa Crear partida.')
                 return
-        from host import prepare_files, ACTIVE
-        state = load_preferences(Path(self.user_data_dir) / 'host-status.json')
-        if state.get('phase') in ACTIVE:
-            from jnius import autoclass
-            activity = autoclass('org.kivy.android.PythonActivity').mActivity
-            Context = autoclass('android.content.Context')
-            manager = activity.getSystemService(Context.ACTIVITY_SERVICE)
-            running = manager.getRunningServices(100)
-            if any(running.get(i).service.getClassName().endswith('.ServiceHost') for i in range(running.size())):
-                self.say('Ya hay una partida activa. Deténla antes de crear otra.')
-                return
+        from host import prepare_files
+        if self.active_mobile_session():
+            self.say('Ya hay una partida activa. Deténla antes de crear otra.')
+            return
         try:
             slot = int(self.inputs['pine_slot'].text)
             if not 1 <= slot <= 65535:
@@ -443,10 +555,10 @@ class MobileApp(App):
                 address = validate_address(address)
             game = self.game.text if role == 'host' else self.client_game.text
             host_ip = validate_address(self.host_ip.text) if role == 'guest' and transport == 'direct' else ''
-            room_id = self.room_input.text.strip() if role == 'guest' and transport == 'server' else ''
+            room_id = self.selected_room_id if role == 'guest' and transport == 'server' else ''
             if role == 'guest' and transport == 'server':
                 if not room_id:
-                    raise ValueError('Selecciona o introduce una sala.')
+                    raise ValueError('Selecciona una sala de la lista.')
                 if not self.account.session:
                     raise ValueError('Inicia sesión con Discord para entrar al servidor principal.')
             self.persist()
@@ -458,22 +570,37 @@ class MobileApp(App):
                   'nick': (self.account.account or {}).get('nick') or (('Android P1' if role == 'host' else 'Android P2') if transport == 'server' else ('Player1' if role == 'host' else 'Player2')),
                   'overlay': self.overlay.active,
                   'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
-        def launch(_):
-            import json
-            from jnius import autoclass
-            from appdata import write_json
-            from android.permissions import request_permissions
-            request_permissions(['android.permission.POST_NOTIFICATIONS'])
-            Path(config['stop_file']).unlink(missing_ok=True)
-            (Path(self.user_data_dir) / 'host-room.json').unlink(missing_ok=True)
-            write_json(Path(self.user_data_dir) / 'host-status.json',
-                       {'phase': 'starting', 'message': 'Servicio iniciando…'}, private=True)
-            service = autoclass('org.un5.narutonetplay.ServiceHost')
-            activity = autoclass('org.kivy.android.PythonActivity').mActivity
-            service.start(activity, '', 'Naruto Netplay · Host P1', 'Partida activa · UDP 47400', json.dumps(config))
+        self.run_job(lambda: prepare_files(self.user_data_dir, game),
+                     lambda _: self.launch_mobile_service(config))
+
+    def active_mobile_session(self):
+        from host import ACTIVE
+        state = load_preferences(Path(self.user_data_dir) / 'host-status.json')
+        if state.get('phase') not in ACTIVE:
+            return False
+        from jnius import autoclass
+        activity = autoclass('org.kivy.android.PythonActivity').mActivity
+        context = autoclass('android.content.Context')
+        running = activity.getSystemService(context.ACTIVITY_SERVICE).getRunningServices(100)
+        return any(running.get(i).service.getClassName().endswith('.ServiceHost') for i in range(running.size()))
+
+    def launch_mobile_service(self, config, return_to_game=True):
+        import json
+        from jnius import autoclass
+        from appdata import write_json
+        from android.permissions import request_permissions
+        request_permissions(['android.permission.POST_NOTIFICATIONS'])
+        Path(config['stop_file']).unlink(missing_ok=True)
+        (Path(self.user_data_dir) / 'host-room.json').unlink(missing_ok=True)
+        write_json(Path(self.user_data_dir) / 'host-status.json',
+                   {'phase': 'starting', 'role': config['role'], 'message': 'Servicio iniciando…'}, private=True)
+        service = autoclass('org.un5.narutonetplay.ServiceHost')
+        activity = autoclass('org.kivy.android.PythonActivity').mActivity
+        title = 'Naruto Netplay · KOTH' if config['role'] == 'koth' else 'Naruto Netplay'
+        service.start(activity, '', title, 'Vuelve a ARMSX2 y pulsa Reanudar.', json.dumps(config))
+        if return_to_game:
             self.say('Vuelve a ARMSX2 y pulsa Reanudar. El servicio prepara la partida.')
             self.open_emulator()
-        self.run_job(lambda: prepare_files(self.user_data_dir, game), launch)
 
     def stop_host(self):
         (Path(self.user_data_dir) / 'host.stop').touch()
@@ -497,6 +624,8 @@ class MobileApp(App):
         if self.auth_timer:
             self.say('Cancela primero el login y espera a que termine.')
             return
+        self.discord_verified = False
+        self.refresh_koth_entry()
         self.account.acct_logout()
         self.watch_account()
 
@@ -524,22 +653,30 @@ class MobileApp(App):
     def refresh_rooms(self):
         from netlink import Api, DEFAULT_API_URL
         def show(rooms):
-            self.room_choices = {f"{r['id']} · {r.get('nick', 'P1')} · {r.get('game', '').upper()}": r
-                                 for r in rooms if r.get('status') == 'waiting'}
+            waiting = [room for room in rooms if room.get('status') == 'waiting']
+            visible_rooms = waiting[:30]
+            if not any(room['id'] == self.selected_room_id for room in visible_rooms):
+                self.selected_room_id = ''
             self.rooms_box.clear_widgets()
-            if not self.room_choices:
+            if not visible_rooms:
                 self.label_in(self.rooms_box, 'No hay jugadores esperando en este momento.', 14, 55)
-            for label in list(self.room_choices)[:30]:
-                self.button(self.rooms_box, label, lambda text=label: self.select_client_room(None, text))
-            self.say(f'{len(self.room_choices)} salas disponibles.')
+            for room in visible_rooms:
+                selected = room['id'] == self.selected_room_id
+                if selected:
+                    self.select_client_room(room)
+                label = f"{room['id']} · {room.get('nick', 'P1')} · {room.get('game', '').upper()}"
+                button = ToggleButton(text=label, group=self.rooms_box, allow_no_selection=False,
+                                      state='down' if selected else 'normal',
+                                      size_hint_y=None, height=dp(48), font_size=dp(15))
+                button.bind(on_release=lambda _, choice=room: self.select_client_room(choice))
+                self.rooms_box.add_widget(button)
+            self.say(f'{len(waiting)} salas disponibles.')
         self.run_job(lambda: Api(DEFAULT_API_URL).list_rooms(), show)
 
-    def select_client_room(self, _, text):
-        room = self.room_choices.get(text)
-        if room:
-            self.room_input.text = room['id']
-            if room.get('game') in ('un5', 'un6'):
-                self.client_game.text = room['game']
+    def select_client_room(self, room):
+        self.selected_room_id = room['id']
+        if room.get('game') in ('un5', 'un6'):
+            self.client_game.text = room['game']
 
     def on_transport_change(self, spinner, text):
         self.transport_container.clear_widgets()

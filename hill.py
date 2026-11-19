@@ -43,7 +43,7 @@ def sync(url, ticket, body):
     except HTTPError as error:
         # Never include the request or ticket in output.
         if error.code in (401, 403):
-            raise HillError('Código inválido o vencido. Genera uno nuevo desde el torneo.') from None
+            raise HillError('Código KOTH inactivo o inválido. Comprueba tu inscripción y el estado del evento.') from None
         if error.code == 400:
             raise HillError('Django rechazó la configuración de netplay. Comprueba la IP y el torneo.') from None
         raise OSError(f'Django respondió HTTP {error.code}.') from None

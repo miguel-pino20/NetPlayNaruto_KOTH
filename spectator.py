@@ -284,7 +284,7 @@ def cmd_watch(args):
     if not key:
         print('Falta la autorización de espectador.', flush=True)
         return 1
-    if not load_match_state(args):
+    if not getattr(args, 'preloaded_state', False) and not load_match_state(args):
         return 1
     pine, core = connect(args)
     client = None

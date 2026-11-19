@@ -1,60 +1,34 @@
-# UN5 Netplay 0.1.5A — Windows y Linux
+# UN5 Netplay 0.1.9A
 
-Esta versión actualiza la dirección predeterminada del servidor de eventos y
-salas, y corrige la preparación de las compilaciones de Windows desde Linux.
+## KOTH en Android
 
-## Cambios de esta versión
+- La pestaña **KOTH** muestra los eventos disponibles en una lista. El evento seleccionado queda resaltado y se conserva al actualizar si sigue disponible.
+- Inicia sesión con Discord para inscribirte o recuperar tu inscripción. KOTH usa la IPv4 de ZeroTier de la pestaña **Conexión** y te indica dónde corregirla si está vacía o es inválida.
+- Tras conectar, pulsa **Volver a ARMSX2** y reanuda el mismo juego que seleccionaste en KOTH. El servicio usa el estado compartido ya instalado en el **slot 1** y muestra el rol asignado por Django: **En espera**, **P1**, **P2** o **Espectador**.
+- La preparación de KOTH usa la misma comprobación de mandos virtuales que Host P1 y Cliente P2. Si el mando 2 está desconectado, lo activa como DualShock 2.
 
-- **Servidor predeterminado actualizado:** `https://narutimateonline.servegame.com/`
-  para eventos KOTH.
-- Las direcciones antiguas guardadas de KOTH se migran al
-  nuevo dominio, conservando los servidores personalizados y las credenciales
-  de inscripción existentes.
-- **Compilación de Windows corregida:** el script comprueba que la caché tenga
-  las versiones requeridas, incluido Pillow 13, y descarga las dependencias
-  faltantes antes de iniciar Wine. Con la caché completa puede compilar sin conexión.
-- Documentación actualizada con la nueva dirección y las instrucciones de compilación.
+## KOTH en PC y Android
+
+- La inscripción de Discord se conserva al pasar de un dispositivo a otro. Si cambia la IPv4 de ZeroTier registrada para ese evento, Django actualiza la dirección y descuenta **1 punto** cuando el jugador tiene saldo. El mínimo es **0** y volver a conectar con la misma IP conserva los puntos.
+- El **código personal** sigue disponible en el launcher de PC. Se eliminó el vencimiento de 24 horas en Django. El código pierde vigencia al cerrar el evento o retirar al jugador. Un cambio de IP invalida la conexión anterior.
+- El flujo de cambio de IP requiere el backend KOTH actualizado con la migración `0017_participant_netplay_address`.
+
+## Cliente P2 en Android
+
+- Selecciona la sala del servidor UN5 directamente en la lista. La sala elegida queda resaltada y el código se toma de esa selección.
 
 ## Descargas
 
-| Plataforma | Archivo | Tamaño aproximado |
-| --- | --- | --- |
-| Windows x64 | `UN5-Netplay-Windows-x64.exe` | 20 MiB |
-| Linux x86_64 | `UN5-Netplay-x86_64.AppImage` | 23 MiB |
+| Plataforma | Paquete |
+| --- | --- |
+| Windows x64 | `UN5-Netplay-Windows-x64.exe` |
+| Linux x86_64 | `UN5-Netplay-x86_64.AppImage` |
+| Android ARM64 | `UN5-Netplay-Android-arm64-debug.apk` |
 
-Descarga el archivo de tu plataforma. Ambos incluyen Python y sus dependencias.
-Los archivos `.sha256` adjuntos permiten verificar la integridad de las descargas.
-PCSX2, BIOS y juegos se configuran por separado.
+Cada paquete tiene su archivo `.sha256`. Android usa el código de versión `1026408`.
 
-## Antes de conectar
+## Validación
 
-- Configura PCSX2, carga tu juego y habilita **Enable PINE**, con el slot **28011**.
-- Para los modos ZeroTier, instala ZeroTier y conecta el equipo a la red correspondiente.
-- Reinicia el launcher actualizado para aplicar la migración de las direcciones
-  guardadas. Si usas un compilado anterior, cambia el campo del servidor a
-  `https://narutimateonline.servegame.com/` para KOTH.
-
-**Windows:** abre PCSX2 manualmente y ejecuta el `.exe` para abrir el launcher.
-
-**Linux:** requiere PCSX2 instalado mediante Flatpak (`net.pcsx2.PCSX2`).
-Cierra otras instancias de PCSX2 y ejecuta:
-
-```bash
-chmod +x UN5-Netplay-x86_64.AppImage
-./UN5-Netplay-x86_64.AppImage
-```
-
-El AppImage abre PCSX2 y el launcher. Si el sistema no puede montarlo mediante FUSE,
-usa `--appimage-extract-and-run`. Si AppImageLauncher interfiere con la apertura,
-ejecútalo con `APPIMAGELAUNCHER_DISABLE=1`.
-
-## Actualización y comprobaciones
-
-Las versiones con actualizador pueden detectar esta release al abrir el launcher.
-También puedes descargar y reemplazar manualmente el archivo de tu plataforma.
-Las preferencias y sesiones se guardan fuera del ejecutable.
-
-Se generaron ambos paquetes y se verificaron sus SHA256. Pasaron las comprobaciones
-internas de Python, Tcl/Tk, Pillow, TLS, importación del launcher y proceso de netplay.
-El ejecutable de Windows se comprobó mediante Wine. Estas comprobaciones no incluyen
-una partida completa ni una prueba de esta compilación en Windows nativo.
+- 113 pruebas automatizadas de UN5 Netplay correctas y comprobaciones internas de los paquetes de Windows y Linux superadas.
+- SHA256 de los tres paquetes verificados. El APK conserva la firma de 0.1.8A.
+- La inscripción en P5 desde el Infinix y el cambio a la IP de PC con puntaje cero se comprobaron durante el desarrollo. Queda validar un combate completo y la reproducción como espectador en Android.

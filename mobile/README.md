@@ -72,7 +72,13 @@ Consultar `VALIDATION.md` para los resultados reales y límites de las pruebas.
 - Diagnóstico PINE de solo lectura: estado, ID, CRC y versión; distingue timeout
   al conectar TCP de timeout esperando respuesta a un comando.
 - Configuración privada del puerto, IP local y URL KOTH.
-- Consulta manual de eventos KOTH con `koth_client.list_events`.
+- Introduce tu IPv4 fija de ZeroTier en **Conexión**. En **KOTH**, actualiza la
+  lista y selecciona un evento. Con una sesión Discord verificada puedes inscribirte o recuperar
+  tu inscripción sin duplicarla. Si la IP registrada para ese evento cambia,
+  Django descuenta un punto hasta un mínimo de cero. Selecciona el mismo juego
+  que abriste en ARMSX2. Tras conectar, vuelve al emulador y pulsa Reanudar.
+  El servicio comprueba el estado ya instalado en el slot 1 y muestra el rol
+  asignado por Django: En espera, P1, P2 o Espectador.
 - Flujo Discord existente mediante `DiscordMixin`, navegador externo y sesión
   privada. La interfaz no descarga avatares. El secreto OAuth permanece en servidor.
 
@@ -119,8 +125,8 @@ requiere autorización especial de Android. No se solicita WAKE_LOCK.
 mobile/.venv/bin/python -m unittest test_mobile_base test_pine test_koth_client test_zerotier_networks
 ```
 
-Pendiente: importación general de estados al emulador, inscripción/turnos KOTH,
-prueba completa con P2 real y comparación de hashes, configuración de mandos,
+Pendiente: importación general de estados al emulador, validación física de mandos y rotaciones KOTH,
+prueba completa con P2 real y comparación de hashes,
 espectadores y medición prolongada de RAM, CPU, batería y FPS. No confundir una
 prueba de diagnóstico o handshake con una pelea validada. Ver `VALIDATION.md` y
 `../ANDROID_PLAN.md`.
