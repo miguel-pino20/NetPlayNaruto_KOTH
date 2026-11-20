@@ -39,7 +39,7 @@ def run_worker(arguments):
     # CREATE_NO_WINDOW workers still retain the stdout pipe used by Backend.
     for stream in (sys.stdout, sys.stderr):
         if stream is not None:
-            stream.reconfigure(line_buffering=True, write_through=True)
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True, write_through=True)
     runpy.run_path(str(script), run_name="__main__")
     return 0
 

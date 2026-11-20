@@ -13,8 +13,10 @@ from netplay import main as play
 
 if __package__:
     from .host import prepare_files, wait_for_match
+    from .mobile_locale import tr
 else:
     from host import prepare_files, wait_for_match
+    from mobile_locale import tr
 
 
 ROLES = {'host': 'P1', 'guest': 'P2', 'spectator': 'Espectador'}
@@ -65,7 +67,7 @@ def play_round(config, snapshot, state, symbols, stop):
 
 def run_koth(config, report):
     parent_stop = Path(config['stop_file'])
-    report('preparing', 'KOTH · Descargando los archivos de la partida. Vuelve a ARMSX2.')
+    report('preparing', tr('KOTH · Descargando los archivos de la partida. Vuelve a ARMSX2.'))
     state, symbols = prepare_files(config['directory'], config['game'])
     body = {'address': config['address'], 'port': 47400, 'game': config['game'], 'delay': 3,
             'state_tag': file_tag(state), 'symbols_tag': file_tag(symbols), 'available': False,
@@ -84,7 +86,7 @@ def run_koth(config, report):
                     try:
                         future.result()
                     except (Exception, SystemExit) as error:
-                        report('waiting', f'KOTH · La sesión terminó: {error}')
+                        report('waiting', tr('KOTH · La sesión terminó: {error}', error=error))
                     if not round_stop.exists():
                         blocked = active
                         retry_after = time.monotonic() + 5 if active[1] == 'spectator' else float('inf')
@@ -101,7 +103,7 @@ def run_koth(config, report):
                     snapshot = sync(url, ticket, body)
                 except OSError:
                     if time.monotonic() - last_sync >= 12:
-                        raise HillError('KOTH perdió la conexión con Django.')
+                        raise HillError(tr('KOTH perdió la conexión con Django.'))
                 else:
                     registered = True
                     last_sync = time.monotonic()
@@ -111,7 +113,7 @@ def run_koth(config, report):
                     identity = (snapshot.get('round_id'), role,
                                 snapshot.get('session_epoch') or snapshot.get('stream_id'))
                     if snapshot.get('transport') != 'zerotier':
-                        raise HillError('KOTH móvil requiere que la pareja utilice ZeroTier.')
+                        raise HillError(tr('KOTH móvil requiere que la pareja utilice ZeroTier.'))
                     if blocked and (blocked[:2] != identity[:2] or time.monotonic() >= retry_after):
                         blocked = None
                     ready = snapshot.get('ready') and role in ROLES
@@ -121,10 +123,10 @@ def run_koth(config, report):
                         round_stop.unlink(missing_ok=True)
                         active = identity
                         future = worker.submit(play_round, config, snapshot, state, symbols, round_stop)
-                    role_label = ROLES.get(role, 'En espera')
-                    detail = ('Esperando el resultado del organizador.' if blocked and role != 'spectator'
-                              else 'Reproduciendo el combate.' if future and role == 'spectator'
-                              else 'Conectando con el rival.' if future
+                    role_label = tr(ROLES.get(role, 'En espera'))
+                    detail = (tr('Esperando el resultado del organizador.') if blocked and role != 'spectator'
+                              else tr('Reproduciendo el combate.') if future and role == 'spectator'
+                              else tr('Conectando con el rival.') if future
                               else snapshot.get('reason', ''))
                     report('playing' if future else 'waiting', f'KOTH · {config["event_name"]} · {role_label}\n{detail}')
 

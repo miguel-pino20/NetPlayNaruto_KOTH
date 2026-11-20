@@ -2,6 +2,12 @@
 import hashlib
 import os
 
+if __package__:
+    from .mobile_locale import tr
+else:
+    from mobile_locale import tr
+
+
 RELATIVE_PATH = 'Download/NarutoNetplay/'
 
 def stream_tag(stream):
@@ -16,7 +22,7 @@ def publish_state(source, filename):
     from jnius import autoclass
     Build = autoclass('android.os.Build$VERSION')
     if Build.SDK_INT < 29:
-        raise RuntimeError('Guardar en Descargas requiere Android 10 o posterior.')
+        raise RuntimeError(tr('Guardar en Descargas requiere Android 10 o posterior.'))
     Downloads = autoclass('android.provider.MediaStore$Downloads')
     Values = autoclass('android.content.ContentValues')
     String = autoclass('java.lang.String')
@@ -42,7 +48,7 @@ def publish_state(source, filename):
     def tag_uri(target):
         descriptor = resolver.openFileDescriptor(target, 'r')
         if descriptor is None:
-            raise OSError('No se pudo leer el estado compartido.')
+            raise OSError(tr('No se pudo leer el estado compartido.'))
         try:
             fd = descriptor.detachFd()
             with os.fdopen(fd, 'rb') as exported:
@@ -62,11 +68,11 @@ def publish_state(source, filename):
         values.put('is_pending', autoclass('java.lang.Integer')(1))
         uri = resolver.insert(collection, values)
         if uri is None:
-            raise OSError('Android no permitió guardar el estado en Descargas.')
+            raise OSError(tr('Android no permitió guardar el estado en Descargas.'))
     try:
         descriptor = resolver.openFileDescriptor(uri, 'rwt')
         if descriptor is None:
-            raise OSError('No se pudo abrir el destino del estado.')
+            raise OSError(tr('No se pudo abrir el destino del estado.'))
         try:
             with os.fdopen(descriptor.detachFd(), 'wb') as target, open(source, 'rb') as incoming:
                 for chunk in iter(lambda: incoming.read(1024 * 1024), b''):
@@ -76,7 +82,7 @@ def publish_state(source, filename):
         finally:
             descriptor.close()
         if tag_uri(uri) != expected:
-            raise OSError('El estado guardado en Descargas no pasó la verificación.')
+            raise OSError(tr('El estado guardado en Descargas no pasó la verificación.'))
         values = Values()
         values.put('is_pending', autoclass('java.lang.Integer')(0))
         resolver.update(uri, values, None, None)
@@ -95,6 +101,7 @@ def download_state(directory, game):
     state, _ = prepare_files(directory, game)
     name = game.upper() + '-Netplay.p2s'
     folder, changed = publish_state(state, name)
-    return ('Estado guardado: ' if changed else 'Estado existente verificado: ') + folder + '/' + name + (
+    message = tr('Estado guardado: {path}') if changed else tr('Estado existente verificado: {path}')
+    return tr(message, path=folder + '/' + name) + tr(
         '\nCárgalo o cópialo en ARMSX2 por tu cuenta. Netplay usa el slot 1; '
         'este botón no modifica el emulador.')

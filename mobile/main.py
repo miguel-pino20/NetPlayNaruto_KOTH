@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from weakref import WeakKeyDictionary
 
 os.environ.setdefault('KIVY_NO_ARGS', '1')
 # On desktop use the actual shared sources; packaging copies an explicit allowlist.
@@ -31,6 +32,7 @@ from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
 from kivy.uix.spinner import Spinner
 from kivy.uix.switch import Switch
 from kivy.utils import platform
+from mobile_locale import LANGUAGES, set_language, tr
 from backend import configure_storage, https_url, validate_address, pine_diagnostics, load_preferences, make_account
 
 
@@ -47,7 +49,7 @@ class MobileApp(App):
                 def open(self, url, new=0, autoraise=True):
                     from urllib.parse import urlsplit
                     if urlsplit(url).scheme != 'https':
-                        raise ValueError('Discord debe abrirse mediante HTTPS.')
+                        raise ValueError(tr('Discord debe abrirse mediante HTTPS.'))
                     Intent = autoclass('android.content.Intent')
                     Uri = autoclass('android.net.Uri')
                     activity = autoclass('org.kivy.android.PythonActivity').mActivity
@@ -57,6 +59,9 @@ class MobileApp(App):
         from appdata import DATA_DIR
         self.prefs_path = DATA_DIR / 'mobile.json'
         self.prefs = load_preferences(self.prefs_path)
+        self.language = set_language(self.prefs.get('language'))
+        self.localized_widgets = WeakKeyDictionary()
+        self.changing_language = False
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='mobile-api')
         self.busy = False
         self.closed = False
@@ -73,10 +78,17 @@ class MobileApp(App):
         brand.add_widget(self.label('NARUTO NETPLAY', 52, 20))
         root.add_widget(brand)
         root.add_widget(self.label('Base Android · PINE / ZeroTier / KOTH', 26))
-        tabs = TabbedPanel(do_default_tab=False, tab_width=dp(72))
+        tabs = TabbedPanel(do_default_tab=False, tab_width=dp(88))
         self.connection = self.page(tabs, 'Conexión')
         self.available_release = None
-        self.label_in(self.connection, 'Versión ' + VERSION, 16, 36)
+        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        row.add_widget(self.label('Idioma', 48, 16))
+        language = Spinner(text=LANGUAGES[self.language], values=tuple(LANGUAGES.values()))
+        language.bind(text=self.change_language)
+        row.add_widget(language)
+        self.connection.add_widget(row)
+        version = self.label_in(self.connection, '', 16, 36)
+        self.set_text(version, 'Versión {version}', version=VERSION)
         self.update_label = self.label_in(self.connection, 'Actualizaciones de GitHub', 14, 70)
         self.button(self.connection, 'Buscar actualizaciones', self.check_updates)
         self.update_download_button = self.button(self.connection, 'Descargar actualización', self.download_update)
@@ -101,8 +113,7 @@ class MobileApp(App):
         self.game = Spinner(text=self.prefs.get('game', 'un6'), values=('un5', 'un6'),
                             size_hint_y=None, height=dp(48))
         host.add_widget(self.game)
-        self.host_transport = Spinner(text='Directo / ZeroTier' if self.prefs.get('transport') == 'direct' else 'Servidor UN5',
-                                 values=('Servidor UN5', 'Directo / ZeroTier'), size_hint_y=None, height=dp(48))
+        self.host_transport = self.transport_spinner(self.prefs.get('transport'))
         host.add_widget(self.host_transport)
         row = BoxLayout(size_hint_y=None, height=dp(42))
         row.add_widget(self.label('Control flotante movible', 42, 14))
@@ -120,9 +131,7 @@ class MobileApp(App):
         self.client_game = Spinner(text=self.prefs.get('client_game', self.game.text), values=('un5', 'un6'),
                                    size_hint_y=None, height=dp(48))
         client.add_widget(self.client_game)
-        self.client_transport = Spinner(
-            text='Directo / ZeroTier' if self.prefs.get('client_transport') == 'direct' else 'Servidor UN5',
-            values=('Servidor UN5', 'Directo / ZeroTier'), size_hint_y=None, height=dp(48))
+        self.client_transport = self.transport_spinner(self.prefs.get('client_transport'))
         client.add_widget(self.client_transport)
         self.transport_container = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(10))
         self.transport_container.bind(minimum_height=self.transport_container.setter('height'))
@@ -130,8 +139,9 @@ class MobileApp(App):
         self.direct_box = BoxLayout(orientation='vertical', spacing=dp(10), size_hint_y=None)
         self.direct_box.bind(minimum_height=self.direct_box.setter('height'))
         self.label_in(self.direct_box, 'IPv4 del host P1 · puerto 47400', 14, 32)
-        self.host_ip = TextInput(text=self.prefs.get('guest_host', ''), hint_text='IP del host',
+        self.host_ip = TextInput(text=self.prefs.get('guest_host', ''),
                                  multiline=False, size_hint_y=None, height=dp(48))
+        self.set_text(self.host_ip, 'IP del host', property_name='hint_text')
         self.direct_box.add_widget(self.host_ip)
         self.server_box = BoxLayout(orientation='vertical', spacing=dp(10), size_hint_y=None)
         self.server_box.bind(minimum_height=self.server_box.setter('height'))
@@ -149,7 +159,7 @@ class MobileApp(App):
         self.client_status = self.label_in(client, 'Sin conexión.', 14, 150)
         self.label_in(client, 'Usa tus controles locales del mando 1: netplay los asigna al jugador 2. '
                       'Ambos puertos virtuales se preparan como DualShock 2.', 14, 100)
-        client.bind(on_release=lambda *_: self.refresh_rooms() if self.client_transport.text == 'Servidor UN5' and not self.busy else None)
+        client.bind(on_release=lambda *_: self.refresh_rooms() if self.transport_mode(self.client_transport) == 'server' and not self.busy else None)
 
         koth = self.page(tabs, 'KOTH')
         self.field(koth, 'koth_url', 'Servidor KOTH (HTTPS)', 'https://narutimateonline.servegame.com')
@@ -189,8 +199,9 @@ class MobileApp(App):
         return root
 
     def label(self, text, height=48, size=14):
-        widget = Label(text=text, size_hint_y=None, height=dp(height), font_size=dp(size),
+        widget = Label(size_hint_y=None, height=dp(height), font_size=dp(size),
                        halign='left', valign='middle')
+        self.set_text(widget, text)
         widget.bind(size=lambda instance, value: setattr(instance, 'text_size', (value[0], value[1])))
         return widget
 
@@ -200,7 +211,8 @@ class MobileApp(App):
         return widget
 
     def page(self, tabs, title):
-        tab = TabbedPanelItem(text=title)
+        tab = TabbedPanelItem()
+        self.set_text(tab, title)
         scroll = ScrollView()
         content = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(10), padding=dp(8))
         content.bind(minimum_height=content.setter('height'))
@@ -219,14 +231,50 @@ class MobileApp(App):
         parent.add_widget(field)
 
     def button(self, parent, text, action):
-        button = Button(text=text, size_hint_y=None, height=dp(48), font_size=dp(15))
+        button = Button(size_hint_y=None, height=dp(48), font_size=dp(15), halign='center', valign='middle')
+        button.bind(size=lambda widget, size: setattr(widget, 'text_size', (size[0] - dp(12), size[1])))
+        self.set_text(button, text)
         button.bind(on_release=lambda *_: action())
         parent.add_widget(button)
         return button
 
-    def say(self, message):
+    def set_text(self, widget, message, *, property_name='text', **values):
+        self.localized_widgets[widget] = (property_name, message, values)
+        setattr(widget, property_name, tr(message, **values))
+
+    def say(self, message, **values):
         if not self.closed:
-            self.status.text = str(message)[:1400]
+            self.set_text(self.status, str(message)[:1400], **values)
+
+    def transport_spinner(self, mode):
+        values = self.transport_labels()
+        return Spinner(text=values[1] if mode == 'direct' else values[0], values=values,
+                       size_hint_y=None, height=dp(48))
+
+    @staticmethod
+    def transport_labels():
+        return tr('Servidor UN5'), tr('Directo / ZeroTier')
+
+    @staticmethod
+    def transport_mode(spinner):
+        return 'direct' if spinner.text == spinner.values[1] else 'server'
+
+    def change_language(self, _, text):
+        from appdata import write_json
+        self.language = set_language(next(code for code, label in LANGUAGES.items() if label == text))
+        self.prefs['language'] = self.language
+        write_json(self.prefs_path, self.prefs, private=True)
+        for widget, (property_name, message, values) in list(self.localized_widgets.items()):
+            setattr(widget, property_name, tr(message, **values))
+        self.changing_language = True
+        try:
+            for spinner in (self.host_transport, self.client_transport):
+                mode = self.transport_mode(spinner)
+                spinner.values = self.transport_labels()
+                spinner.text = spinner.values[1] if mode == 'direct' else spinner.values[0]
+        finally:
+            self.changing_language = False
+        self.refresh_host()
 
     def run_job(self, job, success):
         if self.busy:
@@ -248,11 +296,12 @@ class MobileApp(App):
     def persist(self):
         from appdata import write_json
         self.prefs = {key: field.text.strip() for key, field in self.inputs.items()}
+        self.prefs['language'] = self.language
         self.prefs['game'] = self.game.text
         self.prefs['koth_game'] = self.koth_game.text
         self.prefs['overlay'] = self.overlay.active
-        self.prefs['transport'] = 'server' if self.host_transport.text == 'Servidor UN5' else 'direct'
-        self.prefs['client_transport'] = 'server' if self.client_transport.text == 'Servidor UN5' else 'direct'
+        self.prefs['transport'] = self.transport_mode(self.host_transport)
+        self.prefs['client_transport'] = self.transport_mode(self.client_transport)
         self.prefs['client_game'] = self.client_game.text
         self.prefs['guest_host'] = self.host_ip.text.strip()
         write_json(self.prefs_path, self.prefs, private=True)
@@ -261,7 +310,7 @@ class MobileApp(App):
         try:
             slot = int(self.inputs['pine_slot'].text)
             if not 1 <= slot <= 65535:
-                raise ValueError('Puerto PINE inválido.')
+                raise ValueError(tr('Puerto PINE inválido.'))
             if self.inputs['zt_address'].text.strip():
                 validate_address(self.inputs['zt_address'].text)
             https_url(self.inputs['koth_url'].text)
@@ -281,22 +330,26 @@ class MobileApp(App):
                 return find_update('android'), ''
             except Exception as error:
                 return None, str(error)
-        self.update_label.text = 'Buscando actualizaciones…'
+        self.set_text(self.update_label, 'Buscando actualizaciones…')
         def show(result):
             release, error = result
             if error:
-                self.update_label.text = 'No se pudo comprobar: ' + error
+                self.set_text(self.update_label, 'No se pudo comprobar: {error}', error=error)
                 return
             self.say('Consulta de actualizaciones completada.')
             self.available_release = release
             self.update_download_button.disabled = release is None
-            self.update_label.text = ('Disponible: ' + release.version if release else
-                                      'No hay una actualización posterior a ' + VERSION)
+            self.set_text(self.update_label, 'Disponible: {version}' if release else
+                          'No hay una actualización posterior a {version}',
+                          version=release.version if release else VERSION)
             if release and automatic:
                 content = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
-                content.add_widget(self.label('Nueva versión ' + release.version + '. ¿Descargar APK?', 70))
-                popup = Popup(title='Actualización disponible', content=content,
+                prompt = self.label('', 70)
+                self.set_text(prompt, 'Nueva versión {version}. ¿Descargar APK?', version=release.version)
+                content.add_widget(prompt)
+                popup = Popup(content=content,
                               size_hint=(0.92, None), height=dp(240))
+                self.set_text(popup, 'Actualización disponible', property_name='title')
                 def download():
                     popup.dismiss()
                     self.download_update()
@@ -318,7 +371,7 @@ class MobileApp(App):
             return
         from updates import download_update
         release = self.available_release
-        self.update_label.text = 'Descargando ' + release.version + ' y verificando SHA256…'
+        self.set_text(self.update_label, 'Descargando {version} y verificando SHA256…', version=release.version)
         def fetch():
             try:
                 return download_update(self.user_data_dir, release), ''
@@ -327,11 +380,11 @@ class MobileApp(App):
         def ready(result):
             _, error = result
             if error:
-                self.update_label.text = 'No se pudo descargar: ' + error
+                self.set_text(self.update_label, 'No se pudo descargar: {error}', error=error)
                 self.say(error)
                 self.update_install_button.disabled = True
                 return
-            self.update_label.text = 'APK ' + release.version + ' verificado. Pulsa Instalar actualización.'
+            self.set_text(self.update_label, 'APK {version} verificado. Pulsa Instalar actualización.', version=release.version)
             self.update_install_button.disabled = False
         self.run_job(fetch, ready)
 
@@ -350,7 +403,7 @@ class MobileApp(App):
             return
         from downloads import download_state
         game = self.export_game.text
-        self.say('Descargando y verificando estado ' + game.upper() + '…')
+        self.say('Descargando y verificando estado {game}…', game=game.upper())
         self.run_job(lambda: download_state(self.user_data_dir, game), self.say)
 
     def test_pine(self):
@@ -360,14 +413,14 @@ class MobileApp(App):
     def refresh_koth_entry(self, *_):
         self.koth_join.disabled = True
         if not self.discord_verified or not self.account.session:
-            self.koth_info.text = 'Inicia sesión con Discord para inscribirte y conectar.'
+            self.set_text(self.koth_info, 'Inicia sesión con Discord para inscribirte y conectar.')
         elif self.koth_events_url != self.inputs['koth_url'].text.strip().rstrip('/'):
-            self.koth_info.text = 'Actualiza los eventos del servidor KOTH.'
+            self.set_text(self.koth_info, 'Actualiza los eventos del servidor KOTH.')
         elif self.koth_selected_id not in self.koth_choices:
-            self.koth_info.text = 'Selecciona un evento disponible.'
+            self.set_text(self.koth_info, 'Selecciona un evento disponible.')
         else:
             self.koth_join.disabled = False
-            self.koth_info.text = 'Si tu IP de ZeroTier registrada cambia, perderás hasta 1 punto.'
+            self.set_text(self.koth_info, 'Si tu IP de ZeroTier registrada cambia, perderás hasta 1 punto.')
 
     def list_events(self):
         try:
@@ -380,7 +433,7 @@ class MobileApp(App):
         from koth_client import list_events
 
         def show(events):
-            statuses = {'draft': 'Preparación', 'running': 'En curso'}
+            statuses = {'draft': '{event} · Preparación', 'running': '{event} · En curso'}
             if self.koth_events_url != source:
                 self.koth_selected_id = None
             self.koth_choices = {event['id']: event for event in events if event.get('status') in statuses}
@@ -391,14 +444,14 @@ class MobileApp(App):
             if not self.koth_choices:
                 self.label_in(self.koth_events_box, 'No hay eventos disponibles.', 14, 50)
             for event_id, event in self.koth_choices.items():
-                button = ToggleButton(text=f"{event['name']} · {statuses[event['status']]}",
-                                      group=self.koth_events_box, allow_no_selection=False,
+                button = ToggleButton(group=self.koth_events_box, allow_no_selection=False,
                                       state='down' if event_id == self.koth_selected_id else 'normal',
                                       size_hint_y=None, height=dp(48), font_size=dp(15))
+                self.set_text(button, statuses[event['status']], event=event['name'])
                 button.bind(on_release=lambda _, selected=event_id: self.select_koth_event(selected))
                 self.koth_events_box.add_widget(button)
             self.refresh_koth_entry()
-            self.say(f'Eventos disponibles: {len(self.koth_choices)}')
+            self.say('Eventos disponibles: {count}', count=len(self.koth_choices))
 
         self.run_job(lambda: list_events(url), show)
 
@@ -424,7 +477,7 @@ class MobileApp(App):
             try:
                 address = validate_address(configured_address)
             except ValueError as error:
-                raise ValueError('Revisa la IPv4 de ZeroTier en la pestaña Conexión.') from error
+                raise ValueError(tr('Revisa la IPv4 de ZeroTier en la pestaña Conexión.')) from error
             self.persist()
         except (ValueError, OSError) as error:
             self.say(str(error))
@@ -441,7 +494,7 @@ class MobileApp(App):
             return
         session = self.account.session
         account = self.account.account or {}
-        name = account.get('nick') or account.get('username') or 'Cuenta Discord'
+        name = account.get('nick') or account.get('username') or tr('Cuenta Discord')
         identity = account.get('id')
         if not identity:
             self.say('No se pudo identificar tu cuenta. Vuelve a iniciar sesión con Discord.')
@@ -456,10 +509,12 @@ class MobileApp(App):
                   'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
 
         def show(result):
-            message = f"Inscripción confirmada en {result['event']['name']}. Puntos: {result['points']}."
+            message = 'Inscripción confirmada en {event}. Puntos: {points}.'
+            values = {'event': result['event']['name'], 'points': result['points']}
             if result['address_changed']:
-                message += f" IP actualizada. Puntos descontados: {result['points_deducted']}."
-            self.say(message)
+                message = 'Inscripción confirmada en {event}. Puntos: {points}. IP actualizada. Puntos descontados: {deducted}.'
+                values['deducted'] = result['points_deducted']
+            self.say(message, **values)
             if platform == 'android':
                 self.launch_mobile_service(dict(config, koth_ticket=result['ticket']), return_to_game=False)
 
@@ -494,11 +549,15 @@ class MobileApp(App):
         self.auth_timer = None
         self.login_button.disabled = False
         account = self.account.account or {}
-        name = account.get('nick') or account.get('username') or 'Cuenta Discord'
+        name = account.get('nick') or account.get('username') or tr('Cuenta Discord')
         self.discord_verified = bool(ok and self.account.session)
-        self.account_label.text = f'Sesión: {name}' if self.discord_verified else 'Sin sesión verificada'
+        if self.discord_verified:
+            self.set_text(self.account_label, 'Sesión: {name}', name=name)
+        else:
+            self.set_text(self.account_label, 'Sin sesión verificada')
         self.refresh_koth_entry()
-        self.say(f'Cuenta: {operation} completado.' if ok else str(error))
+        messages = {'restore': 'Sesión restaurada.', 'login': 'Sesión iniciada.', 'logout': 'Sesión cerrada.'}
+        self.say(messages[operation] if ok else str(error))
 
     def cancel_login(self):
         self.account.acct_cancel_login()
@@ -510,14 +569,14 @@ class MobileApp(App):
     def refresh_host(self, _=0):
         path = Path(self.user_data_dir) / 'host-status.json'
         state = load_preferences(path)
-        self.host_status.text = state.get('message', 'Host detenido.')
-        self.client_status.text = self.host_status.text
-        if state.get('role') == 'koth':
-            self.koth_status.text = self.host_status.text
+        message = state.get('message')
+        self.host_status.text = message or tr('Host detenido.')
+        self.client_status.text = message or tr('Sin conexión.')
+        self.koth_status.text = (message if state.get('role') == 'koth' else None) or tr('KOTH desconectado.')
         if state.get('phase') in ('starting', 'preparing', 'waiting', 'playing', 'stopping'):
             updated = state.get('time')
             if isinstance(updated, (int, float)) and time.time() - updated > 12:
-                self.host_status.text += '\nSin actualización reciente: revisa batería y bloqueo de pantalla.'
+                self.host_status.text += '\n' + tr('Sin actualización reciente: revisa batería y bloqueo de pantalla.')
                 self.client_status.text = self.host_status.text
 
     def start_host(self):
@@ -547,10 +606,10 @@ class MobileApp(App):
         try:
             slot = int(self.inputs['pine_slot'].text)
             if not 1 <= slot <= 65535:
-                raise ValueError('Puerto PINE inválido.')
+                raise ValueError(tr('Puerto PINE inválido.'))
             address = self.inputs['zt_address'].text.strip()
             selector = self.host_transport if role == 'host' else self.client_transport
-            transport = 'server' if selector.text == 'Servidor UN5' else 'direct'
+            transport = self.transport_mode(selector)
             if address and transport == 'direct':
                 address = validate_address(address)
             game = self.game.text if role == 'host' else self.client_game.text
@@ -558,9 +617,9 @@ class MobileApp(App):
             room_id = self.selected_room_id if role == 'guest' and transport == 'server' else ''
             if role == 'guest' and transport == 'server':
                 if not room_id:
-                    raise ValueError('Selecciona una sala de la lista.')
+                    raise ValueError(tr('Selecciona una sala de la lista.'))
                 if not self.account.session:
-                    raise ValueError('Inicia sesión con Discord para entrar al servidor principal.')
+                    raise ValueError(tr('Inicia sesión con Discord para entrar al servidor principal.'))
             self.persist()
         except Exception as error:
             self.say(str(error))
@@ -593,11 +652,12 @@ class MobileApp(App):
         Path(config['stop_file']).unlink(missing_ok=True)
         (Path(self.user_data_dir) / 'host-room.json').unlink(missing_ok=True)
         write_json(Path(self.user_data_dir) / 'host-status.json',
-                   {'phase': 'starting', 'role': config['role'], 'message': 'Servicio iniciando…'}, private=True)
+                   {'phase': 'starting', 'role': config['role'], 'message': tr('Servicio iniciando…')}, private=True)
+        config = dict(config, language=self.language)
         service = autoclass('org.un5.narutonetplay.ServiceHost')
         activity = autoclass('org.kivy.android.PythonActivity').mActivity
         title = 'Naruto Netplay · KOTH' if config['role'] == 'koth' else 'Naruto Netplay'
-        service.start(activity, '', title, 'Vuelve a ARMSX2 y pulsa Reanudar.', json.dumps(config))
+        service.start(activity, '', title, tr('Vuelve a ARMSX2 y pulsa Reanudar.'), json.dumps(config))
         if return_to_game:
             self.say('Vuelve a ARMSX2 y pulsa Reanudar. El servicio prepara la partida.')
             self.open_emulator()
@@ -670,7 +730,7 @@ class MobileApp(App):
                                       size_hint_y=None, height=dp(48), font_size=dp(15))
                 button.bind(on_release=lambda _, choice=room: self.select_client_room(choice))
                 self.rooms_box.add_widget(button)
-            self.say(f'{len(waiting)} salas disponibles.')
+            self.say('Salas disponibles: {count}', count=len(waiting))
         self.run_job(lambda: Api(DEFAULT_API_URL).list_rooms(), show)
 
     def select_client_room(self, room):
@@ -678,13 +738,15 @@ class MobileApp(App):
         if room.get('game') in ('un5', 'un6'):
             self.client_game.text = room['game']
 
-    def on_transport_change(self, spinner, text):
+    def on_transport_change(self, spinner, _):
+        if self.changing_language:
+            return
         self.transport_container.clear_widgets()
 
-        if text == 'Directo / ZeroTier':
+        if self.transport_mode(spinner) == 'direct':
             self.transport_container.add_widget(self.direct_box)
 
-        elif text == 'Servidor UN5':
+        else:
             self.transport_container.add_widget(self.server_box)
             if hasattr(self, 'status') and not self.busy:
                 self.refresh_rooms()

@@ -24,7 +24,7 @@ def prepare():
     target.mkdir(parents=True)
     for name in SHARED:
         shutil.copy2(ROOT / name, target / name)
-    for name in ('main.py', 'backend.py', 'koth.py', 'host.py', 'host_service.py', 'floating.py', 'downloads.py', 'updates.py'):
+    for name in ('main.py', 'mobile_locale.py', 'backend.py', 'koth.py', 'host.py', 'host_service.py', 'floating.py', 'downloads.py', 'updates.py'):
         shutil.copy2(HERE / name, target / name)
     shutil.copy2(ROOT / "appimage" / "un5-netplay.png", target / "un5-netplay.png")
     # Manifest-only Android library merged by Gradle; Java comes from android.add_src.

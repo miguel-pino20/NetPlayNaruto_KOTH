@@ -6,6 +6,7 @@ import sys
 import time
 
 from backend import configure_storage
+from mobile_locale import set_language, tr
 
 
 def show_notification(transport='direct', role='host'):
@@ -18,15 +19,15 @@ def show_notification(transport='direct', role='host'):
     Manager = autoclass('android.app.NotificationManager')
     manager = service.getSystemService(Context.NOTIFICATION_SERVICE)
     channel_id = 'un5_netplay_host'
-    manager.createNotificationChannel(Channel(channel_id, 'Partida Naruto Netplay', Manager.IMPORTANCE_LOW))
+    manager.createNotificationChannel(Channel(channel_id, tr('Partida Naruto Netplay'), Manager.IMPORTANCE_LOW))
     intent = service.getPackageManager().getLaunchIntentForPackage(service.getPackageName())
     PendingIntent = autoclass('android.app.PendingIntent')
     pending = PendingIntent.getActivity(service, 0, intent,
                                        PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT)
     Builder = autoclass('android.app.Notification$Builder')
     notification = (Builder(service, channel_id).setSmallIcon(service.getApplicationInfo().icon)
-                    .setContentTitle('Naruto Netplay · ' + ({'host': 'Host P1', 'guest': 'Cliente P2', 'koth': 'KOTH'}[role]))
-                    .setContentText('Coordinando turnos con Django' if role == 'koth' else 'Sala UN5 · esperando jugador 2' if transport == 'server' else 'Esperando jugador 2 · UDP 47400')
+                    .setContentTitle('Naruto Netplay · ' + ({'host': 'Host P1', 'guest': tr('Cliente P2'), 'koth': 'KOTH'}[role]))
+                    .setContentText(tr('Coordinando turnos con Django') if role == 'koth' else tr('Sala UN5 · esperando jugador 2') if transport == 'server' else tr('Esperando jugador 2 · UDP 47400'))
                     .setContentIntent(pending).setOngoing(True).build())
     service.startForeground(1, notification)
 
@@ -35,6 +36,7 @@ def main():
     import fcntl
     config = json.loads(os.environ['PYTHON_SERVICE_ARGUMENT'])
     configure_storage(config['directory'])
+    set_language(config.get('language'))
     from appdata import write_json
     from host import run_host
     status_path = Path(config['directory']) / 'host-status.json'
@@ -55,7 +57,7 @@ def main():
             except (OSError, ValueError):
                 pass
         if room_id and state in ('waiting', 'playing'):
-            message = f'Sala UN5: {room_id}\n' + str(message)
+            message = tr('Sala UN5: {room}', room=room_id) + '\n' + str(message)
         write_json(status_path, {'phase': state, 'message': str(message)[-1800:],
                                  'room_id': room_id, 'transport': config.get('transport', 'direct'),
                                  'role': config.get('role', 'host'),
@@ -74,15 +76,15 @@ def main():
                 if line.startswith('host: waiting'):
                     report('waiting', 'HOST P1 · UDP 47400 · delay 3\n' + line)
                 elif line.startswith('host: room '):
-                    report('waiting', 'HOST P1 · Sala publicada en el servidor UN5. Esperando jugador 2.')
+                    report('waiting', tr('HOST P1 · Sala publicada en el servidor UN5. Esperando jugador 2.'))
                 elif line.startswith('guest:'):
                     report('waiting', 'CLIENTE P2 · ' + line)
                 elif line.startswith('waiting for the other PC'):
-                    report('waiting', 'CLIENTE P2 · Conectando a P1. Mantén ARMSX2 visible y reanudado.'
+                    report('waiting', tr('CLIENTE P2 · Conectando a P1. Mantén ARMSX2 visible y reanudado.')
                            if config.get('role') == 'guest' else
-                           'HOST P1 · Esperando jugador 2. Mantén ARMSX2 visible y reanudado.'
+                           tr('HOST P1 · Esperando jugador 2. Mantén ARMSX2 visible y reanudado.')
                            if config.get('transport') == 'server' else
-                           'HOST P1 · Esperando jugador 2 en UDP 47400. Mantén ARMSX2 visible y reanudado.')
+                           tr('HOST P1 · Esperando jugador 2 en UDP 47400. Mantén ARMSX2 visible y reanudado.'))
                 elif line.startswith('frame='):
                     report('playing', line)
             return len(text)
@@ -100,9 +102,9 @@ def main():
             from koth import run_koth
             code = run_koth(config, report)
         else:
-            report('starting', 'Host P1 iniciando. Vuelve a ARMSX2 y pulsa Reanudar.')
+            report('starting', tr('Host P1 iniciando. Vuelve a ARMSX2 y pulsa Reanudar.'))
             code = run_host(config, report)
-        report('stopped' if code == 0 else 'error', f'Sesión finalizada (código {code}).')
+        report('stopped' if code == 0 else 'error', tr('Sesión finalizada (código {code}).', code=code))
     except InterruptedError as error:
         report('stopped', str(error))
     except BaseException as error:

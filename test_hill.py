@@ -1,11 +1,31 @@
 import argparse
 import os
+import ssl
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from urllib.error import URLError
 
 import hill
+
+
+class HillSyncTests(unittest.TestCase):
+    @patch('discord_auth.ssl_context')
+    @patch('hill.urlopen')
+    def test_heartbeat_uses_koth_host_tls_context(self, open_url, context):
+        open_url.return_value.__enter__.return_value.read.return_value = '{"ready": false}'
+        self.assertEqual(hill.sync('https://koth.example', 'private-ticket', {}), {'ready': False})
+        context.assert_called_once_with('koth.example')
+        self.assertIs(open_url.call_args.kwargs['context'], context.return_value)
+
+    @patch('discord_auth.ssl_context')
+    @patch('hill.urlopen')
+    def test_tls_failure_identifies_certificate_without_exposing_ticket(self, open_url, context):
+        open_url.side_effect = URLError(ssl.SSLCertVerificationError('private-ticket'))
+        with self.assertRaisesRegex(OSError, 'certificado HTTPS') as error:
+            hill.sync('https://koth.example', 'private-ticket', {})
+        self.assertNotIn('private-ticket', str(error.exception))
 
 
 class HillTests(unittest.TestCase):

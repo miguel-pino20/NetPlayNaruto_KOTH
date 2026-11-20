@@ -5,6 +5,8 @@ import hashlib
 import ipaddress
 import json
 import os
+import socket
+import ssl
 from pathlib import Path
 import subprocess
 import sys
@@ -37,9 +39,16 @@ def validate_url(url):
 def sync(url, ticket, body):
     request = Request(url + '/api/netplay/sync/', data=json.dumps(body).encode(), method='POST',
                       headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + ticket})
+    from discord_auth import ssl_context
+
     try:
-        with urlopen(request, timeout=4) as response:
-            return json.load(response)
+        target = urlsplit(url)
+        context = ssl_context(target.hostname) if target.scheme == 'https' else None
+        with urlopen(request, timeout=4, context=context) as response:
+            snapshot = json.load(response)
+        if not isinstance(snapshot, dict):
+            raise ValueError('Se esperaba un objeto JSON.')
+        return snapshot
     except HTTPError as error:
         # Never include the request or ticket in output.
         if error.code in (401, 403):
@@ -47,8 +56,21 @@ def sync(url, ticket, body):
         if error.code == 400:
             raise HillError('Django rechazó la configuración de netplay. Comprueba la IP y el torneo.') from None
         raise OSError(f'Django respondió HTTP {error.code}.') from None
-    except (URLError, ValueError) as error:
-        raise OSError('No se pudo consultar Django.') from None
+    except (URLError, OSError, ValueError) as error:
+        reason = error.reason if isinstance(error, URLError) else error
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            detail = 'falló la validación del certificado HTTPS'
+        elif isinstance(reason, ssl.SSLError):
+            detail = 'falló la conexión TLS'
+        elif isinstance(reason, socket.gaierror):
+            detail = 'no se pudo resolver el dominio (DNS)'
+        elif isinstance(reason, TimeoutError):
+            detail = 'se agotó el tiempo de espera'
+        elif isinstance(reason, ValueError):
+            detail = 'la respuesta no contiene un JSON válido'
+        else:
+            detail = 'falló la conexión de red'
+        raise OSError(f'No se pudo consultar Django ({detail}).') from None
 
 
 def match_command(args, snapshot, stop_file, room_file=None):
@@ -176,9 +198,9 @@ def run(args):
                     registered = True
                     last_success = time.monotonic()
                 except OSError as error:
+                    print(str(error), flush=True)
                     if time.monotonic() - last_success >= 12:
                         raise HillError('Se perdió la conexión con Django. Se detuvo el combate; vuelve a conectar.') from None
-                    print(str(error), flush=True)
                 else:
                     if isinstance(snapshot.get('event'), dict):
                         board = json.dumps({key: snapshot.get(key) for key in ('event', 'role', 'ready', 'reason')},

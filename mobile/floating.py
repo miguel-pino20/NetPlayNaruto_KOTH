@@ -4,6 +4,12 @@ import threading
 import time
 
 
+if __package__:
+    from .mobile_locale import tr
+else:
+    from mobile_locale import tr
+
+
 def create_overlay(config):
     if not config.get('overlay', False):
         return None
@@ -11,7 +17,7 @@ def create_overlay(config):
     service = autoclass('org.kivy.android.PythonService').mService
     Settings = autoclass('android.provider.Settings')
     if not Settings.canDrawOverlays(service):
-        raise RuntimeError('Falta permitir el control flotante en los ajustes de Android.')
+        raise RuntimeError(tr('Falta permitir el control flotante en los ajustes de Android.'))
     Context = autoclass('android.content.Context')
     manager = service.getSystemService(Context.WINDOW_SERVICE)
     Params = autoclass('android.view.WindowManager$LayoutParams')
@@ -82,7 +88,7 @@ def create_overlay(config):
                 text.setTextColor(Color.WHITE)
                 text.setBackgroundColor(Color.parseColor('#CC10243B'))
                 text.setGravity(17)
-                text.setContentDescription(String(player + '. Arrastra para mover. Mantén pulsado un segundo y suelta para detener.'))
+                text.setContentDescription(String(tr('{player}. Arrastra para mover. Mantén pulsado un segundo y suelta para detener.', player=player)))
                 touch = Touch()
                 text.setOnTouchListener(touch)
                 state.update(view=text, params=params, density=density, width=width, height=height, touch=touch)
@@ -95,7 +101,7 @@ def create_overlay(config):
     add = Add()
     handler.post(add)
     if not done.wait(5) or 'error' in state:
-        raise RuntimeError('No se pudo mostrar el control flotante: ' + state.get('error', 'sin respuesta de Android'))
+        raise RuntimeError(tr('No se pudo mostrar el control flotante: {error}', error=state.get('error') or tr('sin respuesta de Android')))
 
     class Remove(PythonJavaClass):
         __javainterfaces__ = ['java/lang/Runnable']

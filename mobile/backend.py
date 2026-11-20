@@ -9,6 +9,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
+if __package__:
+    from .mobile_locale import tr
+else:
+    from mobile_locale import tr
+
+
 def configure_storage(directory):
     # Must run before importing appdata/discord_auth/koth_client.
     os.environ['XDG_CONFIG_HOME'] = str(Path(directory).resolve())
@@ -18,14 +24,14 @@ def https_url(value):
     from koth_client import site_url
     value = site_url(value.strip())
     if urlsplit(value).scheme != 'https':
-        raise ValueError('Usa una URL HTTPS para proteger tu sesión.')
+        raise ValueError(tr('Usa una URL HTTPS para proteger tu sesión.'))
     return value
 
 
 def validate_address(value):
     address = ipaddress.IPv4Address(value.strip())
     if address.is_unspecified or address.is_loopback or address.is_multicast or address.is_link_local or address.is_reserved:
-        raise ValueError('Introduce la IPv4 asignada por ZeroTier.')
+        raise ValueError(tr('Introduce la IPv4 asignada por ZeroTier.'))
     return str(address)
 
 
@@ -33,18 +39,19 @@ def pine_diagnostics(slot, android=True):
     from pine import Pine
     slot = int(slot)
     if not 1 <= slot <= 65535:
-        raise ValueError('El puerto PINE debe estar entre 1 y 65535.')
+        raise ValueError(tr('El puerto PINE debe estar entre 1 y 65535.'))
     client = Pine(slot=slot, timeout=3, transport='tcp' if android else None)
     try:
         client.connect()
         status = client.status()
         if status == 2:
-            return 'PINE responde. Abre Naruto en el emulador para identificar el juego.'
-        return '\n'.join((f'PINE conectado: {client.endpoint}',
-                          f'Estado: { {0: "en ejecución", 1: "pausado"}.get(status, status)}',
-                          f'Juego: {client.game_id()}', f'CRC: {client.game_crc()}',
-                          f'Emulador: {client.version()}',
-                          'Diagnóstico de solo lectura. No valida todavía NetPad ni la sincronía.'))
+            return tr('PINE responde. Abre Naruto en el emulador para identificar el juego.')
+        status_label = {0: 'en ejecución', 1: 'pausado'}.get(status, str(status))
+        return '\n'.join((tr('PINE conectado: {endpoint}', endpoint=client.endpoint),
+                          tr('Estado: {status}', status=tr(status_label)),
+                          tr('Juego: {game}', game=client.game_id()), f'CRC: {client.game_crc()}',
+                          tr('Emulador: {version}', version=client.version()),
+                          tr('Diagnóstico de solo lectura. No valida todavía NetPad ni la sincronía.')))
     finally:
         client.close()
 
