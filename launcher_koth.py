@@ -2,10 +2,11 @@
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, simpledialog, ttk
 
+from discord_auth import AccountError
 from i18n import tr
-from koth_client import DEFAULT_URL, get_event, list_events, site_url
+from koth_client import DEFAULT_URL, get_event, list_events, management_access, management_command, site_url
 from launcher_theme import ACCENT, BORDER, DIM, GREEN, MUTED, PANEL, RED, TEXT, RoundFrame
 
 
@@ -16,6 +17,10 @@ class KothPanel(RoundFrame):
         ttk.Style(self).configure('Koth.Treeview', rowheight=30)
         self.loaded_url, self.last_event = None, None
         self.busy, self.next_poll = False, 0
+        self.admin_busy = False
+        self.admin_access = {}
+        self.access_key = None
+        self.next_access_poll = 0
         if not app.v['hill_url'].get().strip():
             app.v['hill_url'].set(DEFAULT_URL)
         inner = self.inner
@@ -25,12 +30,16 @@ class KothPanel(RoundFrame):
         self.status = tk.Label(inner, text='', bg=PANEL, fg=MUTED, anchor='w', wraplength=620,
                                justify='left', font=('Segoe UI', 9))
         self.status.pack(fill='x', pady=(2, 8))
+        self.admin_button = ttk.Button(inner, text=tr('koth.manage'), command=self._admin_menu)
+        self.admin_button.pack(anchor='w', pady=(0, 8))
+        self.admin_menu = tk.Menu(self.admin_button, tearoff=False)
         server = tk.Frame(inner, bg=PANEL)
         self.server_row = server
         server.pack(fill='x', pady=(0, 10))
         self.url_entry = ttk.Entry(server, textvariable=app.v['hill_url'])
         self.url_entry.pack(side='left', fill='x', expand=True)
         ttk.Button(server, text=tr('koth.refresh'), command=self.refresh).pack(side='right', padx=(8, 0))
+        ttk.Button(server, text=tr('koth.watch'), command=app.watch_hill).pack(side='right', padx=(8, 0))
 
         self.events_frame = tk.Frame(inner, bg=PANEL)
         self.events_frame.pack(fill='both', expand=True)
@@ -55,9 +64,9 @@ class KothPanel(RoundFrame):
         self.board = tk.Frame(inner, bg=PANEL)
         tk.Label(self.board, text=tr('koth.current'), bg=PANEL, fg=TEXT,
                  font=('Segoe UI', 10, 'bold'), anchor='w').pack(fill='x', pady=(0, 8))
-        cards = tk.Frame(self.board, bg=PANEL)
-        cards.pack(fill='x', pady=(0, 10))
+        cards = self.cards = tk.Frame(inner, bg=PANEL)
         self.names, self.points = [], []
+        self.winner_buttons = []
         for index, title in enumerate(('koth.king', 'koth.challenger', 'koth.next')):
             cards.columnconfigure(index, weight=1, uniform='players')
             card = tk.Frame(cards, bg='#111b29', highlightbackground=ACCENT if index == 2 else BORDER,
@@ -72,6 +81,8 @@ class KothPanel(RoundFrame):
             points.pack(fill='x')
             self.names.append(name)
             self.points.append(points)
+            if index < 2:
+                self.winner_buttons.append(ttk.Button(card, text=tr('koth.casual_mark_winner')))
         self.goal = tk.Label(self.board, text='', bg=PANEL, fg=MUTED, anchor='w')
         self.goal.pack(fill='x', pady=(0, 8))
         tk.Label(self.board, text=tr('koth.queue'), bg=PANEL, fg=TEXT,
@@ -97,6 +108,86 @@ class KothPanel(RoundFrame):
         selected = self.tree.selection()
         return self.events.get(selected[0]) if selected else None
 
+    def _admin_menu(self):
+        if not self.app.backend.session:
+            return messagebox.showinfo(tr('koth.manage'), tr('koth.casual_login'), parent=self)
+        menu = self.admin_menu
+        menu.delete(0, 'end')
+        connected = self._connected()
+        if not connected:
+            menu.add_command(label=tr('koth.casual_new'), command=self._create_casual)
+        event = self.app.koth_live_event if connected else self.selected_event()
+        if self._can_manage(event) and event['status'] != 'finished':
+            if event['status'] == 'draft':
+                menu.add_command(label=tr('koth.casual_start'),
+                                 command=lambda: self._event_action(event, 'start'))
+            if event.get('casual'):
+                menu.add_command(label=tr('koth.casual_finish'),
+                                 command=lambda: self._event_action(event, 'finish'))
+        if menu.index('end') is not None:
+            menu.tk_popup(self.admin_button.winfo_rootx(),
+                          self.admin_button.winfo_rooty() + self.admin_button.winfo_height())
+
+    def _create_casual(self):
+        title = tr('koth.casual_new')
+        url = self.app.v['hill_url'].get().strip()
+        name = simpledialog.askstring(title, tr('koth.event'), parent=self)
+        if not name or not name.strip():
+            return
+        points = simpledialog.askinteger(title, tr('koth.casual_points'), initialvalue=5,
+                                         minvalue=1, maxvalue=1000, parent=self)
+        if points is None:
+            return
+        capacity = simpledialog.askinteger(title, tr('koth.casual_capacity'), initialvalue=8,
+                                           minvalue=2, maxvalue=100, parent=self)
+        if capacity is not None:
+            self._submit_management(url, {'name': name.strip(), 'target_points': points,
+                                      'max_participants': capacity})
+
+    def _event_action(self, event, action, player=None):
+        url = self.app.v['hill_url'].get().strip()
+        body = {'action': action, 'version': event['version']}
+        if player:
+            body['winner_id'] = player['id']
+            prompt = tr('koth.casual_winner', name=player['name'])
+        else:
+            prompt = tr('koth.casual_' + action)
+        if messagebox.askokcancel(event['name'], prompt, parent=self):
+            self._submit_management(url, body, event)
+
+    def _submit_management(self, url, body, event=None):
+        if self.admin_busy:
+            return
+        session = self.app.backend.session
+        event_id = event['id'] if event else None
+        self.admin_busy = True
+        self.admin_button.configure(state='disabled')
+        for button in self.winner_buttons:
+            button.configure(state='disabled')
+
+        def work():
+            try:
+                result = management_command(url, session, body, event)
+                error = ''
+            except (AccountError, ValueError) as exc:
+                result, error = None, str(exc)
+            self.app.backend.q.put(('koth_management', self, url, event_id, result, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def management_updated(self, url, event_id, result, error):
+        self.admin_busy = False
+        self.admin_button.configure(state='normal')
+        event = self.app.koth_live_event if self._connected() else self.selected_event()
+        self._update_winner_cards(event)
+        if error:
+            messagebox.showerror(tr('koth.manage'), error, parent=self)
+        elif event_id is None and url == self.app.v['hill_url'].get().strip() and not self._connected():
+            self.tree.selection_remove(self.tree.selection())
+            self.app.v['hill_event_id'].set(str(result['id']))
+            self.next_access_poll = 0
+        self.refresh()
+
     def _select(self, event=None):
         selected = self.selected_event()
         if selected:
@@ -105,6 +196,64 @@ class KothPanel(RoundFrame):
             players = selected.get('current_match') or {}
             names = ' vs '.join(players[slot]['name'] for slot in ('player1', 'player2') if players.get(slot))
             self.preview.configure(text=names or tr('koth.pick'))
+        if not self._connected():
+            self._update_winner_cards(selected)
+
+    def _can_manage(self, event):
+        if not event or self.access_key != (self.app.v['hill_url'].get().strip(), self.app.backend.session):
+            return False
+        if event.get('casual'):
+            return event['id'] in self.admin_access.get('casual_ids', ())
+        return self.admin_access.get('official') is True
+
+    def _poll_management_access(self, url):
+        session = self.app.backend.session
+        key = (url, session)
+        if key != self.access_key:
+            self.access_key, self.admin_access, self.next_access_poll = key, {}, 0
+        if not session or time.monotonic() < self.next_access_poll:
+            return
+        self.next_access_poll = time.monotonic() + 30
+
+        def work():
+            try:
+                access = management_access(url, session)
+            except (AccountError, ValueError):
+                access = {}
+            self.app.backend.q.put(('koth_access', self, key, access))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def update_management_access(self, key, access):
+        if key == self.access_key == (self.app.v['hill_url'].get().strip(), self.app.backend.session):
+            self.admin_access = access
+            event = self.app.koth_live_event if self._connected() else self.selected_event()
+            self._update_winner_cards(event)
+
+    def _update_winner_cards(self, event):
+        connected = self._connected()
+        match = (event or {}).get('current_match') or {}
+        can_record = bool(self._can_manage(event) and event['status'] == 'running'
+                          and match.get('player1') and match.get('player2'))
+        if connected:
+            self.cards.pack(in_=self.board, before=self.goal, fill='x', pady=(0, 10))
+        elif can_record:
+            self.cards.pack(in_=self.inner, after=self.preview, fill='x', pady=(8, 0))
+        else:
+            self.cards.pack_forget()
+        players = [match.get('player1'), match.get('player2'), (event or {}).get('next_player')]
+        if event and event['status'] == 'finished':
+            players = [event.get('champion'), None, None]
+        for index, player in enumerate(players):
+            self.names[index].configure(text=player['name'] if player else '—')
+            self.points[index].configure(text=str(player['points']) if player else '—')
+        for button, player in zip(self.winner_buttons, players):
+            if can_record and self.app.backend.session:
+                button.configure(state='disabled' if self.admin_busy else 'normal',
+                                 command=lambda player=player: self._event_action(event, 'result', player))
+                button.pack(fill='x', pady=(6, 0))
+            else:
+                button.pack_forget()
 
     def refresh(self):
         self.next_poll = 0
@@ -123,6 +272,7 @@ class KothPanel(RoundFrame):
                 url = corrected
         except ValueError:
             pass
+        self._poll_management_access(url)
         self.busy, self.next_poll = True, time.monotonic()+3
         live = getattr(self.app, 'koth_live_event', None)
         live_id = live.get('id') if live else None
@@ -156,10 +306,11 @@ class KothPanel(RoundFrame):
             self.tree.delete(key)
         for index, (key, event) in enumerate(self.events.items()):
             values = (tr('koth.'+event['status']), f"{len(event['queue'])}/{event['max_participants']}", event['target_points'])
+            name = tr('koth.casual_label', name=event['name']) if event.get('casual') else event['name']
             if key in old_ids:
-                self.tree.item(key, text=event['name'], values=values)
+                self.tree.item(key, text=name, values=values)
             else:
-                self.tree.insert('', 'end', iid=key, text=event['name'], values=values)
+                self.tree.insert('', 'end', iid=key, text=name, values=values)
             self.tree.move(key, '', index)
         if wanted in self.events and not self.tree.selection():
             self.tree.selection_set(wanted)
@@ -190,6 +341,7 @@ class KothPanel(RoundFrame):
             self.events_frame.pack(fill='both', expand=True)
             self.server_row.pack(fill='x', pady=(0, 10), before=self.events_frame)
             self.preview.pack(fill='x', pady=(8, 0))
+        self._update_winner_cards(event if connected else self.selected_event())
         self.title.configure(text=event['name'] if connected and event else tr('koth.events'))
         if role is not None or reason:
             label = tr('koth.role.'+role) if role else tr('koth.waiting')
@@ -197,8 +349,6 @@ class KothPanel(RoundFrame):
         elif connected and not event:
             self.status.configure(text=tr('koth.loading'), fg=MUTED)
         if not event:
-            for label in self.names+self.points:
-                label.configure(text='—')
             self.queue.delete(*self.queue.get_children())
             self.goal.configure(text='')
             self.last_event = None
@@ -207,13 +357,8 @@ class KothPanel(RoundFrame):
             return
         self.last_event = event
         match = event.get('current_match') or {}
-        players = [match.get('player1'), match.get('player2'), event.get('next_player')]
         if event['status'] == 'finished':
-            players = [event.get('champion'), None, None]
             self.status.configure(text=tr('koth.finished'), fg=GREEN)
-        for index, player in enumerate(players):
-            self.names[index].configure(text=player['name'] if player else '—')
-            self.points[index].configure(text=str(player['points']) if player else '—')
         self.goal.configure(text=tr('koth.target', n=event['target_points']))
         for key in self.queue.get_children():
             self.queue.delete(key)

@@ -1,8 +1,8 @@
 """Set these values before building and publishing a numbered GitHub release."""
 
-VERSION = "0.1.10A"
+VERSION = "0.1.11A"
 # Increase for every Android release, even when changing the visible numbering.
-ANDROID_VERSION_CODE = 1026409
+ANDROID_VERSION_CODE = 1026410
 REPOSITORY = "miguel-pino20/NetPlayNaruto_KOTH"
 INCLUDE_PRERELEASES = True
 

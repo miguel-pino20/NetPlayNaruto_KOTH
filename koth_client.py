@@ -82,6 +82,33 @@ def get_event(url, event_id):
     return api_call(site_url(url), 'GET', f'/api/netplay/events/{int(event_id)}/', timeout=4)
 
 
+def _management_request(url, session, method, path, body=None):
+    url = site_url(url)
+    if urlsplit(url).scheme != 'https':
+        raise AccountError('La administración de eventos requiere una URL HTTPS.')
+    if not session:
+        raise AccountError('Inicia sesión con Discord en Netplay.')
+    return api_call(url, method, '/api/netplay/events/' + path, body, timeout=10,
+                    extra_headers={'X-Netplay-Session': session}, follow_redirects=False)
+
+
+def management_access(url, session):
+    return _management_request(url, session, 'GET', 'management/')
+
+
+def management_command(url, session, body, event=None):
+    if event is None:
+        path = 'casual/'
+    else:
+        kind = 'casual' if event.get('casual') else 'official'
+        path = f"{int(event['id'])}/{kind}/"
+    return _management_request(url, session, 'POST', path, body)
+
+
+def watch_ticket(url, session, event_id):
+    return _management_request(url, session, 'POST', f'{int(event_id)}/watch/')
+
+
 def enroll(url, event, name, store, fallback_ticket='', netplay_session='', *, address=''):
     url = site_url(url)
     require_address_session(address, netplay_session)

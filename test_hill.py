@@ -51,6 +51,26 @@ class HillTests(unittest.TestCase):
                     queue=[dict(id=1, name='A', points=0)],
                     host=dict(address='10.147.0.1', port=47400, delay=4, relay_room='main-room'))
 
+    @patch.dict(os.environ, {'UN5_HILL_TICKET': 'watch-ticket', 'UN5_NETPLAY_SESSION': 'private-session'})
+    @patch('hill.time.sleep')
+    @patch('hill.subprocess.Popen')
+    @patch('hill.sync')
+    def test_observer_only_launches_replay_and_never_sends_player_presence(self, sync, popen, sleep):
+        self.args.observe = True
+        self.args.transport = 'zerotier'
+        playing = self.snapshot(role='spectator')
+        playing['transport'] = 'zerotier'
+        playing['host']['spectator_port'] = 47401
+        sync.return_value = playing
+        popen.return_value.poll.return_value = None
+        sleep.side_effect = lambda _: Path(self.args.stop_file).touch()
+        self.assertEqual(hill.run(self.args), 0)
+        self.assertEqual(sync.call_count, 1)
+        self.assertTrue(sync.call_args.kwargs['observe'])
+        self.assertIn('watch', popen.call_args.args[0])
+        self.assertNotIn('UN5_HILL_TICKET', popen.call_args.kwargs['env'])
+        self.assertNotIn('UN5_NETPLAY_SESSION', popen.call_args.kwargs['env'])
+
     @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket', 'NP_SERVER': 'old-relay'})
     @patch('hill.time.sleep')
     @patch('hill.subprocess.Popen')

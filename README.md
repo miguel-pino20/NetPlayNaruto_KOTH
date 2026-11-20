@@ -83,6 +83,26 @@ El launcher migra automáticamente los dominios anteriores
 configuraciones guardadas de KOTH. Conserva los servidores
 personalizados y las credenciales de inscripción existentes.
 
+Para organizar un **Rey de la Colina casual**, inicia sesión con Discord en
+Netplay de PC y abre **KOTH → Administrar eventos**. Cualquier usuario
+con sesión de Discord puede crear un evento sin premios indicando nombre, meta
+de puntos y cupo. Quien lo creó puede seleccionarlo e iniciarlo cuando haya al
+menos dos jugadores o cerrarlo desde el mismo menú. Para registrar un resultado,
+pulsa **Marcar como ganador** en la tarjeta de P1 o P2. El host del combate
+cambia según la cola. Los jugadores de Android pueden inscribirse y jugar desde
+su app.
+
+Para un **Rey de la Colina oficial**, una cuenta de Discord vinculada a un
+administrador web de Django también puede iniciar el torneo y registrar
+ganadores desde Netplay de PC. La creación y la configuración del premio se
+hacen desde el navegador.
+
+Para mirar un combate desde PC, inicia sesión con Discord, selecciona el
+evento en **KOTH** y pulsa **Observar evento**. Usa la misma red ZeroTier, juego,
+save state y símbolos que los jugadores. El host debe habilitar espectadores.
+Observar no ocupa cupo. Si tienes permiso para administrar el evento, puedes
+marcar al ganador desde el tablero mientras observas.
+
 1. En Django, instala la actualización y ejecuta `python manage.py migrate`.
 2. Todos deben estar autorizados en la misma red ZeroTier. El host debe permitir
    UDP 47400 para jugar y TCP 47401 si habilita espectadores.
