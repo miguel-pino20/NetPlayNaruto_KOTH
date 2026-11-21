@@ -280,6 +280,29 @@ class SinkTests(unittest.TestCase):
         self.assertEqual({k: v for k, v in body.items() if k != 'timestamp'}, expected)
         self.assertEqual(sorted(body), sorted(list(expected) + ['timestamp']))
 
+    def test_online_casual_turns_on_sending_by_itself(self):
+        base = sb.merge(sb.DEFAULTS, {})                    # scoreboard.json ausente: tudo desligado
+        with patch.dict('os.environ', {'UN5_NETPLAY_SESSION': '', 'UN5_SCOREBOARD_SESSION': 'discord'}):
+            on = sb.online_config(base, online=True)
+            self.assertTrue(on['enabled'])
+            self.assertTrue(on['outputs']['django']['enabled'])
+            self.assertEqual(on['outputs']['django']['url'], 'https://narutimateonline.servegame.com')
+            self.assertFalse(sb.online_config(base, online=False)['enabled'])          # ZeroTier/LAN: nada muda
+            self.assertFalse(sb.online_config(sb.merge(base, {'auto_online': False}), True)['enabled'])
+            sink = sb.DjangoSink(on['outputs']['django'], sb.Scoreboard(on), 'sala1')
+            self.assertEqual(sink.token, 'discord')
+        with patch.dict('os.environ', {'UN5_NETPLAY_SESSION': '', 'UN5_SCOREBOARD_SESSION': ''}):
+            self.assertFalse(sb.online_config(base, online=True)['enabled'])           # sem login no Discord
+
+    def test_online_casual_only_host_sends(self):
+        with tempfile.TemporaryDirectory() as d,                 patch.dict('os.environ', {'UN5_NETPLAY_SESSION': '', 'UN5_SCOREBOARD_SESSION': 'discord'}):
+            cfg_on = sb.online_config(sb.merge(sb.DEFAULTS, {'outputs': {'file': {'dir': d}}}), True)
+            host = sb.build(cfg_on, is_host=True, session='sala1', state_path=Path(d) / 'a.json', log=lambda m: None)
+            guest = sb.build(cfg_on, is_host=False, session='sala1', state_path=Path(d) / 'b.json', log=lambda m: None)
+            self.assertIn('django', [x.label for x in host.sinks])
+            self.assertNotIn('django', [x.label for x in guest.sinks])
+            host.close(); guest.close()
+
     def test_session_id_koth_casual_and_none(self):
         A = argparse.Namespace
         self.assertEqual(sb.session_id(A(session_epoch='2c46ea8d', room='')), '2c46ea8d')   # KOTH

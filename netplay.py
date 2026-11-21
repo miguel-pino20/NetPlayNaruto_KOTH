@@ -920,7 +920,8 @@ def cmd_play(args, is_host):
     flow = GameFlow(pine)
     import scoreboard
     board = scoreboard.start_for_session(args, pine, is_host,    # None unless scoreboard.json has enabled: true
-                                         room=getattr(poller, 'room_id', '') if poller else '')
+                                         room=getattr(poller, 'room_id', '') if poller else '',
+                                         online=server_mode)
     presence_stop = threading.Event()
     if server_mode and os.environ.get('UN5_NETPLAY_SESSION'):
         def presence_loop():

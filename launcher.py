@@ -1087,7 +1087,11 @@ class Launcher(tk.Tk):
         label = tr("run.host") if role == "host" else tr("run.guest")
         if role == "host" and self.v["ignore_desync"].get():
             label += tr("run.ignore_on")
-        self._spawn(args, label, allow_missing_symbols=(role == "guest"))
+        # A sessao de Discord vai so para o placar (scoreboard.py) enviar o resultado ao site; UN5_NETPLAY_SESSION
+        # nao e usado aqui para nao ligar presenca/allow do netplay casual.
+        session = getattr(self.backend, 'session', '') or ''
+        self._spawn(args, label, allow_missing_symbols=(role == "guest"),
+                    session_env={'UN5_SCOREBOARD_SESSION': session} if session else None)
 
     def solo(self):
         if not self._pick_game():

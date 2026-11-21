@@ -47,6 +47,10 @@ DEFAULTS = {
     'format': '{name1}: {p1} | {name2}: {p2}',
     'persist': False,                # guarda o placar entre execucoes (scoreboard_state.json)
     'external_only_host': True,      # webhook/Django so no host, para nao duplicar o envio
+    # Partidas casuais pela rede do Netplay (salas online, sem ZeroTier): liga o placar e o envio ao site sozinho,
+    # com a sessao de Discord do launcher. false = so com enabled/outputs.django configurados a mao.
+    'auto_online': True,
+    'site_url': 'https://narutimateonline.servegame.com',
     'outputs': {
         'file': {'enabled': True, 'dir': '', 'text': 'placar.txt', 'json': 'placar.json'},
         'http': {'enabled': False, 'host': '127.0.0.1', 'port': 47500,
@@ -58,7 +62,7 @@ DEFAULTS = {
         # Idempotency-Key = "<session>-<match_number>", igual nos dois PCs.
         'django': {'enabled': False, 'url': '', 'path': '/api/netplay/casual/result/',
                    'auth_header': 'X-Netplay-Session', 'auth_scheme': '',
-                   'token': '', 'token_env': 'UN5_NETPLAY_SESSION'},
+                   'token': '', 'token_env': ['UN5_NETPLAY_SESSION', 'UN5_SCOREBOARD_SESSION']},
     },
     # Onde o jogo guarda o resultado. Sem endereco o detector fica desligado.
     'detector': {'result_addr': '', 'size': 1, 'mask': 255,
@@ -504,7 +508,9 @@ class DjangoSink:
         from hill import validate_url
         self.url = (validate_url(cfg['url']).rstrip('/') + '/'
                     + cfg.get('path', '/api/netplay/casual/result/').lstrip('/'))
-        self.token = cfg.get('token') or os.environ.get(cfg.get('token_env') or '', '')
+        envs = cfg.get('token_env') or []
+        envs = [envs] if isinstance(envs, str) else envs
+        self.token = cfg.get('token') or next((os.environ[e] for e in envs if os.environ.get(e)), '')
         self.header = cfg.get('auth_header') or 'X-Netplay-Session'
         self.scheme = cfg.get('auth_scheme') or ''
         self.board, self.session = board, str(session or '')
@@ -751,18 +757,32 @@ def session_id(args, room=''):
     return str(room or getattr(args, 'room', '') or '').strip()
 
 
-def start_for_session(args, pine, is_host, log=print, room=''):
+def online_config(cfg, online):
+    """Partida casual pela rede do Netplay com sessao de Discord: liga placar + envio ao site (se auto_online)."""
+    envs = cfg['outputs']['django'].get('token_env') or []
+    envs = [envs] if isinstance(envs, str) else envs
+    has_session = bool(cfg['outputs']['django'].get('token')) or any(os.environ.get(e) for e in envs)
+    if not (online and cfg.get('auto_online') and has_session):
+        return cfg
+    url = cfg['outputs']['django'].get('url') or cfg.get('site_url') or ''
+    return merge(cfg, {'enabled': True, 'outputs': {'django': {'enabled': True, 'url': url}}})
+
+
+def start_for_session(args, pine, is_host, log=print, room='', online=False):
     """Gancho do netplay: devuelve el servicio o None. Nunca lanza."""
     try:
-        cfg = load_config(getattr(args, 'scoreboard_config', None))
+        cfg = online_config(load_config(getattr(args, 'scoreboard_config', None)), online)
         serial = crc = ''
         try:
             serial = pine.game_id()
             crc = pine.game_crc()
         except Exception:                                    # noqa: BLE001 - sin serial/CRC se usa `detector`
             pass
-        return build(cfg, lambda addr, size: pine.read(addr, size), is_host,
-                     session_id(args, room), log, serial=serial, crc=crc)
+        session = session_id(args, room)
+        service = build(cfg, lambda addr, size: pine.read(addr, size), is_host, session, log, serial=serial, crc=crc)
+        if service and any(isinstance(x, DjangoSink) for x in service.sinks):
+            log(f'Placar: resultados se enviarán a {cfg["outputs"]["django"]["url"]} (partida {session or "?"}).')
+        return service
     except Exception as error:                               # noqa: BLE001 - el placar nunca bloquea la pelea
         log(f'Placar desactivado: {error}')
         return None
