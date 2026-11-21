@@ -87,7 +87,7 @@ Para organizar un **Rey de la Colina casual**, inicia sesión con Discord en
 Netplay de PC y abre **KOTH → Administrar eventos**. Cualquier usuario
 con sesión de Discord puede crear un evento sin premios indicando nombre, meta
 de puntos y cupo. Quien lo creó puede seleccionarlo e iniciarlo cuando haya al
-menos dos jugadores o cerrarlo desde el mismo menú. Cuando P1 detecta una victoria, Django suma un punto al ganador y rota la cola. El host del combate
+menos dos jugadores o cerrarlo desde el mismo menú. Cuando P1 o P2 reporta una victoria, Django suma un punto al ganador y rota la cola una sola vez. El host del combate
 cambia según la cola. Los jugadores de Android pueden inscribirse y jugar desde
 su app.
 
@@ -143,7 +143,7 @@ Observar no ocupa cupo. El tablero muestra la puntuación registrada por Django.
    en el slot 9. El primero en la cola es P1/host; Django entrega su IP de ZeroTier
    al rival/P2. La pareja conecta directamente, sin crear una sala en el relay.
    Cada sesión tiene una identidad propia para rechazar paquetes de peleas anteriores.
-6. Al detectar una victoria, P1 envía el resultado a Django. Django acredita un punto. El launcher cierra la sesión anterior, el ganador sigue primero y
+6. Al detectar una victoria, tanto P1 como P2 envían el resultado a Django. Django acredita un solo punto por ronda. El launcher cierra la sesión anterior, el ganador sigue primero y
    el perdedor pasa al final. La siguiente pareja arranca automáticamente.
 
 **STOP** desconecta del netplay; no retira tu inscripción del torneo. Para salir

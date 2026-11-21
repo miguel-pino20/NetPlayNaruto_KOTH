@@ -2,7 +2,7 @@
 
 Para quien mantiene `https://narutimateonline.servegame.com/`.
 
-**Resumen:** djTourney recibe resultados automáticos de P1 en
+**Resumen:** djTourney recibe resultados automáticos de la pareja KOTH o de P1 de un cruce en
 `POST /api/netplay/result/`. Un resultado válido se aplica sin confirmación:
 suma un punto y avanza la cola de Rey de la Colina o actualiza el cuadro de
 Round Robin, eliminación simple o eliminación doble. Un empate se registra
@@ -63,7 +63,13 @@ Ejemplo real de `placar.json` / `GET /score`:
   se pueden distinguir. El empate no da puntos y las reglas de KOTH ya prevén revancha.
 - Validado en UN6 (`SLUS-55606`, CRC `688C83D6`) el 20/11/2026: KO de P1, KO de P2,
   victoria por tiempo, personaje del mod (Karin) y salida por el menú.
-- Solo el **host (P1)** envía al sitio, para que cada resultado llegue una sola vez.
+- En salas casuales de Netplay o ZeroTier, P1 registra la sala y comparte con P2
+  una invitación privada y el número de pelea. Cada cliente usa su propia sesión
+  de Discord para enviar a `POST /api/netplay/casual/result/`. P2 adjunta la
+  invitación en `X-Casual-Guest`. Ambos usan la clave `<session>-<match_number>`.
+  El primer resultado válido recibe HTTP 201. Un segundo reporte del mismo ganador
+  recibe HTTP 200 con el mismo ID. Si difieren, Django conserva el primero y devuelve HTTP 409.
+- En KOTH, los dos jugadores reportan la victoria con sus respectivos códigos. Django guarda el primer ganador de la ronda y rota la cola una sola vez. En los cruces programados envía P1.
 
 ## 3. Contrato de Django
 
@@ -104,14 +110,14 @@ Content-Type: application/json
 | `session` | El `round_id` / `session_epoch` que ya devuelve `/api/netplay/sync/`. |
 | `idempotency_key` | Igual a la cabecera. Si llega repetido, guardar **una sola vez**. |
 
-Django verifica que la credencial pertenezca a P1 de la ronda o del cruce y
+Django verifica que la credencial pertenezca a un jugador de la pareja KOTH o a P1 del cruce programado y
 resuelve al ganador con los IDs de sus inscripciones. Los nombres, personajes,
 contadores y la fecha enviados por el launcher se guardan como metadatos. El
 marcador acumulado local no se suma al torneo: cada victoria válida vale un punto.
 
 ## 4. Autenticación y prueba
 
-- **Rey de la Colina oficial o casual.** P1 usa su código personal de KOTH.
+- **Rey de la Colina oficial o casual.** Cada jugador usa su código personal de KOTH.
   Envía en `session` el `round_id` o `session_epoch` obtenido de `/api/netplay/sync/`.
   Django verifica que la pareja sigue activa. El proceso principal debería enviar
   el resultado para mantener el código personal fuera del proceso de la pelea.
@@ -153,7 +159,7 @@ la validación en una partida real quedan pendientes.
 
 - [x] **Ruta creada** que acepte el `POST` de la sección 3 (o la que elijas, avisándonos).
 - [x] **Credencial validada**: código personal KOTH o ticket del cruce.
-- [x] **El host queda verificado:** la ruta comprueba que quien envía es el host de esa ronda.
+- [x] **Jugador verificado:** Django comprueba la pertenencia a la pareja en KOTH y el rol P1 en cruces programados.
 - [x] **Ronda identificada:** `/api/netplay/sync/` devuelve el identificador de la ronda
       (`round_id` / `session_epoch`) y la ruta lo acepta en `session`.
 - [x] **Duplicados ignorados** por `Idempotency-Key`.

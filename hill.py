@@ -279,7 +279,7 @@ def run(args):
                         child_env = os.environ.copy()
                         child_env.pop('UN5_HILL_TICKET', None)
                         child_env.pop('UN5_KOTH_RESULT_FILE', None)
-                        if active_role == 'host':
+                        if active_role in ('host', 'guest'):
                             child_env['UN5_KOTH_RESULT_FILE'] = str(result_file)
                         if active_role == 'spectator':
                             child_env.pop('UN5_NETPLAY_SESSION', None)
@@ -298,6 +298,8 @@ def run(args):
                     time.sleep(0.1)
         finally:
             stop_match(process, child_stop)
+            if not observe:
+                submit_pending_result(result_file, url, ticket)
             try:
                 release_game(args)
             except Exception as error:

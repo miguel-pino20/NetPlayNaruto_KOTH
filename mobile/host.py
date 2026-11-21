@@ -95,7 +95,7 @@ def session_arguments(config):
             raise ValueError(tr('Selecciona una sala válida del servidor.'))
         return args + ['--room', room, '--fetch-state']
     bind = validate_address(config['address']) if config.get('address') else '0.0.0.0'
-    args += ['--bind-address', bind, '--server', '']
+    args += ['--zerotier', '--bind-address', bind, '--server', '']
     if role == 'guest':
         args += ['--connect', validate_address(config.get('host_ip', '')) + ':47400']
     return args
@@ -192,6 +192,13 @@ def run_host(config, report):
             room = Api(DEFAULT_API_URL).get_room(config['room_id'])
             if room.get('tag') != file_tag(state):
                 raise ValueError(tr('La sala no usa el estado del juego seleccionado.'))
+    else:
+        from appdata import load_session
+        token, _ = load_session()
+        if token:
+            os.environ['UN5_SCOREBOARD_SESSION'] = token
+        else:
+            os.environ.pop('UN5_SCOREBOARD_SESSION', None)
     wait_for_match(config, report)
     # Android detection is built into Pine. No subprocess executable is required.
     report('preparing', tr('Estado, mandos y hook comprobados. Conectando…'))

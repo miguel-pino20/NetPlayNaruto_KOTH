@@ -162,7 +162,7 @@ class Scoreboard:
                     'last': self.history[-1] if self.history else None}
 
     # -- mudancas -----------------------------------------------------------------------------------------------
-    def record(self, winner, source='manual', chars=None):
+    def record(self, winner, source='manual', chars=None, fight_number=None):
         if winner not in WINNERS:
             raise ValueError(f'winner deve ser um de {WINNERS}')
         with self.lock:
@@ -170,6 +170,8 @@ class Scoreboard:
             setattr(self, attr, getattr(self, attr) + 1)
             entry = {'winner': winner, 'ts': time.time(), 'source': source,
                      'n': self.p1 + self.p2 + self.draws}
+            if fight_number is not None:
+                entry['fight_number'] = fight_number
             if chars:
                 entry['chars'] = chars                      # {'p1': {'id', 'code', 'name'}, 'p2': {...}}
             self.history.append(entry)
@@ -244,6 +246,7 @@ class ResultDetector:
         self.min_gap = float(cfg.get('min_gap_s', 5.0))
         # Desarmado ate ver um valor "sem resultado": o jogo deixa o resultado da luta anterior na RAM
         # (na selecao de personagem o valor ainda e 1), e isso nao pode contar como vitoria nova.
+        self.fight_number = 0
         self.armed, self.next_poll, self.last_fire = False, 0.0, -1e9
 
     @property
@@ -262,6 +265,8 @@ class ResultDetector:
             if self.deref:
                 base = self.read(addr, 4)
                 if not 0x100000 <= base < 0x2000000 or base & 3:   # ponteiro invalido: nao ha objeto agora
+                    if not self.armed:
+                        self.fight_number += 1
                     self.armed = True
                     return None
                 addr = base + self.offset
@@ -270,6 +275,8 @@ class ResultDetector:
             return None
         who = self.map.get(value)
         if who is None:
+            if not self.armed:
+                self.fight_number += 1
             self.armed = True
             return None
         if not self.armed or now - self.last_fire < self.min_gap:
@@ -311,6 +318,7 @@ class HpDetector:
         self.on_status = None                               # depuracao: chamado a cada mudanca de status
         self.char_table = load_characters(cfg.get('characters_file'))
         self.next_poll, self.last_status, self.hp, self.chars = 0.0, None, None, None
+        self.fight_number = 0
         self.pending = None                                 # (vida, personagens) da luta que acabou de sair
 
     active = True
@@ -378,6 +386,10 @@ class HpDetector:
         who = chars = None
         try:
             status = self._status()
+            if status is None:
+                return None
+            if status == self.fight and self.last_status != self.fight:
+                self.fight_number += 1
             if status != self.last_status and self.on_status:
                 self.on_status(self.last_status, status, self.hp or (self.pending or (None,))[0])
             if status == self.fight:
@@ -513,7 +525,7 @@ class DjangoSink:
     """Envia cada resultado ao site (rota e cabecalho configuraveis; padrao = contrato combinado com o servidor)."""
     label = 'django'
 
-    def __init__(self, cfg, board, session='', registration=None):
+    def __init__(self, cfg, board, session='', registration=None, node=None, host_secret=None):
         from hill import validate_url
         self.url = (validate_url(cfg['url']).rstrip('/') + '/'
                     + cfg.get('path', '/api/netplay/casual/result/').lstrip('/'))
@@ -521,6 +533,8 @@ class DjangoSink:
         envs = [envs] if isinstance(envs, str) else envs
         self.token = cfg.get('token') or next((os.environ[e] for e in envs if os.environ.get(e)), '')
         self.registration = registration
+        self.node = node
+        self.host_secret = host_secret
         self.room_url = validate_url(cfg['url']).rstrip('/') + '/api/netplay/casual/rooms/'
         self.header = cfg.get('auth_header') or 'X-Netplay-Session'
         self.scheme = cfg.get('auth_scheme') or ''
@@ -533,23 +547,37 @@ class DjangoSink:
             auth = f'{self.scheme} {self.token}' if self.scheme else self.token
             _post(self.room_url, self.registration, {self.header: auth})
             self.registration = None
+            if self.node:
+                self.node.score_secret = self.host_secret
 
     def send(self, event):
         if event['event'] != 'result':
             return
         self.register_room()
         entry = event['entry']
-        # "<session>-<numero da luta>": o mesmo valor nos dois PCs, para o servidor guardar o resultado uma vez.
-        key = (f"{self.session}-{entry['n']}" if self.session
-               else hashlib.sha256(f"{entry['n']}:{entry['ts']:.3f}".encode()).hexdigest()[:24])
+        session = self.session
+        number = entry['n']
+        headers = {}
+        if self.node:
+            if entry['source'] != 'memoria':
+                return
+            number = entry.get('fight_number')
+            if not number or not self.node.score_secret:
+                return
+            if not self.node.is_host:
+                secret = self.node.score_secret.hex()
+                session = hashlib.sha256(secret.encode()).hexdigest()[:32]
+                headers['X-Casual-Guest'] = secret
+        key = (f'{session}-{number}' if session else
+               hashlib.sha256(f"{number}:{entry['ts']:.3f}".encode()).hexdigest()[:24])
         body = {'event': 'result', 'winner': entry['winner'], 'source': entry['source'],
                 'score': {'p1': event['p1'], 'p2': event['p2'], 'draws': event['draws']},
-                'names': event['names'], 'match_number': entry['n'], 'session': self.session,
+                'names': event['names'], 'match_number': number, 'session': session,
                 'idempotency_key': key, 'timestamp': entry['ts']}
         if entry.get('chars') is not None:
             body['characters'] = entry['chars']
         auth = f'{self.scheme} {self.token}' if self.scheme else self.token
-        return _post(self.url, body, {self.header: auth, 'Idempotency-Key': key})
+        return _post(self.url, body, {self.header: auth, 'Idempotency-Key': key, **headers})
 
 
 def describe_error(error):
@@ -708,10 +736,13 @@ class ScoreboardService:
     """Junta tudo para uma sessao de netplay. `tick()` vai dentro do loop principal; `close()` no final."""
 
     def __init__(self, board, dispatcher, detector, sinks):
+        self.score_host = None
         self.board, self.dispatcher, self.detector, self.sinks = board, dispatcher, detector, sinks
 
     def tick(self):
         self.detector.tick()
+        if self.score_host:
+            self.score_host.score_round = self.detector.fight_number
 
     def set_nicks(self, names):
         if names and len(names) >= 2:
@@ -741,7 +772,7 @@ def profile_config(cfg, serial, crc=''):
     return cfg
 
 
-def build(cfg, read=None, is_host=True, session='', log=print, state_path=None, serial='', crc='', registration=None):
+def build(cfg, read=None, is_host=True, session='', log=print, state_path=None, serial='', crc='', registration=None, node=None, host_secret=None):
     """Monta o servico a partir da configuracao. Devolve None se estiver desligado."""
     if not cfg.get('enabled'):
         return None
@@ -763,18 +794,28 @@ def build(cfg, read=None, is_host=True, session='', log=print, state_path=None, 
     add('file', lambda s: FileSink(s, board))
     add('http', lambda s: HttpSink(s, board))
     add('webhook', lambda s: WebhookSink(s, board), external=True)
-    if is_host:
-        add('django', lambda s: DjangoSink(s, board, session, registration), external=True)
+    if is_host or node:
+        add('django', lambda spec: DjangoSink(spec, board, session, registration, node, host_secret))
     dispatcher = Dispatcher(sinks, log)
     board.listeners.append(dispatcher.push)
-    detector = make_detector(cfg.get('detector') or {}, read or (lambda addr, size: 0),
-                             lambda who, chars=None: log(_result_line(board.record(who, 'memoria', chars))))
+    def record(who, chars=None):
+        number = None
+        if node:
+            number = detector.fight_number
+            if not is_host and (not node.score_secret or node.score_round != number):
+                number = 0
+                log('Placar: P2 sin confirmación de la sala y pelea de P1; resultado solo local.')
+        log(_result_line(board.record(who, 'memoria', chars, number)))
+
+    detector = make_detector(cfg.get('detector') or {}, read or (lambda addr, size: 0), record)
     if not detector.active:
         log(f'Placar activo; sin detector para este juego ({serial or "serial desconocido"} {crc}): solo manual / API.')
     for sink in sinks:
         if isinstance(sink, HttpSink):
             log(f'Placar: API local en http://{out["http"].get("host", "127.0.0.1")}:{sink.port}/score')
-    return ScoreboardService(board, dispatcher, detector, sinks)
+    service = ScoreboardService(board, dispatcher, detector, sinks)
+    service.score_host = node if is_host else None
+    return service
 
 
 def _result_line(event):
@@ -839,15 +880,16 @@ def koth_reporter(path, session):
     return record
 
 
-def start_for_session(args, pine, is_host, log=print, room='', online=False):
+def start_for_session(args, pine, is_host, log=print, room='', online=False, node=None):
     """Gancho do netplay: devuelve el servicio o None. Nunca lanza."""
     log = file_logger(log)
     try:
         casual = str(getattr(args, 'session_epoch', '0') or '0') == '0'
-        zerotier = not online and getattr(args, 'bind_address', '0.0.0.0') not in ('', '0.0.0.0')
+        zerotier = not online and (getattr(args, 'zerotier', False) or
+                                   getattr(args, 'bind_address', '0.0.0.0') not in ('', '0.0.0.0'))
         cfg = online_config(load_config(getattr(args, 'scoreboard_config', None)),
                             casual and (online or zerotier))
-        report_path = os.environ.get('UN5_KOTH_RESULT_FILE') if is_host and not casual else None
+        report_path = os.environ.get('UN5_KOTH_RESULT_FILE') if not casual else None
         if not casual:
             cfg = merge(cfg, {'enabled': bool(report_path or cfg['enabled']),
                               'outputs': {'django': {'enabled': False}}})
@@ -860,14 +902,24 @@ def start_for_session(args, pine, is_host, log=print, room='', online=False):
         session = session_id(args, room)
         registration = None
         django = cfg['outputs']['django']
-        if (casual and is_host and (online or zerotier) and django.get('enabled')
-                and django.get('path') == '/api/netplay/casual/result/'):
+        shared = (casual and (online or zerotier) and django.get('enabled')
+                  and django.get('path') == '/api/netplay/casual/result/')
+        score_node = node if shared else None
+        host_secret = None
+        if score_node and not is_host:
+            score_node.score_challenge = os.urandom(16)
+        if shared and is_host:
             session = uuid.uuid4().hex
             registration = {'session': session, 'transport': 'netplay' if online else 'zerotier',
                             'network_room': str(room or '')}
+            if score_node:
+                host_secret = os.urandom(16)
+                session = hashlib.sha256(host_secret.hex().encode()).hexdigest()[:32]
+                registration.update(session=session, dual_report=True)
         log(f'Placar: juego {serial} {crc}, {"host" if is_host else "guest"}, partida {session or "?"}, '
             f'{"online" if online else "directa"}, activo={bool(cfg.get("enabled"))}.')
-        service = build(cfg, lambda addr, size: pine.read(addr, size), is_host, session, log, serial=serial, crc=crc, registration=registration)
+        service = build(cfg, lambda addr, size: pine.read(addr, size), is_host, session, log, serial=serial, crc=crc, registration=registration,
+                        node=score_node, host_secret=host_secret)
         if service and report_path:
             service.board.listeners.append(koth_reporter(Path(report_path), session))
         if service and any(isinstance(x, DjangoSink) for x in service.sinks):

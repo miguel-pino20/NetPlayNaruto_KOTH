@@ -855,7 +855,7 @@ class Launcher(tk.Tk):
                     return messagebox.showerror(tr('zt.title'), str(error))
                 if cfg['zerotier_role'] == 'host':
                     self._log(tr('zt.share', ip=cfg['zerotier_address'], port=core.HOST_PORT), 'info')
-                session = self.backend.session if cfg['zerotier_role'] == 'host' else ''
+                session = self.backend.session
                 self._spawn(args, tr('zt.title'), session_env={'UN5_SCOREBOARD_SESSION': session} if session else None)
             self._after_sync = launch
             self._log('\n▶ ' + tr('run.checking'), 'info')

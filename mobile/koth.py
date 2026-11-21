@@ -58,8 +58,10 @@ def play_round(config, snapshot, state, symbols, stop):
             args += ['--spectator-port', '47401']
     if snapshot.get('spectator_key'):
         os.environ['UN5_SPECTATOR_KEY'] = snapshot['spectator_key']
-    if role == 'host':
+    if role in ('host', 'guest'):
         os.environ['UN5_KOTH_RESULT_FILE'] = str(Path(stop).with_name('result.json'))
+    else:
+        os.environ.pop('UN5_KOTH_RESULT_FILE', None)
     try:
         return play(args)
     finally:
@@ -145,6 +147,7 @@ def run_koth(config, report):
                     future.result()
                 except (Exception, SystemExit):
                     pass
+            submit_pending_result(round_stop.with_name('result.json'), url, ticket)
             if registered:
                 try:
                     sync(url, ticket, {**body, 'offline': True})

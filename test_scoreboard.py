@@ -323,6 +323,55 @@ class SinkTests(unittest.TestCase):
                 self.assertEqual(registration[1]['session'], result[1]['session'])
                 self.assertEqual(result[1]['winner'], 'p1')
 
+    def test_casual_peers_exchange_round_and_report_same_fight(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from node import Node, Peer
+
+        host = Node(None, 1, 0, 0, [0, 1], bind='127.0.0.1')
+        guest = Node(None, 2, 1, 0, [0, 1], host=host.sock.getsockname(), bind='127.0.0.1')
+        self.addCleanup(host.sock.close)
+        self.addCleanup(guest.sock.close)
+        host.peers[2] = Peer(2, 1, guest.sock.getsockname())
+        host.peers[2].hello = guest.peers[1].hello = True
+
+        config = cfg(outputs={'file': {'enabled': False}}, detector={'result_addr': '1', 'p1_value': 1, 'p2_value': 2})
+        args = SimpleNamespace(session_epoch='0', bind_address='127.0.0.1')
+        pine = Mock(game_id=lambda: '', game_crc=lambda: '', read=Mock(return_value=0))
+        with patch.dict('os.environ', {'UN5_SCOREBOARD_SESSION': 'login'}), patch(
+                'scoreboard.load_config', return_value=config), patch('scoreboard._post') as post, patch(
+                'scoreboard.file_logger', return_value=lambda line: None):
+            p1 = sb.start_for_session(args, pine, True, node=host)
+            p2 = sb.start_for_session(args, pine, False, node=guest)
+            try:
+                p1.board.p2 = 15  # previously persisted local total
+                for client in (p1, p2):
+                    client.tick()  # both see the start, before either detects a winner
+                deadline = time.monotonic() + 2
+                while not host.score_secret and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                guest._request_score_round()
+                host._recv()
+                guest._recv()
+                self.assertEqual(guest.score_round, 1)
+                self.assertEqual(guest.score_secret, host.score_secret)
+                pine.read.return_value = 2
+                for client in (p2, p1):
+                    client.detector.next_poll = 0
+                    client.tick()
+            finally:
+                p2.close()
+                p1.close()
+        registration, *reports = [call.args for call in post.call_args_list]
+        self.assertTrue(registration[1]['dual_report'])
+        self.assertEqual(len(reports), 2)
+        for _, body, headers in reports:
+            self.assertEqual(body['session'], registration[1]['session'])
+            self.assertEqual(body['match_number'], 1)
+            self.assertEqual(body['winner'], 'p2')
+            self.assertEqual(headers['Idempotency-Key'], registration[1]['session'] + '-1')
+        self.assertEqual(sum('X-Casual-Guest' in args[2] for args in reports), 1)
+
     def test_online_casual_turns_on_sending_by_itself(self):
         base = sb.merge(sb.DEFAULTS, {})                    # scoreboard.json ausente: tudo desligado
         with patch.dict('os.environ', {'UN5_NETPLAY_SESSION': '', 'UN5_SCOREBOARD_SESSION': 'discord'}):

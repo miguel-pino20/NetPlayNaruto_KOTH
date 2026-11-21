@@ -36,6 +36,10 @@ NEUTRAL = (wire.IDLE_PAD, 0)
 # mismatch against it is a scene change, not a divergence of the fight state.
 NULL_STATE_HASH = 1823345245
 
+# Optional casual score exchange. Older peers ignore these datagrams.
+SCORE_REQUEST = struct.Struct('<4sI16s')
+SCORE_REPLY = struct.Struct('<4sI16s16sI')
+
 SEL_MAGIC = b'SELX'                  # host -> guest: the host's menu selection (NpSel, 14 words)
 SEL_FMT = '<4sBII14I'                # magic | member | session crc | seq | 14 words
 SEL_LEN = struct.calcsize(SEL_FMT)
@@ -101,6 +105,10 @@ class Node:
         self.delay, self.tag, self.name, self.loss = delay, tag, name, loss
         self.session = wire.session_id(tag, delay, epoch)
         self.is_host = host is None
+        self.score_challenge = None
+        self.score_secret = None
+        self.score_round = 0
+        self.last_score_request = 0.0
         if sock is None:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.bind((bind, bind_port))
@@ -299,6 +307,9 @@ class Node:
                 via_relay, data = True, data[5:]
             if self.relay_only and not via_relay:
                 continue
+            if data[:4] in (b'SCQ1', b'SCR1'):
+                self._receive_score(data, addr, via_relay)
+                continue
             if data[:4] == SEL_MAGIC:                        # the host's menu selection (not a wire.py message)
                 self._on_sel(data, addr, via_relay)
                 continue
@@ -342,6 +353,32 @@ class Node:
             elif m['kind'] == wire.BYE:
                 self.closed_reason = m['reason']
                 self.closed_member = peer.member
+
+    def _receive_score(self, data, addr, via_relay):
+        peer = self.peers.get(2 if self.is_host else 1)
+        if not peer or not peer.hello or (not via_relay and addr != peer.addr):
+            return
+        if self.is_host and self.score_secret and len(data) == SCORE_REQUEST.size:
+            magic, session, challenge = SCORE_REQUEST.unpack(data)
+            if magic == b'SCQ1' and session == self.session:
+                reply = SCORE_REPLY.pack(b'SCR1', session, challenge, self.score_secret, self.score_round)
+                if via_relay:
+                    self._send_relay(reply)
+                else:
+                    self._sendto(reply, addr)
+        elif not self.is_host and self.score_challenge and len(data) == SCORE_REPLY.size:
+            magic, session, challenge, secret, number = SCORE_REPLY.unpack(data)
+            if (magic == b'SCR1' and session == self.session and challenge == self.score_challenge
+                    and self.score_secret in (None, secret)):
+                self.score_secret = secret
+                self.score_round = max(self.score_round, number)
+
+    def _request_score_round(self):
+        peer = self.peers.get(1)
+        now = time.monotonic()
+        if peer and peer.hello and now - self.last_score_request >= 0.5:
+            self.last_score_request = now
+            self._tx(peer, SCORE_REQUEST.pack(b'SCQ1', self.session, self.score_challenge))
 
     def _clock(self, peer, m):
         now = now_ms()
@@ -599,6 +636,8 @@ class Node:
         """Call in a loop (every 1-2 ms)."""
         self._keepalive()
         self._recv()
+        if self.score_challenge:
+            self._request_score_round()
         self._send_hello()                                  # until every peer answered with DATA
         if not self.ready():
             return

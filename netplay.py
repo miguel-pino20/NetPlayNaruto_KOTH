@@ -921,7 +921,7 @@ def cmd_play(args, is_host):
     import scoreboard
     board = scoreboard.start_for_session(args, pine, is_host,    # None unless scoreboard.json has enabled: true
                                          room=getattr(poller, 'room_id', '') if poller else '',
-                                         online=server_mode)
+                                         online=server_mode, node=node)
     presence_stop = threading.Event()
     if server_mode and os.environ.get('UN5_NETPLAY_SESSION'):
         def presence_loop():
@@ -1168,6 +1168,7 @@ def main(argv=None):
                        help='HTTP(S) address of the server API (e.g. https://un5netplay.duckdns.org); '
                             'default: http://--server. UDP (relay) always uses --server')
         q.add_argument('--relay-only', action='store_true', help='send game packets only through the principal relay')
+        q.add_argument('--zerotier', action='store_true', help='use casual ZeroTier score reporting with direct UDP')
         q.add_argument('--bind-address', default='0.0.0.0', help='local IPv4 for direct UDP connections')
         q.add_argument('--spectator-port', type=int, default=0, help='TCP port for read-only spectators (0 = off)')
         if name == 'watch':
