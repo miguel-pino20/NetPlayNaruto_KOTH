@@ -1,0 +1,389 @@
+{
+ "_doc": "UN6 (SLUS-55606, CRC 688C83D6). ID = u32 em +0x68 do objeto do lutador. 1-93: nome em texto do proprio jogo (tabela 0x91D904 + 8*ID). 100-121: personagens do mod (modelos em 0x951F18, ID = 100 + posicao); nome lido da plaquinha TEX_char_name01 do CHARSEL1.CCS (retangulos em 0x95A5C0 + 8*(ID-100); DATA.CVM com senha \"Iruka\"). Alguns nomes se repetem no jogo (Pain x3, Kakashi, Sasuke, Naruto, Jiraiya): o campo code diferencia.",
+ "characters": {
+  "1": {
+   "code": "nrt",
+   "name": "Naruto Uzumaki (Clássico)"
+  },
+  "2": {
+   "code": "ssk",
+   "name": "Sasuke Uchiha (Clássico)"
+  },
+  "3": {
+   "code": "roc",
+   "name": "Rock Lee (Clássico)"
+  },
+  "4": {
+   "code": "gar",
+   "name": "Gaara (Clássico)"
+  },
+  "5": {
+   "code": "sik",
+   "name": "Shikamaru Nara (Clássico)"
+  },
+  "6": {
+   "code": "nej",
+   "name": "Neji Hyuga (Clássico)"
+  },
+  "7": {
+   "code": "skr",
+   "name": "Sakura Haruno (Clássico)"
+  },
+  "10": {
+   "code": "hak",
+   "name": "Haku"
+  },
+  "11": {
+   "code": "zbz",
+   "name": "Zabuza Momochi"
+  },
+  "12": {
+   "code": "hnt",
+   "name": "Hinata Hyuga (Clássico)"
+  },
+  "13": {
+   "code": "ten",
+   "name": "Tenten (Clássico)"
+  },
+  "14": {
+   "code": "tyo",
+   "name": "Choji Akimichi (Clássico)"
+  },
+  "15": {
+   "code": "ino",
+   "name": "Ino Yamanaka (Clássico)"
+  },
+  "16": {
+   "code": "kib",
+   "name": "Kiba Inuzuka (Clássico)"
+  },
+  "17": {
+   "code": "sin",
+   "name": "Shino Aburame (Clássico)"
+  },
+  "18": {
+   "code": "knk",
+   "name": "Kankuro (Clássico)"
+  },
+  "19": {
+   "code": "tmr",
+   "name": "Temari (Clássico)"
+  },
+  "22": {
+   "code": "hkg",
+   "name": "O Terceiro Hokage"
+  },
+  "34": {
+   "code": "jrb",
+   "name": "Jirobo"
+  },
+  "35": {
+   "code": "kdm",
+   "name": "Kidomaru"
+  },
+  "36": {
+   "code": "tyy",
+   "name": "Tayuya"
+  },
+  "37": {
+   "code": "skn",
+   "name": "Sakon"
+  },
+  "38": {
+   "code": "kmm",
+   "name": "Kimimaro"
+  },
+  "39": {
+   "code": "fou",
+   "name": "O Relâmpago Amarelo"
+  },
+  "40": {
+   "code": "khm",
+   "name": "Equipe Ninja Konohamaru"
+  },
+  "41": {
+   "code": "hnb",
+   "name": "Hanabi Hyuga"
+  },
+  "42": {
+   "code": "fir",
+   "name": "O Primeiro Hokage"
+  },
+  "43": {
+   "code": "sec",
+   "name": "O Segundo Hokage"
+  },
+  "46": {
+   "code": "ank",
+   "name": "Anko Mitarashi"
+  },
+  "47": {
+   "code": "nrv",
+   "name": "Naruto Uzumaki (Nove-Caudas)"
+  },
+  "48": {
+   "code": "ssv",
+   "name": "Sasuke Uchiha (Marca da Maldição)"
+  },
+  "49": {
+   "code": "rov",
+   "name": "Lee Punho Bêbado"
+  },
+  "50": {
+   "code": "gav",
+   "name": "Gaara Possuído"
+  },
+  "51": {
+   "code": "tov",
+   "name": "Super Choji"
+  },
+  "52": {
+   "code": "jrv",
+   "name": "Jirobo (Marca da Maldição)"
+  },
+  "53": {
+   "code": "kdv",
+   "name": "Kidomaru (Marca da Maldição)"
+  },
+  "54": {
+   "code": "tyv",
+   "name": "Tayuya (Marca da Maldição)"
+  },
+  "55": {
+   "code": "skv",
+   "name": "Sakon (Marca da Maldição)"
+  },
+  "56": {
+   "code": "kmv",
+   "name": "Kimimaro (Marca da Maldição)"
+  },
+  "57": {
+   "code": "nrw",
+   "name": "Naruto Uzumaki"
+  },
+  "58": {
+   "code": "skw",
+   "name": "Sakura Haruno"
+  },
+  "59": {
+   "code": "gaw",
+   "name": "Gaara Kazekage"
+  },
+  "60": {
+   "code": "knw",
+   "name": "Kankuro"
+  },
+  "61": {
+   "code": "tmw",
+   "name": "Temari"
+  },
+  "62": {
+   "code": "chy",
+   "name": "Vovó Chiyo"
+  },
+  "63": {
+   "code": "sco",
+   "name": "Sasori"
+  },
+  "64": {
+   "code": "ddr",
+   "name": "Deidara"
+  },
+  "65": {
+   "code": "new",
+   "name": "Neji Hyuga"
+  },
+  "66": {
+   "code": "tew",
+   "name": "Tenten"
+  },
+  "67": {
+   "code": "row",
+   "name": "Rock Lee"
+  },
+  "68": {
+   "code": "siw",
+   "name": "Shikamaru Nara"
+  },
+  "69": {
+   "code": "guw",
+   "name": "Might Guy"
+  },
+  "70": {
+   "code": "kkw",
+   "name": "Kakashi Hatake"
+  },
+  "71": {
+   "code": "itw",
+   "name": "Itachi Uchiha"
+  },
+  "72": {
+   "code": "ksw",
+   "name": "Kisame Hoshigaki"
+  },
+  "73": {
+   "code": "nwv",
+   "name": "Modo 4-Caudas Despertado"
+  },
+  "75": {
+   "code": "scv",
+   "name": "Sasori (Marionete)"
+  },
+  "76": {
+   "code": "sch",
+   "name": "Sasori (Hiruko)"
+  },
+  "77": {
+   "code": "cyb",
+   "name": "Vovó Chiyo (Taijutsu)"
+  },
+  "78": {
+   "code": "kiw",
+   "name": "Kiba Inuzuka"
+  },
+  "79": {
+   "code": "snw",
+   "name": "Shino Aburame"
+  },
+  "80": {
+   "code": "hnw",
+   "name": "Hinata Hyuga"
+  },
+  "81": {
+   "code": "tyw",
+   "name": "Choji Akimichi"
+  },
+  "82": {
+   "code": "inw",
+   "name": "Ino Yamanaka"
+  },
+  "83": {
+   "code": "jrw",
+   "name": "Jiraiya"
+  },
+  "84": {
+   "code": "tnw",
+   "name": "Tsunade"
+  },
+  "85": {
+   "code": "szw",
+   "name": "Shizune"
+  },
+  "86": {
+   "code": "asw",
+   "name": "Asuma Sarutobi"
+  },
+  "87": {
+   "code": "krw",
+   "name": "Kurenai Yuhi"
+  },
+  "89": {
+   "code": "orw",
+   "name": "Orochimaru"
+  },
+  "90": {
+   "code": "kbw",
+   "name": "Kabuto Yakushi"
+  },
+  "91": {
+   "code": "ymt",
+   "name": "Yamato"
+  },
+  "92": {
+   "code": "sai",
+   "name": "Sai"
+  },
+  "93": {
+   "code": "ssw",
+   "name": "Sasuke Uchiha"
+  },
+  "100": {
+   "code": "anb",
+   "name": "Kakashi Anbu"
+  },
+  "101": {
+   "code": "nrz",
+   "name": "Naruto Taijutsu"
+  },
+  "102": {
+   "code": "dtu",
+   "name": "Doto"
+  },
+  "103": {
+   "code": "hnx",
+   "name": "Hinata Byakugan"
+  },
+  "104": {
+   "code": "for",
+   "name": "Orochimaru Selado"
+  },
+  "105": {
+   "code": "sgt",
+   "name": "Suigetsu"
+  },
+  "106": {
+   "code": "kar",
+   "name": "Karin"
+  },
+  "107": {
+   "code": "jug",
+   "name": "Jugo"
+  },
+  "108": {
+   "code": "tob",
+   "name": "Tobi"
+  },
+  "109": {
+   "code": "hdn",
+   "name": "Hidan"
+  },
+  "110": {
+   "code": "kzu",
+   "name": "Kakuzu"
+  },
+  "111": {
+   "code": "knn",
+   "name": "Konan"
+  },
+  "112": {
+   "code": "pea",
+   "name": "Pain"
+  },
+  "113": {
+   "code": "peb",
+   "name": "Pain"
+  },
+  "114": {
+   "code": "pec",
+   "name": "Pain"
+  },
+  "115": {
+   "code": "kwv",
+   "name": "Kabuto Possuído"
+  },
+  "116": {
+   "code": "kkz",
+   "name": "Kakashi"
+  },
+  "117": {
+   "code": "obt",
+   "name": "Obito"
+  },
+  "118": {
+   "code": "jwv",
+   "name": "Jiraiya"
+  },
+  "119": {
+   "code": "swv",
+   "name": "Sasuke"
+  },
+  "120": {
+   "code": "nwx",
+   "name": "Naruto"
+  },
+  "121": {
+   "code": "irk",
+   "name": "Iruka"
+  }
+ }
+}

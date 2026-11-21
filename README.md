@@ -328,3 +328,17 @@ con `NETPLAY_IDENTITY_URL` si cambia el servidor principal. La sesión del
 servidor principal solo se envía en una cabecera HTTPS para comprobar la cuenta;
 Django no la guarda. Si falla la comprobación, no se crea una inscripción de
 invitado de forma silenciosa.
+
+## Placar de vitorias (opcional)
+
+`scoreboard.py` mantiene un marcador (`J1: 2 | J2: 5`) y lo publica en: archivos `placar.txt`/`placar.json`
+(para OBS), API HTTP local con WebSocket (`/score`, `/text`, `/ws`), webhook (Discord o JSON) y Django.
+Esta desactivado hasta crear `scoreboard.json` con `python scoreboard.py init` y poner `"enabled": true`.
+Formato, nombres, puertos, URLs y tokens se configuran ahi (`python scoreboard.py show` muestra el resultado).
+`python scoreboard.py test p1|p2|draw` prueba las salidas sin abrir el juego.
+
+**Pendiente:** la deteccion automatica necesita la direccion de RAM que indica quien gano, aun no validada
+(ver `docs/REGLAS-Y-PRUEBAS-KOTH.md`). Para encontrarla: `scoreboard.py probe --start 0x.. --end 0x.. --out p1.bin`
+en la pantalla de victoria de P1, lo mismo con P2, y `scoreboard.py diff --start 0x.. p1=p1.bin p2=p2.bin`;
+luego rellena `detector` (`result_addr`, `p1_value`, `p2_value`, `draw_value`). El endpoint de Django
+(`outputs.django.path`) tambien debe existir en el servidor: no esta en este repositorio.

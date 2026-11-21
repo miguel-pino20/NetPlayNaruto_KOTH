@@ -918,6 +918,9 @@ def cmd_play(args, is_host):
             except (OSError, ValueError, RuntimeError) as error:
                 print(f'Espectadores no disponibles ({error}); el combate continúa.', flush=True)
     flow = GameFlow(pine)
+    import scoreboard
+    board = scoreboard.start_for_session(args, pine, is_host,    # None unless scoreboard.json has enabled: true
+                                         room=getattr(poller, 'room_id', '') if poller else '')
     presence_stop = threading.Event()
     if server_mode and os.environ.get('UN5_NETPLAY_SESSION'):
         def presence_loop():
@@ -953,6 +956,8 @@ def cmd_play(args, is_host):
     try:
         while not stop_requested(args):
             desync, closed = session.step()
+            if board is not None:
+                board.tick()
             if server_mode:
                 path = node.path_summary()                  # direct (hole punched) or relay (through the server)
                 if path != last_path:
@@ -973,6 +978,8 @@ def cmd_play(args, is_host):
                 info_at = time.time()
                 flow.report()
                 try:
+                    if board is not None:
+                        board.set_nicks(node.info()[0])
                     core.set_info(*node.info())
                 except Exception:                           # noqa: BLE001 - purely cosmetic, never stop a match for it
                     pass
@@ -1059,6 +1066,8 @@ def cmd_play(args, is_host):
         pass
     finally:
         presence_stop.set()
+        if board is not None:
+            board.close()
         if replay is not None:
             replay.close()
         if server is not None:
