@@ -445,10 +445,12 @@ class Dispatcher:
                 return
             for sink in self.sinks:
                 try:
-                    sink.send(event)
+                    status = sink.send(event)
+                    if isinstance(status, int):
+                        self.log(f'Placar: resultado enviado ({sink.label}, HTTP {status}).')
                 except Exception as error:                  # noqa: BLE001
                     # Nunca imprimir URL/token: webhooks sao segredos.
-                    self.log(f'Placar: saida {sink.label} falhou ({type(error).__name__}).')
+                    self.log(f'Placar: saida {sink.label} falhou ({describe_error(error)}).')
 
     def close(self, wait=3.0):
         self.q.put(None)
@@ -529,7 +531,22 @@ class DjangoSink:
                 'names': event['names'], 'match_number': entry['n'], 'session': self.session,
                 'idempotency_key': key, 'timestamp': entry['ts'], 'characters': entry.get('chars')}
         auth = f'{self.scheme} {self.token}' if self.scheme else self.token
-        _post(self.url, body, {self.header: auth, 'Idempotency-Key': key})
+        return _post(self.url, body, {self.header: auth, 'Idempotency-Key': key})
+
+
+def describe_error(error):
+    """Texto curto do erro para o log: codigo HTTP e a mensagem do servidor, nunca a URL nem os cabecalhos."""
+    code = getattr(error, 'code', None)
+    if isinstance(code, int):
+        detail = ''
+        try:
+            data = json.loads(error.read(2048).decode('utf-8', 'replace'))
+            detail = data.get('detail') or data.get('error') or json.dumps(data, ensure_ascii=False)
+        except Exception:                                   # noqa: BLE001
+            pass
+        return f'HTTP {code}' + (f': {str(detail)[:200]}' if detail else '')
+    reason = getattr(error, 'reason', None)
+    return f'{type(error).__name__}: {type(reason).__name__ if reason is not None else ""}'.rstrip(': ')
 
 
 def _post(url, body, headers, tries=3, timeout=6):
@@ -548,7 +565,7 @@ def _post(url, body, headers, tries=3, timeout=6):
             context = ssl_context(target.hostname) if target.scheme == 'https' else None
             with urlopen(request, timeout=timeout, context=context) as response:
                 response.read(256)
-            return
+                return response.status
         except HTTPError as error:
             last = error
             if 400 <= error.code < 500 and error.code != 429:
@@ -768,8 +785,23 @@ def online_config(cfg, online):
     return merge(cfg, {'enabled': True, 'outputs': {'django': {'enabled': True, 'url': url}}})
 
 
+def file_logger(log, path=None):
+    """Imprime e tambem anexa a scoreboard.log (pasta de dados), para conferir depois de uma partida."""
+    path = Path(path) if path else appdata.DATA_DIR / 'scoreboard.log'
+
+    def write(message):
+        log(message)
+        try:
+            with open(path, 'a', encoding='utf-8') as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+        except OSError:
+            pass
+    return write
+
+
 def start_for_session(args, pine, is_host, log=print, room='', online=False):
     """Gancho do netplay: devuelve el servicio o None. Nunca lanza."""
+    log = file_logger(log)
     try:
         cfg = online_config(load_config(getattr(args, 'scoreboard_config', None)), online)
         serial = crc = ''
@@ -779,6 +811,8 @@ def start_for_session(args, pine, is_host, log=print, room='', online=False):
         except Exception:                                    # noqa: BLE001 - sin serial/CRC se usa `detector`
             pass
         session = session_id(args, room)
+        log(f'Placar: juego {serial} {crc}, {"host" if is_host else "guest"}, partida {session or "?"}, '
+            f'{"online" if online else "directa"}, activo={bool(cfg.get("enabled"))}.')
         service = build(cfg, lambda addr, size: pine.read(addr, size), is_host, session, log, serial=serial, crc=crc)
         if service and any(isinstance(x, DjangoSink) for x in service.sinks):
             log(f'Placar: resultados se enviarán a {cfg["outputs"]["django"]["url"]} (partida {session or "?"}).')

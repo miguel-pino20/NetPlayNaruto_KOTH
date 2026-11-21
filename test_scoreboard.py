@@ -321,6 +321,31 @@ class SinkTests(unittest.TestCase):
             keys.append(post.call_args.args[2]['Idempotency-Key'])
         self.assertEqual(keys, ['sess-2', 'sess-2'])
 
+    def test_send_result_is_logged_without_secrets(self):
+        import io, urllib.error
+        logs = []
+        class Ok:
+            label = 'django'
+            def send(self, e): return 201
+        class Bad:
+            label = 'django'
+            def send(self, e):
+                raise urllib.error.HTTPError('https://site.test/secret', 403, 'Forbidden', {},
+                                             io.BytesIO(b'{"detail": "Sesion invalida"}'))
+        disp = sb.Dispatcher([Ok(), Bad()], logs.append)
+        disp.push({'event': 'result'})
+        disp.close()
+        self.assertIn('Placar: resultado enviado (django, HTTP 201).', logs)
+        self.assertIn('Placar: saida django falhou (HTTP 403: Sesion invalida).', logs)
+        self.assertNotIn('secret', ' '.join(logs))
+
+    def test_file_logger_appends(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = sb.file_logger(lambda m: None, Path(d) / 'x.log')
+            log('uno'); log('dos')
+            lines = (Path(d) / 'x.log').read_text(encoding='utf-8').splitlines()
+        self.assertEqual([l.split(' ', 2)[2] for l in lines], ['uno', 'dos'])
+
     def test_dispatcher_isolates_failures(self):
         calls = []
         class Bad:
