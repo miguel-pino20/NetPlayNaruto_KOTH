@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -37,6 +38,20 @@ class MobileKothTests(unittest.TestCase):
                 self.assertEqual(argv[argv.index('--session-epoch') + 1], 'epoch')
                 self.assertEqual(argv[argv.index(expected[0]):][:2], expected)
                 self.assertEqual('--preloaded-state' in argv, role == 'spectator')
+
+    def test_only_current_android_host_enables_score_reporting(self):
+        reports = []
+        def play(args):
+            reports.append(os.environ.get('UN5_KOTH_RESULT_FILE'))
+            return 0
+
+        with patch('mobile.koth.play', side_effect=play):
+            for role in ('guest', 'host', 'spectator', 'host'):
+                koth.play_round(self.config, dict(self.snapshot, role=role), self.state,
+                                self.symbols, self.root / 'round.stop')
+                self.assertNotIn('UN5_KOTH_RESULT_FILE', os.environ)
+        result = str(self.root / 'result.json')
+        self.assertEqual(reports, [None, result, None, result])
 
     def test_heartbeat_reports_django_roles_and_disconnects(self):
         roles = iter((None, 'guest', 'host', 'spectator'))

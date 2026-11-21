@@ -12,7 +12,7 @@ import venv
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ("appdata core_link discord_auth hill i18n koth_client launcher launcher_account "
            "launcher_avatar launcher_core launcher_koth launcher_theme lockstep netlink netplay "
-           "node pine release_info rooms simgame spectator statesync updater wire zerotier_networks").split()
+           "node pine release_info rooms scoreboard simgame spectator statesync updater wire zerotier_networks").split()
 
 
 def run(*args, **kwargs):
@@ -43,7 +43,7 @@ def main():
         ROOT / "appimage/un5-netplay.png", icon, env=env)
     # Every added source file is deliberate: no .bat/.sh, PCSX2, games, user data or secrets.
     data_files = [ROOT / f"{module}.py" for module in MODULES]
-    data_files += [ROOT / "symbols_un6.json", ROOT / "appimage/un5-netplay.png", icon]
+    data_files += [ROOT / "symbols_un6.json", ROOT / "chars_un6.json", ROOT / "appimage/un5-netplay.png", icon]
     python_license = Path(sys.base_prefix) / "LICENSE.txt"
     if python_license.is_file():
         data_files.append(python_license)

@@ -280,6 +280,49 @@ class SinkTests(unittest.TestCase):
         self.assertEqual({k: v for k, v in body.items() if k != 'timestamp'}, expected)
         self.assertEqual(sorted(body), sorted(list(expected) + ['timestamp']))
 
+    def test_koth_only_submits_first_detected_victory_and_retries_same_payload(self):
+        from discord_auth import AccountError
+        from hill import submit_pending_result
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'result.json'
+            board = sb.Scoreboard(cfg())
+            board.listeners.append(sb.koth_reporter(path, 'a'*32))
+            board.record('p1', 'manual')
+            board.record('draw', 'memoria')
+            self.assertFalse(path.exists())
+            board.record('p2', 'memoria')
+            board.record('p1', 'memoria')
+            payload = json.loads(path.read_text())
+            self.assertEqual(payload['winner'], 'p2')
+            with patch('discord_auth.api_call', side_effect=[AccountError('offline', 0), {'match_id': 5}]) as post:
+                submit_pending_result(path, 'https://site.test', 'host-ticket')
+                self.assertTrue(path.exists())
+                submit_pending_result(path, 'https://site.test', 'host-ticket')
+                self.assertFalse(path.exists())
+                self.assertEqual(post.call_args_list[0], post.call_args_list[1])
+                self.assertEqual(post.call_args.args[2:], ('/api/netplay/result/', payload))
+                self.assertEqual(post.call_args.kwargs['token'], 'host-ticket')
+
+    def test_host_announces_room_before_reporting_result_on_both_networks(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        for online in (True, False):
+            cfg = sb.merge(sb.DEFAULTS, {'outputs': {'file': {'enabled': False}}})
+            args = SimpleNamespace(session_epoch='0', bind_address='0.0.0.0' if online else '10.0.0.1')
+            with patch.dict('os.environ', {'UN5_SCOREBOARD_SESSION': 'login'}), patch(
+                    'scoreboard.load_config', return_value=cfg), patch('scoreboard._post') as post, patch(
+                    'scoreboard.file_logger', return_value=lambda line: None):
+                service = sb.start_for_session(args, Mock(game_id=lambda: '', game_crc=lambda: ''),
+                                               True, room='abc123' if online else '', online=online)
+                service.board.record('p1', 'memoria')
+                service.close()
+                registration, result = [call.args for call in post.call_args_list]
+                self.assertTrue(registration[0].endswith('/api/netplay/casual/rooms/'))
+                self.assertEqual(registration[1]['transport'], 'netplay' if online else 'zerotier')
+                self.assertRegex(registration[1]['session'], r'^[0-9a-f]{32}$')
+                self.assertEqual(registration[1]['session'], result[1]['session'])
+                self.assertEqual(result[1]['winner'], 'p1')
+
     def test_online_casual_turns_on_sending_by_itself(self):
         base = sb.merge(sb.DEFAULTS, {})                    # scoreboard.json ausente: tudo desligado
         with patch.dict('os.environ', {'UN5_NETPLAY_SESSION': '', 'UN5_SCOREBOARD_SESSION': 'discord'}):

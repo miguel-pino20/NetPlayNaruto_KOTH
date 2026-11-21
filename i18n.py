@@ -75,8 +75,6 @@ STRINGS = {
     'koth.casual_points': ('Points to win', 'Puntos para ganar'),
     'koth.casual_capacity': ('Maximum participants', 'Máximo de participantes'),
     'koth.casual_start': ('Start event', 'Iniciar evento'),
-    'koth.casual_winner': ('Record {name} as winner', 'Registrar a {name} como ganador'),
-    'koth.casual_mark_winner': ('Mark as winner', 'Marcar como ganador'),
     'koth.casual_finish': ('Close event', 'Cerrar evento'),
     'koth.event': ('Event', 'Evento'),
     'koth.state': ('Status', 'Estado'),

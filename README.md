@@ -87,21 +87,18 @@ Para organizar un **Rey de la Colina casual**, inicia sesión con Discord en
 Netplay de PC y abre **KOTH → Administrar eventos**. Cualquier usuario
 con sesión de Discord puede crear un evento sin premios indicando nombre, meta
 de puntos y cupo. Quien lo creó puede seleccionarlo e iniciarlo cuando haya al
-menos dos jugadores o cerrarlo desde el mismo menú. Para registrar un resultado,
-pulsa **Marcar como ganador** en la tarjeta de P1 o P2. El host del combate
+menos dos jugadores o cerrarlo desde el mismo menú. Cuando P1 detecta una victoria, Django suma un punto al ganador y rota la cola. El host del combate
 cambia según la cola. Los jugadores de Android pueden inscribirse y jugar desde
 su app.
 
 Para un **Rey de la Colina oficial**, una cuenta de Discord vinculada a un
-administrador web de Django también puede iniciar el torneo y registrar
-ganadores desde Netplay de PC. La creación y la configuración del premio se
+administrador web de Django también puede iniciar el torneo desde Netplay de PC. La creación y la configuración del premio se
 hacen desde el navegador.
 
 Para mirar un combate desde PC, inicia sesión con Discord, selecciona el
 evento en **KOTH** y pulsa **Observar evento**. Usa la misma red ZeroTier, juego,
 save state y símbolos que los jugadores. El host debe habilitar espectadores.
-Observar no ocupa cupo. Si tienes permiso para administrar el evento, puedes
-marcar al ganador desde el tablero mientras observas.
+Observar no ocupa cupo. El tablero muestra la puntuación registrada por Django.
 
 1. En Django, instala la actualización y ejecuta `python manage.py migrate`.
 2. Todos deben estar autorizados en la misma red ZeroTier. El host debe permitir
@@ -146,8 +143,7 @@ marcar al ganador desde el tablero mientras observas.
    en el slot 9. El primero en la cola es P1/host; Django entrega su IP de ZeroTier
    al rival/P2. La pareja conecta directamente, sin crear una sala en el relay.
    Cada sesión tiene una identidad propia para rechazar paquetes de peleas anteriores.
-6. Después del combate, **el organizador registra el ganador en el panel de
-   Django**. El launcher cierra la sesión anterior, el ganador sigue primero y
+6. Al detectar una victoria, P1 envía el resultado a Django. Django acredita un punto. El launcher cierra la sesión anterior, el ganador sigue primero y
    el perdedor pasa al final. La siguiente pareja arranca automáticamente.
 
 **STOP** desconecta del netplay; no retira tu inscripción del torneo. Para salir

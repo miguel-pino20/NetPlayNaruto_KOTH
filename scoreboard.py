@@ -28,6 +28,7 @@ import struct
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -439,6 +440,12 @@ class Dispatcher:
             self.log('Placar: fila de saidas cheia; evento descartado.')
 
     def _run(self):
+        for sink in self.sinks:
+            if isinstance(sink, DjangoSink) and sink.registration:
+                try:
+                    sink.register_room()
+                except Exception as error:
+                    self.log(f'Placar: registro de sala pendiente ({describe_error(error)}).')
         while True:
             event = self.q.get()
             if event is None:
@@ -506,22 +513,31 @@ class DjangoSink:
     """Envia cada resultado ao site (rota e cabecalho configuraveis; padrao = contrato combinado com o servidor)."""
     label = 'django'
 
-    def __init__(self, cfg, board, session=''):
+    def __init__(self, cfg, board, session='', registration=None):
         from hill import validate_url
         self.url = (validate_url(cfg['url']).rstrip('/') + '/'
                     + cfg.get('path', '/api/netplay/casual/result/').lstrip('/'))
         envs = cfg.get('token_env') or []
         envs = [envs] if isinstance(envs, str) else envs
         self.token = cfg.get('token') or next((os.environ[e] for e in envs if os.environ.get(e)), '')
+        self.registration = registration
+        self.room_url = validate_url(cfg['url']).rstrip('/') + '/api/netplay/casual/rooms/'
         self.header = cfg.get('auth_header') or 'X-Netplay-Session'
         self.scheme = cfg.get('auth_scheme') or ''
         self.board, self.session = board, str(session or '')
         if not self.token:
             raise ValueError('falta a sessao do Netplay (entre com o Discord no launcher) ou outputs.django.token')
 
+    def register_room(self):
+        if self.registration:
+            auth = f'{self.scheme} {self.token}' if self.scheme else self.token
+            _post(self.room_url, self.registration, {self.header: auth})
+            self.registration = None
+
     def send(self, event):
         if event['event'] != 'result':
             return
+        self.register_room()
         entry = event['entry']
         # "<session>-<numero da luta>": o mesmo valor nos dois PCs, para o servidor guardar o resultado uma vez.
         key = (f"{self.session}-{entry['n']}" if self.session
@@ -529,7 +545,9 @@ class DjangoSink:
         body = {'event': 'result', 'winner': entry['winner'], 'source': entry['source'],
                 'score': {'p1': event['p1'], 'p2': event['p2'], 'draws': event['draws']},
                 'names': event['names'], 'match_number': entry['n'], 'session': self.session,
-                'idempotency_key': key, 'timestamp': entry['ts'], 'characters': entry.get('chars')}
+                'idempotency_key': key, 'timestamp': entry['ts']}
+        if entry.get('chars') is not None:
+            body['characters'] = entry['chars']
         auth = f'{self.scheme} {self.token}' if self.scheme else self.token
         return _post(self.url, body, {self.header: auth, 'Idempotency-Key': key})
 
@@ -723,7 +741,7 @@ def profile_config(cfg, serial, crc=''):
     return cfg
 
 
-def build(cfg, read=None, is_host=True, session='', log=print, state_path=None, serial='', crc=''):
+def build(cfg, read=None, is_host=True, session='', log=print, state_path=None, serial='', crc='', registration=None):
     """Monta o servico a partir da configuracao. Devolve None se estiver desligado."""
     if not cfg.get('enabled'):
         return None
@@ -745,7 +763,8 @@ def build(cfg, read=None, is_host=True, session='', log=print, state_path=None, 
     add('file', lambda s: FileSink(s, board))
     add('http', lambda s: HttpSink(s, board))
     add('webhook', lambda s: WebhookSink(s, board), external=True)
-    add('django', lambda s: DjangoSink(s, board, session), external=True)
+    if is_host:
+        add('django', lambda s: DjangoSink(s, board, session, registration), external=True)
     dispatcher = Dispatcher(sinks, log)
     board.listeners.append(dispatcher.push)
     detector = make_detector(cfg.get('detector') or {}, read or (lambda addr, size: 0),
@@ -799,11 +818,39 @@ def file_logger(log, path=None):
     return write
 
 
+def koth_reporter(path, session):
+    """Publish the first detected victory; the KOTH coordinator owns the ticket."""
+    reported = False
+
+    def record(event):
+        nonlocal reported
+        entry = event.get('entry') or {}
+        if reported or event['event'] != 'result' or entry.get('source') != 'memoria' or entry['winner'] not in ('p1', 'p2'):
+            return
+        payload = {'event': 'result', 'winner': entry['winner'], 'source': 'memoria',
+                   'match_number': entry['n'], 'session': session, 'idempotency_key': session + '-win',
+                   'timestamp': entry['ts'], 'names': event['names'],
+                   'score': {key: event[key] for key in ('p1', 'p2', 'draws')}}
+        if entry.get('chars'):
+            payload['characters'] = entry['chars']
+        appdata.write_json(path, payload, private=True)
+        reported = True
+
+    return record
+
+
 def start_for_session(args, pine, is_host, log=print, room='', online=False):
     """Gancho do netplay: devuelve el servicio o None. Nunca lanza."""
     log = file_logger(log)
     try:
-        cfg = online_config(load_config(getattr(args, 'scoreboard_config', None)), online)
+        casual = str(getattr(args, 'session_epoch', '0') or '0') == '0'
+        zerotier = not online and getattr(args, 'bind_address', '0.0.0.0') not in ('', '0.0.0.0')
+        cfg = online_config(load_config(getattr(args, 'scoreboard_config', None)),
+                            casual and (online or zerotier))
+        report_path = os.environ.get('UN5_KOTH_RESULT_FILE') if is_host and not casual else None
+        if not casual:
+            cfg = merge(cfg, {'enabled': bool(report_path or cfg['enabled']),
+                              'outputs': {'django': {'enabled': False}}})
         serial = crc = ''
         try:
             serial = pine.game_id()
@@ -811,9 +858,18 @@ def start_for_session(args, pine, is_host, log=print, room='', online=False):
         except Exception:                                    # noqa: BLE001 - sin serial/CRC se usa `detector`
             pass
         session = session_id(args, room)
+        registration = None
+        django = cfg['outputs']['django']
+        if (casual and is_host and (online or zerotier) and django.get('enabled')
+                and django.get('path') == '/api/netplay/casual/result/'):
+            session = uuid.uuid4().hex
+            registration = {'session': session, 'transport': 'netplay' if online else 'zerotier',
+                            'network_room': str(room or '')}
         log(f'Placar: juego {serial} {crc}, {"host" if is_host else "guest"}, partida {session or "?"}, '
             f'{"online" if online else "directa"}, activo={bool(cfg.get("enabled"))}.')
-        service = build(cfg, lambda addr, size: pine.read(addr, size), is_host, session, log, serial=serial, crc=crc)
+        service = build(cfg, lambda addr, size: pine.read(addr, size), is_host, session, log, serial=serial, crc=crc, registration=registration)
+        if service and report_path:
+            service.board.listeners.append(koth_reporter(Path(report_path), session))
         if service and any(isinstance(x, DjangoSink) for x in service.sinks):
             log(f'Placar: resultados se enviarán a {cfg["outputs"]["django"]["url"]} (partida {session or "?"}).')
         return service

@@ -146,6 +146,23 @@ def release_game(args):
         pine.close()
 
 
+def submit_pending_result(path, url, ticket):
+    from discord_auth import AccountError, api_call
+    if not path.is_file():
+        return
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    try:
+        result = api_call(url, 'POST', '/api/netplay/result/', payload, token=ticket, timeout=4,
+                          extra_headers={'Idempotency-Key': payload['idempotency_key']}, follow_redirects=False)
+    except AccountError as error:
+        print(f'KOTH: envío de resultado: {error}', flush=True)
+        if error.code == 0 or error.code == 429 or error.code >= 500:
+            return
+    else:
+        print(f"KOTH: victoria registrada por Django (partida {result.get('match_id')}).", flush=True)
+    path.unlink(missing_ok=True)
+
+
 def run(args):
     url = validate_url(args.api_url)
     observe = getattr(args, 'observe', False)
@@ -169,6 +186,7 @@ def run(args):
     with tempfile.TemporaryDirectory(prefix='un5-hill-') as directory:
         child_stop = Path(directory) / 'stop'
         room_file = Path(directory) / 'room.json'
+        result_file = Path(directory) / 'result.json'
         try:
             print('Rey de la colina: cargando el save state en PCSX2 para observar ...' if observe else
                   'Rey de la colina: cargando el save state en PCSX2 antes de entrar a la cola ...', flush=True)
@@ -176,9 +194,10 @@ def run(args):
                 if args.stop_file and Path(args.stop_file).exists():
                     return 0
                 raise HillError('No se pudo cargar y congelar el save state. No se anunció al jugador como listo.')
-            print('Estado cargado y congelado. Conectando a Django; resultados desde el panel del torneo.', flush=True)
+            print('Estado cargado y congelado. Conectando a Django.', flush=True)
             last_success = time.monotonic()
             while not (args.stop_file and Path(args.stop_file).exists()):
+                submit_pending_result(result_file, url, ticket)
                 if process is not None and process.poll() is not None:
                     if active_role == 'spectator':
                         watch_failed_round = active_round
@@ -186,7 +205,7 @@ def run(args):
                         print('La transmisión terminó. Se recargará el estado y se buscará otra fuente en 5 segundos. Sigues disponible para tu turno.', flush=True)
                     else:
                         blocked_round = active_round
-                        print('La sesión terminó. Esperando el resultado del organizador; reinicia este modo para reintentar.', flush=True)
+                        print('La sesión terminó. Esperando que Django actualice la ronda.', flush=True)
                     process = None
                 body['available'] = blocked_round is None
                 body['room_id'], body['room_round'] = '', ''
@@ -259,6 +278,9 @@ def run(args):
                         print('Iniciando modo espectador.' if active_role == 'spectator' else f"Iniciando combate como {active_role}.", flush=True)
                         child_env = os.environ.copy()
                         child_env.pop('UN5_HILL_TICKET', None)
+                        child_env.pop('UN5_KOTH_RESULT_FILE', None)
+                        if active_role == 'host':
+                            child_env['UN5_KOTH_RESULT_FILE'] = str(result_file)
                         if active_role == 'spectator':
                             child_env.pop('UN5_NETPLAY_SESSION', None)
                             child_env['UN5_SPECTATOR_SOURCES'] = json.dumps(snapshot.get('spectator_sources') or [])
