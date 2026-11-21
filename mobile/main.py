@@ -66,6 +66,7 @@ class MobileApp(App):
         self.busy = False
         self.closed = False
         self.auth_timer = None
+        self.pending_casual_source = None
         self.discord_verified = False
         self.host_timer = None
         self.account = make_account('https://un5netplay.duckdns.org')
@@ -417,7 +418,6 @@ class MobileApp(App):
     def refresh_koth_entry(self, *_):
         source = self.inputs['koth_url'].text.strip().rstrip('/')
         session = self.account.session if self.discord_verified else None
-        self.koth_create.disabled = not session
         event = self.koth_choices.get(self.koth_selected_id, {})
         self.koth_start.disabled = not (
             session and self.koth_owner_scope == (source, session) and self.koth_events_url == source
@@ -488,13 +488,16 @@ class MobileApp(App):
         self.refresh_koth_entry()
 
     def create_casual(self):
-        if self.koth_create.disabled or self.busy:
-            return
         try:
             source = self.inputs['koth_url'].text.strip().rstrip('/')
             https_url(source)
         except ValueError as error:
             self.say(str(error))
+            return
+        if not self.discord_verified or not self.account.session:
+            self.pending_casual_source = source
+            if self.auth_timer is None:
+                self.login()
             return
         session = self.account.session
         content = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(4))
@@ -511,6 +514,7 @@ class MobileApp(App):
 
         def submit():
             if self.busy:
+                self.set_text(error_label, 'Espera a que termine la consulta actual.')
                 return
             name = fields[0].text.strip()
             try:
@@ -667,8 +671,14 @@ class MobileApp(App):
         self.refresh_koth_entry()
         messages = {'restore': 'Sesión restaurada.', 'login': 'Sesión iniciada.', 'logout': 'Sesión cerrada.'}
         self.say(messages[operation] if ok else str(error))
+        pending_source = self.pending_casual_source
+        self.pending_casual_source = None
+        if (pending_source and self.discord_verified and operation in ('restore', 'login')
+                and pending_source == self.inputs['koth_url'].text.strip().rstrip('/')):
+            self.create_casual()
 
     def cancel_login(self):
+        self.pending_casual_source = None
         self.account.acct_cancel_login()
 
     def watch_host(self):
