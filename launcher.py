@@ -865,7 +865,15 @@ class Launcher(tk.Tk):
         ttk.Button(dialog, text=tr('zt.start'), command=begin).pack(fill='x')
         dialog.grab_set()
 
-    def hill(self, event=None):
+    def watch_hill(self):
+        event = self.koth_panel.selected_event()
+        if event is None:
+            return messagebox.showinfo(tr('hill.title'), tr('koth.pick'))
+        if not self.backend.session:
+            return messagebox.showinfo(tr('hill.title'), tr('koth.casual_login'))
+        return self.hill(event, observe=True)
+
+    def hill(self, event=None, *, observe=False):
         if self.backend.running or self._koth_pending or not self._ensure_state_dir() or not self._pick_game():
             return
         from koth_client import site_url
@@ -882,8 +890,10 @@ class Launcher(tk.Tk):
         if event:
             tk.Label(dialog, text=event['name'], bg=PANEL, fg=ACCENT,
                      font=('Segoe UI', 12, 'bold')).pack(anchor='w')
-            fields.append(('name', tr('koth.player_name'), self.v['hill_player_name'].get() or self.cfg().get('nick', '')))
-            tk.Label(dialog, text=tr('koth.linked_entry' if self.backend.session else 'koth.guest_entry'), bg=PANEL, fg=MUTED,
+            if not observe:
+                fields.append(('name', tr('koth.player_name'), self.v['hill_player_name'].get() or self.cfg().get('nick', '')))
+            entry = 'koth.watch_note' if observe else 'koth.linked_entry' if self.backend.session else 'koth.guest_entry'
+            tk.Label(dialog, text=tr(entry), bg=PANEL, fg=MUTED,
                      wraplength=480, justify='left').pack(anchor='w', pady=(6, 0))
         else:
             fields.append(('ticket', tr('hill.ticket'), self.v['hill_ticket'].get()))
@@ -893,10 +903,11 @@ class Launcher(tk.Tk):
             ttk.Entry(dialog, textvariable=values[key], width=65, show="*" if key == "ticket" else "",
                       state='readonly' if event and key == 'url' else 'normal').pack(fill="x")
         get_address = self._zerotier_picker(dialog, self.v['hill_address'].get())
-        Switch(dialog, tr('hill.spectators'), self.v['hill_spectators']).pack(anchor='w', pady=(10, 0))
+        if not observe:
+            Switch(dialog, tr('hill.spectators'), self.v['hill_spectators']).pack(anchor='w', pady=(10, 0))
         tk.Label(dialog, text=tr("hill.note"), bg=PANEL, fg=MUTED, wraplength=480, justify="left").pack(pady=12)
 
-        if self.backend.session:
+        if self.backend.session and not observe:
             tk.Label(dialog, text=tr('koth.address_rule'), bg=PANEL, fg=MUTED,
                      wraplength=480, justify='left').pack(anchor='w', pady=(0, 8))
 
@@ -909,7 +920,7 @@ class Launcher(tk.Tk):
                 address = str(selected_ip)
                 ticket = values['ticket'].get().strip() if 'ticket' in values else self.v['hill_ticket'].get().strip()
                 name = values['name'].get().strip() if 'name' in values else ''
-                if event and not name:
+                if event and not observe and not name:
                     raise ValueError(tr('koth.player_name'))
                 if not event and not ticket:
                     raise ValueError(tr("hill.ticket"))
@@ -930,16 +941,20 @@ class Launcher(tk.Tk):
                 self._sync_mode()
                 self._set_buttons(True)
                 self.stop_btn.configure(state='disabled')
-                self.koth_panel.display(event, reason=tr('koth.registering'))
+                self.koth_panel.display(event, reason=tr('koth.loading' if observe else 'koth.registering'))
 
                 def enroll():
-                    from koth_client import MembershipStore, enroll as enroll_event
+                    from koth_client import MembershipStore, enroll as enroll_event, watch_ticket
+                    kind = 'koth_watch' if observe else 'koth_enroll'
                     try:
-                        result = enroll_event(url, event, name, MembershipStore(core.DATA_DIR/'koth-memberships.json'), ticket,
-                                              netplay_session=netplay_session, address=address if netplay_session else '')
-                        self.backend.q.put(('koth_enroll', url, address, result, ''))
+                        if observe:
+                            result = watch_ticket(url, netplay_session, event['id'])
+                        else:
+                            result = enroll_event(url, event, name, MembershipStore(core.DATA_DIR/'koth-memberships.json'), ticket,
+                                                  netplay_session=netplay_session, address=address if netplay_session else '')
+                        self.backend.q.put((kind, url, address, result, ''))
                     except Exception as error:
-                        self.backend.q.put(('koth_enroll', url, address, None, str(error)))
+                        self.backend.q.put((kind, url, address, None, str(error)))
 
                 threading.Thread(target=enroll, daemon=True).start()
             else:
@@ -966,8 +981,9 @@ class Launcher(tk.Tk):
         ttk.Button(dialog, text=tr("hill.connect"), command=connect).pack(fill="x")
         dialog.grab_set()
 
-    def _begin_hill(self, url, address, ticket, event=None):
-        self.v['hill_ticket'].set(ticket)
+    def _begin_hill(self, url, address, ticket, event=None, *, observe=False):
+        if not observe:
+            self.v['hill_ticket'].set(ticket)
         self.v['hill_url'].set(url)
         if event:
             self.v['hill_event_id'].set(str(event['id']))
@@ -987,11 +1003,13 @@ class Launcher(tk.Tk):
                     '--delay', core.MATCH_DELAY, '--transport', 'zerotier',
                     '--state', cfg['state_file'], '--state-dir', cfg['state_dir'], '--load-slot', cfg['load_slot'],
                     '--nick', cfg.get('nick', ''), '--relay-server', core.SERVER_ADDR, '--relay-api-url', core.SERVER_URL]
-            if not self.v['hill_spectators'].get():
+            if observe:
+                args.append('--observe')
+            elif not self.v['hill_spectators'].get():
                 args.append('--no-spectators')
             self._koth_pending = False
             self._spawn(args, tr('hill.title'), session_env={'UN5_HILL_TICKET': ticket,
-                        'UN5_NETPLAY_SESSION': self.backend.session})
+                        'UN5_NETPLAY_SESSION': '' if observe else self.backend.session})
             self.koth_panel.display(event)
 
         self._after_sync = launch
@@ -1132,6 +1150,12 @@ class Launcher(tk.Tk):
                 elif kind == 'koth_events':
                     if ev[1] is self.koth_panel:
                         self.koth_panel.update_events(*ev[2:])
+                elif kind == 'koth_access':
+                    if ev[1] is self.koth_panel:
+                        self.koth_panel.update_management_access(*ev[2:])
+                elif kind == 'koth_management':
+                    if ev[1] is self.koth_panel:
+                        self.koth_panel.management_updated(*ev[2:])
                 elif kind == 'koth_state':
                     if ev[2] is self.backend.proc and self.backend.session_role == 'hill':
                         state = ev[1]
@@ -1139,7 +1163,7 @@ class Launcher(tk.Tk):
                         self.koth_live_event = state['event']
                         self.v['hill_event_id'].set(str(state['event']['id']))
                         self.koth_panel.display(state['event'], state.get('role'), state.get('reason'))
-                elif kind == 'koth_enroll':
+                elif kind in ('koth_enroll', 'koth_watch'):
                     _, url, address, result, error = ev
                     if error:
                         self._koth_pending = False
@@ -1151,7 +1175,7 @@ class Launcher(tk.Tk):
                         if result.get('address_changed'):
                             self._log(tr('koth.address_changed', deducted=result['points_deducted'],
                                          points=result['points']), 'info')
-                        self._begin_hill(url, address, result['ticket'], result['event'])
+                        self._begin_hill(url, address, result['ticket'], result['event'], observe=kind == 'koth_watch')
                 elif kind == "exit":
                     self._on_exit(ev[1])
                 elif kind == "avatar":

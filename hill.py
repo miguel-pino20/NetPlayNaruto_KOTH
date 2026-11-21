@@ -36,8 +36,9 @@ def validate_url(url):
     return url.rstrip('/')
 
 
-def sync(url, ticket, body):
-    request = Request(url + '/api/netplay/sync/', data=json.dumps(body).encode(), method='POST',
+def sync(url, ticket, body, *, observe=False):
+    path = '/api/netplay/watch/sync/' if observe else '/api/netplay/sync/'
+    request = Request(url + path, data=json.dumps(body).encode(), method='POST',
                       headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + ticket})
     from discord_auth import ssl_context
 
@@ -52,6 +53,8 @@ def sync(url, ticket, body):
     except HTTPError as error:
         # Never include the request or ticket in output.
         if error.code in (401, 403):
+            if observe:
+                raise HillError('Código de observador inválido o vencido. Vuelve a abrir el evento.') from None
             raise HillError('Código KOTH inactivo o inválido. Comprueba tu inscripción y el estado del evento.') from None
         if error.code == 400:
             raise HillError('Django rechazó la configuración de netplay. Comprueba la IP y el torneo.') from None
@@ -145,16 +148,19 @@ def release_game(args):
 
 def run(args):
     url = validate_url(args.api_url)
+    observe = getattr(args, 'observe', False)
     address = ipaddress.IPv4Address(args.address)
     transport = getattr(args, 'transport', 'zerotier')
     if address.is_loopback or address.is_multicast or (transport == 'zerotier' and address.is_unspecified):
         raise ValueError('Introduce la IPv4 de ZeroTier de este PC.')
     ticket = os.environ.get('UN5_HILL_TICKET', '').strip()
     if not ticket:
+        if observe:
+            raise ValueError('Falta el código de observador. Abre el evento desde Netplay.')
         raise ValueError('Falta UN5_HILL_TICKET: genera el código personal desde el torneo.')
     body = {'address': str(address), 'port': args.port, 'game': args.game, 'delay': args.delay or 3,
             'state_tag': file_tag(args.state), 'symbols_tag': file_tag(args.symbols), 'available': True,
-            'transport': transport, 'spectators_enabled': not getattr(args, 'no_spectators', False)}
+            'transport': transport, 'spectators_enabled': observe or not getattr(args, 'no_spectators', False)}
     process, active_round, blocked_round, last_message = None, None, None, None
     active_role, watch_failed_round = None, None
     active_stream, watch_retry_at = None, 0
@@ -164,7 +170,8 @@ def run(args):
         child_stop = Path(directory) / 'stop'
         room_file = Path(directory) / 'room.json'
         try:
-            print('Rey de la colina: cargando el save state en PCSX2 antes de entrar a la cola ...', flush=True)
+            print('Rey de la colina: cargando el save state en PCSX2 para observar ...' if observe else
+                  'Rey de la colina: cargando el save state en PCSX2 antes de entrar a la cola ...', flush=True)
             if not prepare_waiting(args):
                 if args.stop_file and Path(args.stop_file).exists():
                     return 0
@@ -192,7 +199,12 @@ def run(args):
                     except (OSError, ValueError, KeyError):
                         pass
                 try:
-                    snapshot = sync(url, ticket, dict(body))
+                    if observe:
+                        snapshot = sync(url, ticket, dict(body), observe=True)
+                        if snapshot.get('role') not in (None, 'spectator'):
+                            raise HillError('Django devolvió un rol incompatible con el modo observador.')
+                    else:
+                        snapshot = sync(url, ticket, dict(body))
                     if snapshot.get('transport') != transport:
                         raise HillError('Actualiza Django y los dos launchers: la pareja debe usar el mismo transporte de KOTH.')
                     registered = True
@@ -237,7 +249,7 @@ def run(args):
                         last_message = message
                     watching_failed = (snapshot['role'] == 'spectator' and watch_failed_round == round_id
                                        and time.monotonic() < watch_retry_at)
-                    watching_disabled = snapshot['role'] == 'spectator' and getattr(args, 'no_spectators', False)
+                    watching_disabled = not observe and snapshot['role'] == 'spectator' and getattr(args, 'no_spectators', False)
                     if process is None and blocked_round is None and snapshot['ready'] and not watching_failed and not watching_disabled and room_ready:
                         child_stop.unlink(missing_ok=True)
                         room_file.unlink(missing_ok=True)
@@ -269,7 +281,7 @@ def run(args):
             except Exception as error:
                 print(f'No se pudo liberar PCSX2 al salir de KOTH: {error}', flush=True)
             try:
-                if registered:
+                if registered and not observe:
                     sync(url, ticket, {**body, 'offline': True})
             except (OSError, HillError):
                 pass

@@ -106,7 +106,13 @@ def account_game_nick(acc) -> str:
 
 
 # ---- HTTP -----------------------------------------------------------------------------------------------------------
-def api_call(server, method, path, body=None, token="", timeout=8.0, extra_headers=None) -> dict:
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def api_call(server, method, path, body=None, token="", timeout=8.0, extra_headers=None,
+             *, follow_redirects=True) -> dict:
     headers, data = {"User-Agent": UA}, None
     if body is not None:
         data, headers["Content-Type"] = json.dumps(body).encode("utf-8"), "application/json"
@@ -117,7 +123,13 @@ def api_call(server, method, path, body=None, token="", timeout=8.0, extra_heade
     base = server if server.startswith(("http://", "https://")) else f"http://{server}"
     req = urllib.request.Request(f"{base.rstrip('/')}{path}", data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
+        context = ssl_context()
+        if follow_redirects:
+            response = urllib.request.urlopen(req, timeout=timeout, context=context)
+        else:
+            opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=context))
+            response = opener.open(req, timeout=timeout)
+        with response as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:

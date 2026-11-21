@@ -1108,6 +1108,7 @@ def main(argv=None):
     hill.add_argument('--relay-server', default=netlink.DEFAULT_SERVER)
     hill.add_argument('--relay-api-url', default=netlink.DEFAULT_API_URL)
     hill.add_argument('--transport', choices=('zerotier', 'relay'), default='zerotier')
+    hill.add_argument('--observe', action='store_true', help='watch KOTH without joining the player queue')
     hill.add_argument('--no-spectators', action='store_true', help='disable watching and serving spectators')
     p = sub.add_parser('prepare', help='arm the filter and freeze the game at frame 0 (to save the match state)')
     p.add_argument('--save-slot', type=int, help='ask PCSX2 (PINE) to save the state in this slot')
