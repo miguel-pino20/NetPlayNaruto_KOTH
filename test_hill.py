@@ -70,6 +70,7 @@ class HillTests(unittest.TestCase):
         self.assertIn('watch', popen.call_args.args[0])
         self.assertNotIn('UN5_HILL_TICKET', popen.call_args.kwargs['env'])
         self.assertNotIn('UN5_NETPLAY_SESSION', popen.call_args.kwargs['env'])
+        self.assertNotIn('UN5_KOTH_RESULT_FILE', popen.call_args.kwargs['env'])
 
     @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket', 'NP_SERVER': 'old-relay'})
     @patch('hill.time.sleep')
@@ -249,6 +250,7 @@ class HillTests(unittest.TestCase):
         popen.return_value.poll.return_value = None
         self.assertEqual(hill.run(self.args), 0)
         self.assertEqual(popen.call_count, 1)
+        self.assertIn('UN5_KOTH_RESULT_FILE', popen.call_args.kwargs['env'])
         command = popen.call_args.args[0]
         self.assertEqual(command[command.index('--room')+1], 'main-room')
         self.assertNotIn('--connect', command)

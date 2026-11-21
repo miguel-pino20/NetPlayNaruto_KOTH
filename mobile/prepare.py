@@ -5,7 +5,7 @@ import shutil
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 SHARED = ('pine.py', 'appdata.py', 'discord_auth.py', 'koth_client.py', 'hill.py', 'spectator.py',
-          'updater.py', 'release_info.py', 'core_link.py', 'node.py', 'wire.py', 'netplay.py', 'netlink.py', 'statesync.py', 'rooms.py')
+          'updater.py', 'release_info.py', 'core_link.py', 'node.py', 'wire.py', 'netplay.py', 'scoreboard.py', 'chars_un6.json', 'netlink.py', 'statesync.py', 'rooms.py')
 
 
 def prepare():

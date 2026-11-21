@@ -679,9 +679,9 @@ TRANSLATIONS = {
         'Waiting',
         'Aguardando',
     ),
-    'Esperando el resultado del organizador.': (
-        'Waiting for the organizer to report the result.',
-        'Aguardando o resultado do organizador.',
+    'Esperando que Django actualice la ronda.': (
+        'Waiting for Django to update the round.',
+        'Aguardando a atualização da rodada pelo Django.',
     ),
     'Reproduciendo el combate.': (
         'Watching the match.',

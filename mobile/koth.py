@@ -8,7 +8,7 @@ import time
 from types import SimpleNamespace
 
 from discord_auth import AccountError, api_call
-from hill import HillError, file_tag, release_game
+from hill import HillError, file_tag, release_game, submit_pending_result
 from netplay import main as play
 
 if __package__:
@@ -58,9 +58,14 @@ def play_round(config, snapshot, state, symbols, stop):
             args += ['--spectator-port', '47401']
     if snapshot.get('spectator_key'):
         os.environ['UN5_SPECTATOR_KEY'] = snapshot['spectator_key']
+    if role in ('host', 'guest'):
+        os.environ['UN5_KOTH_RESULT_FILE'] = str(Path(stop).with_name('result.json'))
+    else:
+        os.environ.pop('UN5_KOTH_RESULT_FILE', None)
     try:
         return play(args)
     finally:
+        os.environ.pop('UN5_KOTH_RESULT_FILE', None)
         os.environ.pop('UN5_SPECTATOR_KEY', None)
         os.environ.pop('UN5_SPECTATOR_SOURCES', None)
 
@@ -82,6 +87,7 @@ def run_koth(config, report):
         round_stop = Path(temp) / 'stop'
         try:
             while not parent_stop.exists():
+                submit_pending_result(round_stop.with_name('result.json'), url, ticket)
                 if future and future.done():
                     try:
                         future.result()
@@ -124,7 +130,7 @@ def run_koth(config, report):
                         active = identity
                         future = worker.submit(play_round, config, snapshot, state, symbols, round_stop)
                     role_label = tr(ROLES.get(role, 'En espera'))
-                    detail = (tr('Esperando el resultado del organizador.') if blocked and role != 'spectator'
+                    detail = (tr('Esperando que Django actualice la ronda.') if blocked and role != 'spectator'
                               else tr('Reproduciendo el combate.') if future and role == 'spectator'
                               else tr('Conectando con el rival.') if future
                               else snapshot.get('reason', ''))
@@ -141,6 +147,7 @@ def run_koth(config, report):
                     future.result()
                 except (Exception, SystemExit):
                     pass
+            submit_pending_result(round_stop.with_name('result.json'), url, ticket)
             if registered:
                 try:
                     sync(url, ticket, {**body, 'offline': True})

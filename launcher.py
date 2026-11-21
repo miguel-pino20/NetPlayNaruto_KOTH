@@ -855,7 +855,8 @@ class Launcher(tk.Tk):
                     return messagebox.showerror(tr('zt.title'), str(error))
                 if cfg['zerotier_role'] == 'host':
                     self._log(tr('zt.share', ip=cfg['zerotier_address'], port=core.HOST_PORT), 'info')
-                self._spawn(args, tr('zt.title'))
+                session = self.backend.session
+                self._spawn(args, tr('zt.title'), session_env={'UN5_SCOREBOARD_SESSION': session} if session else None)
             self._after_sync = launch
             self._log('\n▶ ' + tr('run.checking'), 'info')
             self._set_status('LOADING', BLUE)
@@ -1087,7 +1088,11 @@ class Launcher(tk.Tk):
         label = tr("run.host") if role == "host" else tr("run.guest")
         if role == "host" and self.v["ignore_desync"].get():
             label += tr("run.ignore_on")
-        self._spawn(args, label, allow_missing_symbols=(role == "guest"))
+        # A sessao de Discord vai so para o placar (scoreboard.py) enviar o resultado ao site; UN5_NETPLAY_SESSION
+        # nao e usado aqui para nao ligar presenca/allow do netplay casual.
+        session = getattr(self.backend, 'session', '') or ''
+        self._spawn(args, label, allow_missing_symbols=(role == "guest"),
+                    session_env={'UN5_SCOREBOARD_SESSION': session} if session else None)
 
     def solo(self):
         if not self._pick_game():

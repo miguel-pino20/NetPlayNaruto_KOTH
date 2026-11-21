@@ -3,7 +3,7 @@ title = Naruto Netplay
 package.name = narutonetplay
 package.domain = org.un5
 source.dir = build/app
-source.include_exts = py,png
+source.include_exts = py,png,json
 version.regex = VERSION = "(.*)"
 version.filename = ../release_info.py
 android.numeric_version = 1026410
