@@ -195,10 +195,12 @@ def newest_state(directory, since):
 
 
 def connect(args):
+    pine = Pine(args.pine_slot)
     try:
-        pine = Pine(args.pine_slot).connect()
+        pine.connect()
         base, script_base, calls = core_link.resolve_base(pine, args.symbols)
     except (PineError, RuntimeError, KeyError, OSError) as error:
+        pine.close()
         raise SystemExit(f'cannot reach the game: {error}')
     return pine, core_link.PineCore(base, pine=pine, serial=None)
 
@@ -839,6 +841,15 @@ def cmd_play(args, is_host):
         if not load_match_state(args):                 # loads the match state into PCSX2 first (frozen at frame 0)
             return 1
     pine, core = connect(args)
+    try:
+        return play_connected(args, is_host, server_mode, pine, core)
+    finally:
+        # Android runs successive KOTH rounds in one process. ARMSX2 serves
+        # one PINE client at a time, including when loading the next state.
+        pine.close()
+
+
+def play_connected(args, is_host, server_mode, pine, core):
     if not core.frozen():
         print('the game is not frozen at frame 0 of an armed match. Load the match state (made with "prepare") first.')
         return 1
@@ -1106,9 +1117,8 @@ def main(argv=None):
     hill.add_argument('--port', type=int, choices=range(1024, 65534), default=47400, metavar='PORT')
     hill.add_argument('--delay', type=int, choices=(0, *range(2, 11)), default=3)
     hill.add_argument('--nick', default='')
-    hill.add_argument('--relay-server', default=netlink.DEFAULT_SERVER)
-    hill.add_argument('--relay-api-url', default=netlink.DEFAULT_API_URL)
-    hill.add_argument('--transport', choices=('zerotier', 'relay'), default='zerotier')
+    hill.add_argument('--transport', choices=('zerotier',), default='zerotier')
+    hill.add_argument('--personal-code', action='store_true', help='use the tournament registration as the player identity')
     hill.add_argument('--observe', action='store_true', help='watch KOTH without joining the player queue')
     hill.add_argument('--no-spectators', action='store_true', help='disable watching and serving spectators')
     p = sub.add_parser('prepare', help='arm the filter and freeze the game at frame 0 (to save the match state)')

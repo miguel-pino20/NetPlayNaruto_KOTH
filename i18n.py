@@ -123,6 +123,8 @@ STRINGS = {
     "hill.url": ("Django site URL", "URL do site Django"),
     "hill.ticket": ("Personal code from the tournament website", "Código pessoal do site do torneio"),
     "hill.address": ("This PC's ZeroTier IPv4", "IPv4 deste PC no ZeroTier"),
+    "hill.code_note": ("Select your ZeroTier network. Your tournament registration name appears in the fight.",
+                       "Selecione sua rede ZeroTier. O nome da sua inscrição aparece na luta."),
     "hill.note": ("Django manages the queue. KOTH fights use ZeroTier directly. Both players must join the same network and use the same game, state and symbols. You can disable spectators to compare synchronization.",
                   "Django organiza a fila. As lutas KOTH usam ZeroTier diretamente. Os jogadores precisam da mesma rede, jogo, estado e symbols. Você pode desativar espectadores para comparar a sincronização."),
     'hill.spectators': ('Enable spectators', 'Ativar espectadores'),

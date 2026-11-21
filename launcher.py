@@ -906,9 +906,9 @@ class Launcher(tk.Tk):
         get_address = self._zerotier_picker(dialog, self.v['hill_address'].get())
         if not observe:
             Switch(dialog, tr('hill.spectators'), self.v['hill_spectators']).pack(anchor='w', pady=(10, 0))
-        tk.Label(dialog, text=tr("hill.note"), bg=PANEL, fg=MUTED, wraplength=480, justify="left").pack(pady=12)
+        tk.Label(dialog, text=tr("hill.note" if event else "hill.code_note"), bg=PANEL, fg=MUTED, wraplength=480, justify="left").pack(pady=12)
 
-        if self.backend.session and not observe:
+        if event and self.backend.session and not observe:
             tk.Label(dialog, text=tr('koth.address_rule'), bg=PANEL, fg=MUTED,
                      wraplength=480, justify='left').pack(anchor='w', pady=(0, 8))
 
@@ -959,30 +959,13 @@ class Launcher(tk.Tk):
 
                 threading.Thread(target=enroll, daemon=True).start()
             else:
-                if netplay_session:
-                    self._koth_pending = True
-                    self.koth_live_event = None
-                    self.v['mode'].set('koth')
-                    self._sync_mode()
-                    self._set_buttons(True)
-                    self.koth_panel.display(reason=tr('koth.linking'))
+                self._begin_hill(url, address, ticket, personal_code=True)
 
-                    def link():
-                        from koth_client import link_account
-                        try:
-                            result = link_account(url, ticket, netplay_session, address=address)
-                            self.backend.q.put(('koth_enroll', url, address, result, ''))
-                        except Exception as error:
-                            self.backend.q.put(('koth_enroll', url, address, None, str(error)))
-
-                    threading.Thread(target=link, daemon=True).start()
-                else:
-                    self._begin_hill(url, address, ticket)
-
-        ttk.Button(dialog, text=tr("hill.connect"), command=connect).pack(fill="x")
+        connect_button = ttk.Button(dialog, text=tr("hill.connect"), command=connect)
+        connect_button.pack(fill="x")
         dialog.grab_set()
 
-    def _begin_hill(self, url, address, ticket, event=None, *, observe=False):
+    def _begin_hill(self, url, address, ticket, event=None, *, observe=False, personal_code=False):
         if not observe:
             self.v['hill_ticket'].set(ticket)
         self.v['hill_url'].set(url)
@@ -1003,7 +986,9 @@ class Launcher(tk.Tk):
             args = ['hill', '--api-url', url, '--address', address, '--game', self.game,
                     '--delay', core.MATCH_DELAY, '--transport', 'zerotier',
                     '--state', cfg['state_file'], '--state-dir', cfg['state_dir'], '--load-slot', cfg['load_slot'],
-                    '--nick', cfg.get('nick', ''), '--relay-server', core.SERVER_ADDR, '--relay-api-url', core.SERVER_URL]
+                    '--nick', cfg.get('nick', '')]
+            if personal_code:
+                args.append('--personal-code')
             if observe:
                 args.append('--observe')
             elif not self.v['hill_spectators'].get():

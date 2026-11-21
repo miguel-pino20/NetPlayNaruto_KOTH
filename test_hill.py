@@ -42,12 +42,12 @@ class HillTests(unittest.TestCase):
         (root / 'state').write_bytes(b'match state')
         (root / 'symbols').write_text('{}')
         self.args = argparse.Namespace(api_url='http://localhost:8000', address='10.147.0.2', game='un6',
-            transport='relay',
+            transport='zerotier',
             port=47400, delay=3, state=str(root/'state'), symbols=str(root/'symbols'), state_dir=str(root),
             load_slot=9, pine_slot=28011, nick='Player', stop_file=str(root/'stop'))
 
     def snapshot(self, round_id='one', role='host', ready=True, status='running'):
-        return dict(round_id=round_id, role=role, ready=ready, status=status, reason='', transport='relay',
+        return dict(round_id=round_id, role=role, ready=ready, status=status, reason='', transport='zerotier',
                     queue=[dict(id=1, name='A', points=0)],
                     host=dict(address='10.147.0.1', port=47400, delay=4, relay_room='main-room'))
 
@@ -86,11 +86,10 @@ class HillTests(unittest.TestCase):
         self.assertIn('host', host)
         self.assertIn('--no-share-state', host)
         self.assertIn('guest', guest)
-        self.assertIn('main-room', guest)
-        self.assertNotIn('--connect', guest)
-        self.assertEqual(host[host.index('--server')+1], '137.131.158.54:47500')
-        self.assertIn('--relay-only', host)
-        self.assertIn('--relay-only', guest)
+        self.assertEqual(guest[guest.index('--connect')+1], '10.147.0.1:47400')
+        for command in (host, guest):
+            self.assertEqual(command[command.index('--bind-address')+1], self.args.address)
+            self.assertEqual(command[command.index('--server')+1], '')
         self.assertIn('--parent-stop-file', host)
         self.assertNotIn('private-ticket', ' '.join(host))
         self.assertNotIn('UN5_HILL_TICKET', popen.call_args.kwargs['env'])
@@ -243,34 +242,22 @@ class HillTests(unittest.TestCase):
     @patch('hill.time.sleep')
     @patch('hill.subprocess.Popen')
     @patch('hill.sync')
-    def test_guest_waits_for_room_id_from_principal_server(self, sync, popen, sleep):
-        waiting = self.snapshot(role='guest')
+    def test_guest_uses_personal_code_name_on_zerotier(self, sync, popen, sleep):
+        waiting = self.snapshot(role='guest', ready=False)
         waiting['host']['relay_room'] = ''
-        sync.side_effect = [waiting, self.snapshot(role='guest'), self.snapshot(status='finished'), {}]
+        playing = self.snapshot(role='guest')
+        playing['players'] = {'p2': {'name': 'Nombre del código'}}
+        self.args.personal_code = True
+        sync.side_effect = [waiting, playing, self.snapshot(status='finished'), {}]
         popen.return_value.poll.return_value = None
         self.assertEqual(hill.run(self.args), 0)
         self.assertEqual(popen.call_count, 1)
         self.assertIn('UN5_KOTH_RESULT_FILE', popen.call_args.kwargs['env'])
         command = popen.call_args.args[0]
-        self.assertEqual(command[command.index('--room')+1], 'main-room')
-        self.assertNotIn('--connect', command)
-
-    @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket'})
-    @patch('hill.time.sleep')
-    @patch('hill.subprocess.Popen')
-    @patch('hill.sync')
-    def test_host_announces_room_and_real_auto_delay_to_django(self, sync, popen, sleep):
-        sync.side_effect = [self.snapshot(), self.snapshot(), self.snapshot(status='finished'), {}]
-        def start(command, **kwargs):
-            path = Path(command[command.index('--room-file')+1])
-            path.write_text('{"room_id":"actual-room","delay":7}')
-            return Mock(poll=Mock(return_value=None))
-        popen.side_effect = start
-        self.assertEqual(hill.run(self.args), 0)
-        announced = sync.call_args_list[1].args[2]
-        self.assertEqual(announced['room_id'], 'actual-room')
-        self.assertEqual(announced['room_round'], 'one')
-        self.assertEqual(announced['delay'], 7)
+        self.assertTrue(sync.call_args_list[0].args[2]['personal_code'])
+        self.assertEqual(command[command.index('--nick')+1], 'Nombre del código')
+        self.assertIn('--connect', command)
+        self.assertNotIn('--room', command)
 
     @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket'})
     @patch('hill.subprocess.Popen')

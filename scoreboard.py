@@ -125,6 +125,7 @@ class Scoreboard:
         self.p1 = self.p2 = self.draws = 0
         self.history = []                                   # [{'winner','ts','source','n'}]
         self.nicks = {'p1': '', 'p2': ''}
+        self.players = {}
         self.listeners = []
         self.state_path = Path(state_path) if state_path else None
         if self.state_path and config.get('persist'):
@@ -137,6 +138,8 @@ class Scoreboard:
 
     def name(self, who):
         with self.lock:
+            if self.players.get(who, {}).get('name'):
+                return self.players[who]['name']
             if self.cfg.get('use_nicks') and self.nicks.get(who):
                 return self.nicks[who]
             return str(self.cfg['names'].get(who) or who.upper())
@@ -156,7 +159,7 @@ class Scoreboard:
     def snapshot(self):
         with self.lock:
             return {'p1': self.p1, 'p2': self.p2, 'draws': self.draws,
-                    'total': self.p1 + self.p2 + self.draws,
+                    'total': self.p1 + self.p2 + self.draws, 'players': self.players,
                     'names': {'p1': self.name('p1'), 'p2': self.name('p2')},
                     'text': self.render(), 'updated': time.time(),
                     'last': self.history[-1] if self.history else None}
@@ -170,6 +173,8 @@ class Scoreboard:
             setattr(self, attr, getattr(self, attr) + 1)
             entry = {'winner': winner, 'ts': time.time(), 'source': source,
                      'n': self.p1 + self.p2 + self.draws}
+            if self.players:
+                entry['players'] = self.players
             if fight_number is not None:
                 entry['fight_number'] = fight_number
             if chars:
@@ -458,8 +463,20 @@ class Dispatcher:
                     sink.register_room()
                 except Exception as error:
                     self.log(f'Placar: registro de sala pendiente ({describe_error(error)}).')
+        waiting = [s for s in self.sinks if isinstance(s, DjangoSink) and s.node]
         while True:
-            event = self.q.get()
+            try:
+                event = self.q.get(timeout=3 if waiting else None)
+            except queue.Empty:
+                for sink in waiting.copy():
+                    try:
+                        if sink.refresh_players():
+                            waiting.remove(sink)
+                    except Exception as error:
+                        if getattr(error, 'code', 0) in (401, 403, 404):
+                            waiting.remove(sink)
+                        self.log(f'Placar: consulta de jugadores pendiente ({describe_error(error)}).')
+                continue
             if event is None:
                 return
             for sink in self.sinks:
@@ -550,6 +567,21 @@ class DjangoSink:
             if self.node:
                 self.node.score_secret = self.host_secret
 
+    def refresh_players(self):
+        if not self.node.score_secret:
+            return False
+        secret = self.node.score_secret.hex()
+        session = hashlib.sha256(secret.encode()).hexdigest()[:32]
+        headers = {self.header: f'{self.scheme} {self.token}'.strip()}
+        if not self.node.is_host:
+            headers['X-Casual-Guest'] = secret
+        url = self.room_url.removesuffix('rooms/') + 'players/'
+        data = _post(url, {'session': session}, headers, tries=1, timeout=3, read_json=True)
+        players = data['players']
+        with self.board.lock:
+            self.board.players = players
+        return bool(players['p1']['discord_id'] and players['p2']['discord_id'])
+
     def send(self, event):
         if event['event'] != 'result':
             return
@@ -595,7 +627,7 @@ def describe_error(error):
     return f'{type(error).__name__}: {type(reason).__name__ if reason is not None else ""}'.rstrip(': ')
 
 
-def _post(url, body, headers, tries=3, timeout=6):
+def _post(url, body, headers, tries=3, timeout=6, read_json=False):
     """POST JSON com 3 tentativas (rede instavel). Erros 4xx nao sao repetidos."""
     import ssl
     from urllib.error import HTTPError, URLError
@@ -610,6 +642,8 @@ def _post(url, body, headers, tries=3, timeout=6):
         try:
             context = ssl_context(target.hostname) if target.scheme == 'https' else None
             with urlopen(request, timeout=timeout, context=context) as response:
+                if read_json:
+                    return json.loads(response.read(4096))
                 response.read(256)
                 return response.status
         except HTTPError as error:
@@ -921,6 +955,7 @@ def start_for_session(args, pine, is_host, log=print, room='', online=False, nod
         service = build(cfg, lambda addr, size: pine.read(addr, size), is_host, session, log, serial=serial, crc=crc, registration=registration,
                         node=score_node, host_secret=host_secret)
         if service and report_path:
+            service.board.players = json.loads(os.environ.get('UN5_KOTH_PLAYERS') or '{}')
             service.board.listeners.append(koth_reporter(Path(report_path), session))
         if service and any(isinstance(x, DjangoSink) for x in service.sinks):
             log(f'Placar: resultados se enviarán a {cfg["outputs"]["django"]["url"]} (partida {session or "?"}).')

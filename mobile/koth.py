@@ -8,7 +8,7 @@ import time
 from types import SimpleNamespace
 
 from discord_auth import AccountError, api_call
-from hill import HillError, file_tag, release_game, submit_pending_result
+from hill import HillError, file_tag, release_game, round_nick, submit_pending_result
 from netplay import main as play
 
 if __package__:
@@ -40,7 +40,7 @@ def play_round(config, snapshot, state, symbols, stop):
         '--stop-file', str(stop), '--parent-stop-file', config['stop_file'],
         'watch' if role == 'spectator' else role, '--state', str(state),
         '--session-epoch', snapshot.get('session_epoch') or snapshot['round_id'],
-        '--delay', str(host['delay']), '--nick', config['nick'], '--server', '',
+        '--delay', str(host['delay']), '--nick', round_nick(snapshot, config['nick']), '--server', '',
     ]
     if role == 'spectator':
         args += ['--preloaded-state', '--connect', f"{host['address']}:{host['spectator_port']}"]
@@ -59,12 +59,14 @@ def play_round(config, snapshot, state, symbols, stop):
     if snapshot.get('spectator_key'):
         os.environ['UN5_SPECTATOR_KEY'] = snapshot['spectator_key']
     if role in ('host', 'guest'):
+        os.environ['UN5_KOTH_PLAYERS'] = json.dumps(snapshot.get('players') or {})
         os.environ['UN5_KOTH_RESULT_FILE'] = str(Path(stop).with_name('result.json'))
     else:
         os.environ.pop('UN5_KOTH_RESULT_FILE', None)
     try:
         return play(args)
     finally:
+        os.environ.pop('UN5_KOTH_PLAYERS', None)
         os.environ.pop('UN5_KOTH_RESULT_FILE', None)
         os.environ.pop('UN5_SPECTATOR_KEY', None)
         os.environ.pop('UN5_SPECTATOR_SOURCES', None)

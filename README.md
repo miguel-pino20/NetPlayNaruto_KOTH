@@ -118,12 +118,12 @@ Observar no ocupa cupo. El tablero muestra la puntuación registrada por Django.
    volver; una reconexión no crea otro participante ni reinicia los puntos.
    Si ya estás inscrito desde la web, puedes usar el botón inferior
    **King of the Hill · personal code**, con tu código obtenido en la página del
-   torneo mediante **Conectar netplay con ZeroTier**. Las dos formas de entrada
+   torneo mediante **Obtener código personal de Netplay**. Las dos formas de entrada
    muestran el mismo tablero en vivo: partida actual, siguiente jugador, cola,
-   puntos y meta del evento. El código manual también permite vincular una
-   inscripción de invitado a tu Discord verificado, conservando puntos y posición.
-   Abre la web con la misma cuenta Discord para que aparezca como tu participante.
-   No se identifica a una cuenta únicamente por su nombre visible.
+   puntos y meta del evento. Al entrar con código personal en PC, ambos jugadores
+   deben seleccionar su IPv4 de **ZeroTier** para la conexión directa. La pelea usa el nombre de la inscripción. El historial
+   identifica esa entrada por nombre, participante y número de inscripción, incluso
+   cuando hay una cuenta de Discord abierta en el launcher.
    El desplegable ZeroTier muestra `Nombre de red — IPv4`.
    **Refresh networks** vuelve a consultar las redes. Si Linux exige permisos,
    **Read network names…** solicita autorización solo para leer los nombres y
@@ -194,9 +194,7 @@ python netplay.py --symbols /ruta/symbols.json hill \
 El launcher y KOTH usan **3 frames** de input delay. Ambos jugadores siguen el
 valor publicado por el host. Desde terminal puedes indicar `--delay 0` para
 calcularlo por el ping, o elegir 2–10 frames manualmente.
-Desde terminal, `--transport relay` permite usar el servidor principal si ambos
-jugadores lo eligen; `--relay-server` y `--relay-api-url` configuran ese servidor.
-El valor predeterminado es `--transport zerotier`. `--api-url` es la URL de Django.
+KOTH usa ZeroTier. `--api-url` es la URL de Django.
 `--no-spectators` permite comparar el comportamiento sin transmisión de espectadores.
 `--port` permite cambiar el puerto del host (47400 por defecto).
 Las pruebas automatizadas no sustituyen una prueba real con dos PCs y PCSX2.

@@ -19,6 +19,16 @@ def tr(message, **values):
 
 # Spanish source text maps to English and Brazilian Portuguese.
 TRANSLATIONS = {
+    'Cancelar': ('Cancel', 'Cancelar'),
+    'Crear evento casual': ('Create casual event', 'Criar evento casual'),
+    'Iniciar evento casual': ('Start casual event', 'Iniciar evento casual'),
+    'Nombre del evento': ('Event name', 'Nome do evento'),
+    'Puntos para ganar (1–1000)': ('Points to win (1–1000)', 'Pontos para vencer (1–1000)'),
+    'Cupo de jugadores (2–100)': ('Player limit (2–100)', 'Limite de jogadores (2–100)'),
+    'Revisa el nombre, la meta y el cupo.': ('Check the name, target and player limit.', 'Confira o nome, a meta e o limite de jogadores.'),
+    'Evento creado: {event}.': ('Event created: {event}.', 'Evento criado: {event}.'),
+    'Evento iniciado: {event}.': ('Event started: {event}.', 'Evento iniciado: {event}.'),
+
     'Idioma': (
         'Language',
         'Idioma',

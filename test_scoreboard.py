@@ -323,6 +323,21 @@ class SinkTests(unittest.TestCase):
                 self.assertEqual(registration[1]['session'], result[1]['session'])
                 self.assertEqual(result[1]['winner'], 'p1')
 
+    def test_room_identity_lookup_for_either_slot_updates_local_history(self):
+        from types import SimpleNamespace
+        players = {'p1': {'discord_id': '123'}, 'p2': {'discord_id': '456'}}
+        for is_host in (True, False):
+            node = SimpleNamespace(is_host=is_host, score_secret=b'x' * 16)
+            board = sb.Scoreboard(cfg())
+            sink = sb.DjangoSink({'token': 'login', 'url': 'https://site.test'}, board, node=node)
+            with patch('scoreboard._post', return_value={'players': players}) as post:
+                self.assertTrue(sink.refresh_players())
+            url, body, headers = post.call_args.args
+            self.assertTrue(url.endswith('/api/netplay/casual/players/'))
+            self.assertEqual(len(body['session']), 32)
+            self.assertEqual('X-Casual-Guest' in headers, not is_host)
+            self.assertEqual(board.record('p2', 'memoria')['entry']['players'], players)
+
     def test_casual_peers_exchange_round_and_report_same_fight(self):
         from types import SimpleNamespace
         from unittest.mock import Mock

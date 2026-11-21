@@ -164,6 +164,9 @@ class MobileApp(App):
         koth = self.page(tabs, 'KOTH')
         self.field(koth, 'koth_url', 'Servidor KOTH (HTTPS)', 'https://narutimateonline.servegame.com')
         self.button(koth, 'Actualizar eventos', self.list_events)
+        self.koth_create = self.button(koth, 'Crear evento casual', self.create_casual)
+        self.koth_owner_scope = None
+        self.koth_owned = set()
         self.koth_choices = {}
         self.koth_events_url = None
         self.koth_selected_id = None
@@ -174,6 +177,7 @@ class MobileApp(App):
         self.koth_game = Spinner(text=self.prefs.get('koth_game', self.game.text), values=('un5', 'un6'),
                                  size_hint_y=None, height=dp(48))
         koth.add_widget(self.koth_game)
+        self.koth_start = self.button(koth, 'Iniciar evento casual', self.start_casual)
         self.koth_join = self.button(koth, 'Inscribirme y conectar', self.join_koth)
         self.button(koth, 'Volver a ARMSX2', self.open_emulator)
         self.button(koth, 'Desconectar de KOTH', self.stop_koth)
@@ -411,6 +415,13 @@ class MobileApp(App):
         self.run_job(lambda: pine_diagnostics(slot, android=platform == 'android'), self.say)
 
     def refresh_koth_entry(self, *_):
+        source = self.inputs['koth_url'].text.strip().rstrip('/')
+        session = self.account.session if self.discord_verified else None
+        self.koth_create.disabled = not session
+        event = self.koth_choices.get(self.koth_selected_id, {})
+        self.koth_start.disabled = not (
+            session and self.koth_owner_scope == (source, session) and self.koth_events_url == source
+            and event.get('casual') and event.get('status') == 'draft' and event['id'] in self.koth_owned)
         self.koth_join.disabled = True
         if not self.discord_verified or not self.account.session:
             self.set_text(self.koth_info, 'Inicia sesión con Discord para inscribirte y conectar.')
@@ -430,30 +441,128 @@ class MobileApp(App):
         except ValueError as error:
             self.say(str(error))
             return
-        from koth_client import list_events
+        from discord_auth import AccountError
+        from koth_client import list_events, management_access
+        session = self.account.session if self.discord_verified else None
 
-        def show(events):
-            statuses = {'draft': '{event} · Preparación', 'running': '{event} · En curso'}
-            if self.koth_events_url != source:
-                self.koth_selected_id = None
-            self.koth_choices = {event['id']: event for event in events if event.get('status') in statuses}
+        def fetch():
+            events = list_events(url)
+            try:
+                owned = management_access(url, session)['casual_ids'] if session else []
+            except AccountError as error:
+                return events, [], str(error)
+            return events, owned, None
+
+        def show(result):
+            if source != self.inputs['koth_url'].text.strip().rstrip('/'):
+                return
+            events, owned, error = result
+            self.koth_owner_scope = (source, session)
+            self.koth_owned = set(owned)
+            self.show_koth_events(source, events)
+            if error:
+                self.say(error)
+            else:
+                self.say('Eventos disponibles: {count}', count=len(self.koth_choices))
+
+        self.run_job(fetch, show)
+
+    def show_koth_events(self, source, events):
+        statuses = {'draft': '{event} · Preparación', 'running': '{event} · En curso'}
+        if self.koth_events_url != source:
+            self.koth_selected_id = None
+        self.koth_choices = {event['id']: event for event in events if event.get('status') in statuses}
+        self.koth_events_url = source
+        if self.koth_selected_id not in self.koth_choices:
+            self.koth_selected_id = None
+        self.koth_events_box.clear_widgets()
+        if not self.koth_choices:
+            self.label_in(self.koth_events_box, 'No hay eventos disponibles.', 14, 50)
+        for event_id, event in self.koth_choices.items():
+            button = ToggleButton(group=self.koth_events_box, allow_no_selection=False,
+                                  state='down' if event_id == self.koth_selected_id else 'normal',
+                                  size_hint_y=None, height=dp(48), font_size=dp(15))
+            self.set_text(button, statuses[event['status']], event=event['name'])
+            button.bind(on_release=lambda _, selected=event_id: self.select_koth_event(selected))
+            self.koth_events_box.add_widget(button)
+        self.refresh_koth_entry()
+
+    def create_casual(self):
+        if self.koth_create.disabled or self.busy:
+            return
+        try:
+            source = self.inputs['koth_url'].text.strip().rstrip('/')
+            https_url(source)
+        except ValueError as error:
+            self.say(str(error))
+            return
+        session = self.account.session
+        content = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(4))
+        fields = []
+        for label, default in [('Nombre del evento', ''), ('Puntos para ganar (1–1000)', '5'),
+                               ('Cupo de jugadores (2–100)', '8')]:
+            self.label_in(content, label, 14, 26)
+            field = TextInput(text=default, multiline=False, input_filter='int' if default else None)
+            content.add_widget(field)
+            fields.append(field)
+        error_label = self.label_in(content, '', 14, 44)
+        popup = Popup(content=content, size_hint=(0.92, 0.85))
+        self.set_text(popup, 'Crear evento casual', property_name='title')
+
+        def submit():
+            if self.busy:
+                return
+            name = fields[0].text.strip()
+            try:
+                points, capacity = (int(field.text) for field in fields[1:])
+                if not 1 <= len(name) <= 150 or not 1 <= points <= 1000 or not 2 <= capacity <= 100:
+                    raise ValueError
+            except ValueError:
+                self.set_text(error_label, 'Revisa el nombre, la meta y el cupo.')
+                return
+            popup.dismiss()
+            self.manage_casual(source, session, {'name': name, 'target_points': points, 'max_participants': capacity})
+
+        self.button(content, 'Crear evento casual', submit)
+        self.button(content, 'Cancelar', popup.dismiss)
+        popup.open()
+
+    def start_casual(self):
+        if self.koth_start.disabled or self.busy:
+            return
+        self.manage_casual(self.koth_events_url, self.account.session, {'action': 'start'},
+                           self.koth_choices[self.koth_selected_id])
+
+    def manage_casual(self, source, session, body, event=None):
+        from koth_client import get_event, management_command
+        def current():
+            return (self.discord_verified and session == self.account.session
+                    and source == self.inputs['koth_url'].text.strip().rstrip('/'))
+        if not current():
+            return
+
+        def submit():
+            if event:
+                # Enrollment changes the version while the organizer is waiting.
+                latest = get_event(source, event['id'])
+                return management_command(source, session, dict(body, version=latest['version']), event)
+            return management_command(source, session, body)
+
+        def show(result):
+            if not current():
+                return
+            choices = dict(self.koth_choices) if self.koth_events_url == source else {}
+            choices[result['id']] = result
+            if self.koth_owner_scope != (source, session):
+                self.koth_owned.clear()
+            self.koth_owner_scope = (source, session)
+            self.koth_owned.add(result['id'])
             self.koth_events_url = source
-            if self.koth_selected_id not in self.koth_choices:
-                self.koth_selected_id = None
-            self.koth_events_box.clear_widgets()
-            if not self.koth_choices:
-                self.label_in(self.koth_events_box, 'No hay eventos disponibles.', 14, 50)
-            for event_id, event in self.koth_choices.items():
-                button = ToggleButton(group=self.koth_events_box, allow_no_selection=False,
-                                      state='down' if event_id == self.koth_selected_id else 'normal',
-                                      size_hint_y=None, height=dp(48), font_size=dp(15))
-                self.set_text(button, statuses[event['status']], event=event['name'])
-                button.bind(on_release=lambda _, selected=event_id: self.select_koth_event(selected))
-                self.koth_events_box.add_widget(button)
-            self.refresh_koth_entry()
-            self.say('Eventos disponibles: {count}', count=len(self.koth_choices))
+            self.koth_selected_id = result['id']
+            self.show_koth_events(source, choices.values())
+            self.say('Evento iniciado: {event}.' if event else 'Evento creado: {event}.', event=result['name'])
 
-        self.run_job(lambda: list_events(url), show)
+        self.run_job(submit, show)
 
     def select_koth_event(self, event_id):
         self.koth_selected_id = event_id

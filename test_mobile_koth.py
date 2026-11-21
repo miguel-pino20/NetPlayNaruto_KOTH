@@ -23,6 +23,27 @@ class MobileKothTests(unittest.TestCase):
                          'host': {'address': '10.1.2.3', 'port': 47400, 'spectator_port': 47401, 'delay': 3},
                          'guest': {'address': '10.1.2.4'}, 'spectator_key': 'key', 'transport': 'zerotier'}
 
+    def test_consecutive_rounds_release_single_emulator_connection(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import netplay
+
+        args = SimpleNamespace(server='', delay=3, connect='10.1.2.3:47400')
+        clients = []
+        def connect(_):
+            if clients:
+                clients[-1].close.assert_called_once()
+            clients.append(Mock())
+            return clients[-1], Mock()
+
+        with patch('netplay.connect', side_effect=connect), patch(
+                'netplay.play_connected', side_effect=[0, OSError('rival desconectado'), 0]):
+            self.assertEqual(netplay.cmd_play(args, False), 0)
+            with self.assertRaises(OSError):
+                netplay.cmd_play(args, True)
+            self.assertEqual(netplay.cmd_play(args, False), 0)
+        clients[-1].close.assert_called_once()
+
     @patch('mobile.koth.play', return_value=0)
     def test_role_launch_passes_shared_round_and_endpoint(self, play):
         for role, command, expected in (
@@ -31,10 +52,11 @@ class MobileKothTests(unittest.TestCase):
             ('spectator', 'watch', ['--connect', '10.1.2.3:47401']),
         ):
             with self.subTest(role=role):
-                snapshot = {**self.snapshot, 'role': role}
+                snapshot = {**self.snapshot, 'role': role, 'players': {'p1': {'name': 'Primero'}, 'p2': {'name': 'Segundo'}}}
                 koth.play_round(self.config, snapshot, self.state, self.symbols, self.root / 'round.stop')
                 argv = play.call_args.args[0]
                 self.assertEqual(argv[8], command)
+                self.assertEqual(argv[argv.index('--nick') + 1], {'host': 'Primero', 'guest': 'Segundo', 'spectator': 'Android'}[role])
                 self.assertEqual(argv[argv.index('--session-epoch') + 1], 'epoch')
                 self.assertEqual(argv[argv.index(expected[0]):][:2], expected)
                 self.assertEqual('--preloaded-state' in argv, role == 'spectator')
