@@ -40,6 +40,47 @@ class KothClientTests(unittest.TestCase):
                     join_tournament(url, session, 1)
             api.assert_not_called()
 
+    def test_ready_fixture_is_scoped_to_authenticated_pair_and_event(self):
+        from koth_client import assigned_fixture
+        row = {'status': 'ready', 'player1__name': 'Alie el', 'player2__name': 'DRAGON LUCARIO'}
+        fixture = {'event_id': 7, 'fixture_id': 42, 'session': 'round-id', 'role': 'p2',
+                   'p1': {'name': 'Alie el'}, 'p2': {'name': 'DRAGON LUCARIO'}}
+        with patch('koth_client.api_call', return_value={'fixtures': [fixture]}) as api:
+            self.assertEqual(assigned_fixture(self.url, 'session', 7, row), fixture)
+            api.assert_called_once_with(self.url, 'GET', '/api/netplay/fixtures/', timeout=8,
+                                        extra_headers={'X-Netplay-Session': 'session'}, follow_redirects=False)
+            self.assertIsNone(assigned_fixture(self.url, 'session', 8, row))
+            self.assertIsNone(assigned_fixture(self.url, 'session', 7, dict(row, player1__name='Other')))
+            self.assertIsNone(assigned_fixture(self.url, 'session', 7, dict(row, status='waiting')))
+            with self.assertRaises(AccountError):
+                assigned_fixture(self.url, '', 7, row)
+
+    def test_fixture_client_and_launcher_use_direct_udp_with_automatic_addresses(self):
+        from koth_client import wait_fixture
+        from launcher_core import zerotier_args
+        from netplay import main
+        self.path.write_text('fixture files')
+        for is_host in (True, False):
+            role = 'host' if is_host else 'guest'
+            cfg = dict(fixture={'event_id': 7, 'fixture_id': 9}, hill_url=self.url, game='un5',
+                       zerotier_address='10.1.2.1')
+            command = zerotier_args(cfg, role)
+            with patch('netplay.cmd_play') as play:
+                main([role, *command])
+                args = play.call_args.args[0]
+            self.assertEqual(args.server, '')
+            self.assertEqual(args.tournament_fixture, [7, 9])
+            args.state = args.symbols = self.path
+            with patch('koth_client.api_call', return_value={
+                    'role': 'p1' if is_host else 'p2', 'ready': True, 'peer_attempt': 'b'*32,
+                    'session_epoch': 'e'*32, 'address': '10.1.2.2', 'port': 47400}):
+                self.assertTrue(wait_fixture(args, is_host, 'login', lambda: False))
+            self.assertEqual(args.session_epoch, 'e'*32)
+            if is_host:
+                self.assertEqual(args.expect_guest_ip, '10.1.2.2')
+            else:
+                self.assertEqual(args.connect, '10.1.2.2:47400')
+
     def test_membership_survives_restart_and_is_scoped_to_site_and_event(self):
         first = self.store.member(self.url, 2)
         self.assertEqual(MembershipStore(self.path).member(self.url, 2), first)

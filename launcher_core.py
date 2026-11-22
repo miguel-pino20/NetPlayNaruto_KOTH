@@ -335,6 +335,12 @@ def zerotier_args(cfg, action):
             raise ValueError(tr('zt.invalid_ip')) from None
     address = ipv4(cfg.get('zerotier_address', ''))
     args = ['--server', '', '--bind-address', address]
+    if cfg.get('fixture'):
+        fixture = cfg['fixture']
+        args += ['--tournament-fixture', str(fixture['event_id']), str(fixture['fixture_id']),
+                 '--api-url', cfg['hill_url'], '--fixture-game', cfg['game']]
+        if action == 'guest':
+            return args + ['--bind-port', GUEST_BIND_PORT]
     if action == 'host':
         return args + ['--port', HOST_PORT, '--no-announce', '--no-share-state']
     host = ipv4(cfg.get('zerotier_host', ''))

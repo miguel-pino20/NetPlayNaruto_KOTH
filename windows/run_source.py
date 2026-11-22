@@ -64,14 +64,18 @@ def main():
             raise RuntimeError('El entorno no dispone de Tcl/Tk. Reinstala Python con la opcion Tcl/Tk e IDLE.')
     if not dependencies_ready(python, environment):
         print('Preparando Pillow y certificados TLS en .venv-win...', flush=True)
-        pip = subprocess.run([str(python), '-m', 'pip', '--version'], env=environment,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if pip.returncode:
-            subprocess.run([str(python), '-m', 'ensurepip'], env=environment, check=True)
-        subprocess.run([str(python), '-m', 'pip', 'install', '--only-binary=:all:', '--timeout', '20', '--retries', '1',
-                        '-r', str(REQUIREMENTS)], env=environment, check=True)
+        try:
+            pip = subprocess.run([str(python), '-m', 'pip', '--version'], env=environment,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if pip.returncode:
+                subprocess.run([str(python), '-m', 'ensurepip'], env=environment, check=True)
+            subprocess.run([str(python), '-m', 'pip', 'install', '--only-binary=:all:', '--timeout', '20',
+                            '--retries', '1', '-r', str(REQUIREMENTS)], env=environment, check=True)
+        except subprocess.CalledProcessError:
+            print('No se completó la instalación de los paquetes opcionales.', flush=True)
         if not dependencies_ready(python, environment):
-            raise RuntimeError('No se pudieron preparar las dependencias del launcher.')
+            print('Continuando con los componentes disponibles. Tk puede dibujar la interfaz y '
+                  'Windows proporciona certificados TLS.', flush=True)
     print('Abriendo el launcher desde el proyecto local...', flush=True)
     return subprocess.run([str(python), str(ROOT / 'windows' / 'windows_start.py'), *sys.argv[1:]],
                           cwd=ROOT, env=environment).returncode

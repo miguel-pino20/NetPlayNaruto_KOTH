@@ -98,6 +98,64 @@ def tournament_bracket(url, event_id):
     return api_call(site_url(url), 'GET', f'/api/netplay/tournaments/{int(event_id)}/bracket/', timeout=8)
 
 
+def assigned_fixture(url, session, event_id, row):
+    """Resolve the selected public row against the signed-in player's ready assignments."""
+    url = site_url(url)
+    if not session or urlsplit(url).scheme != 'https':
+        raise AccountError('Conectar al cruce requiere HTTPS y una sesión de Discord.')
+    if row.get('status') != 'ready':
+        return None
+    result = api_call(url, 'GET', '/api/netplay/fixtures/', timeout=8,
+                      extra_headers={'X-Netplay-Session': session}, follow_redirects=False)
+    # Older bracket responses expose the player names but omit the fixture ID.
+    # Participant names are unique within the tournament. Require one exact pair.
+    matches = [f for f in result['fixtures'] if f['event_id'] == event_id
+               and (f['fixture_id'] == row['id'] if 'id' in row else
+                    (f['p1']['name'], f['p2']['name']) == (row['player1__name'], row['player2__name']))
+               and f['role'] in ('p1', 'p2') and f['session']]
+    return matches[0] if len(matches) == 1 else None
+
+
+def wait_fixture(args, is_host, login, stopped):
+    import ipaddress
+    import time
+    from hill import file_tag
+    url = site_url(args.api_url)
+    if urlsplit(url).scheme != 'https' or not login:
+        raise AccountError('Conectar al cruce requiere HTTPS y una sesión de Discord.')
+    event, fixture = args.tournament_fixture
+    path = f'/api/netplay/events/{event}/fixtures/{fixture}/sync/'
+    body = {'address': args.bind_address, 'game': args.fixture_game, 'state_tag': file_tag(args.state),
+            'symbols_tag': file_tag(args.symbols), 'attempt': uuid4().hex, 'peer_attempt': ''}
+    print('ZeroTier: esperando al otro jugador del cruce…', flush=True)
+    while not stopped():
+        try:
+            result = api_call(url, 'POST', path, body, timeout=6,
+                              extra_headers={'X-Netplay-Session': login}, follow_redirects=False)
+        except AccountError as error:
+            if error.code and error.code < 500:
+                raise
+            print(f'ZeroTier: reintentando coordinación ({error}).', flush=True)
+        else:
+            if result['role'] != ('p1' if is_host else 'p2'):
+                raise AccountError('El rol del cruce cambió. Actualiza la lista.')
+            body['peer_attempt'] = result['peer_attempt']
+            if result['ready']:
+                peer = str(ipaddress.IPv4Address(result['address']))
+                args.session_epoch = result['session_epoch']
+                if is_host:
+                    args.expect_guest_ip = peer
+                else:
+                    args.connect = f"{peer}:{int(result['port'])}"
+                print('ZeroTier: ambos jugadores listos. Conectando…', flush=True)
+                return not stopped()
+        for _ in range(10):
+            if stopped():
+                return False
+            time.sleep(0.2)
+    return False
+
+
 def tournament_label(event):
     parts = [event['name'], TOURNAMENT_FORMATS[event['format']], event.get('event_date'),
              f"{event['enrolled']}/{event['max_participants']}"]

@@ -822,7 +822,11 @@ def cmd_play(args, is_host):
     args.auto_delay = getattr(args, 'auto_delay', False) or args.delay <= 0
     if args.delay <= 0 and not server_mode:
         args.delay = LAN_DELAY                         # LAN / VPN: nothing to measure before connecting
-    if not is_host and not server_mode and not args.connect:
+    fixture = getattr(args, 'tournament_fixture', None)
+    if fixture and (server_mode or getattr(args, 'bind_address', '0.0.0.0') == '0.0.0.0'):
+        print('El cruce necesita una dirección local de ZeroTier.')
+        return 1
+    if not is_host and not server_mode and not args.connect and not fixture:
         print('guest: give --connect HOST_IP:PORT, or --server SERVER --room ID.')
         return 1
     if not is_host and server_mode:
@@ -852,6 +856,15 @@ def play_connected(args, is_host, server_mode, pine, core):
     if not core.frozen():
         print('the game is not frozen at frame 0 of an armed match. Load the match state (made with "prepare") first.')
         return 1
+    if getattr(args, 'tournament_fixture', None):
+        from koth_client import wait_fixture
+        from discord_auth import AccountError
+        try:
+            if not wait_fixture(args, is_host, os.environ.get('UN5_FIXTURE_LOGIN'), lambda: stop_requested(args)):
+                return 0
+        except (AccountError, ValueError, KeyError, OSError) as error:
+            print(f'No se pudo coordinar el cruce por ZeroTier: {error}', flush=True)
+            return 1
     tag = state_tag(args.state) if args.state else '00' * 8
     apply_config(args, core, tag)
     server = None
@@ -1140,6 +1153,8 @@ def main(argv=None):
         q.add_argument('--delay', type=int, default=0,
                        help='initial input delay in frames (33 ms each), 0 = automatic')
         if name != 'watch':
+            q.add_argument('--tournament-fixture', type=int, nargs=2, metavar=('EVENT', 'FIXTURE'))
+            q.add_argument('--fixture-game', choices=('un5', 'un6'))
             q.add_argument('--auto-delay', action='store_true',
                            help='measure peer RTT before play, using --delay as the compatible fallback')
         q.add_argument('--nick', default='', help='your name on the screen (up to 15 characters, ASCII)')

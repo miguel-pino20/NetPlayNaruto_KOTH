@@ -16,8 +16,9 @@ Elige explicitamente una version compatible con **Pillow 13.0.0**, incluido
 Python 3.15. Las dependencias se
 descargan como paquetes precompilados: no necesitas instalar Visual C++ Build Tools.
 Instala las dependencias de `windows/requirements-run.txt` solo cuando faltan o
-no coinciden con las versiones declaradas. La primera preparacion necesita
-Internet; despues puede abrirse con las dependencias ya disponibles.
+no coinciden con las versiones declaradas. Si la descarga falla, el launcher sigue con los componentes disponibles: puede usar
+Tk para la interfaz y los certificados de Windows para HTTPS. Al abrirlo otra vez,
+volverá a intentar instalar los paquetes pendientes.
 La carpeta `.venv` de Linux no se utiliza ni se copia por Git. Si se encuentra
 un `.venv-win` que no funciona en esa maquina, se conserva como copia de respaldo
 y se crea uno nuevo.

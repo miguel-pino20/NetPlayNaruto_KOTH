@@ -5,7 +5,7 @@ from tkinter import ttk
 import webbrowser
 
 from i18n import tr
-from koth_client import (TOURNAMENT_FORMATS, join_tournament, scheduled_tournaments,
+from koth_client import (TOURNAMENT_FORMATS, assigned_fixture, join_tournament, scheduled_tournaments,
                          site_url, tournament_bracket)
 from launcher_theme import MUTED, PANEL, TEXT, RoundFrame
 
@@ -32,6 +32,8 @@ class TournamentPanel(RoundFrame):
         self.generation = 0
         self.joining = False
         self.confirmed = {}
+        self.fixture_rows = {}
+        self.checking_fixture = False
         bar = tk.Frame(self.inner, bg=PANEL)
         bar.pack(fill='x')
         tk.Label(bar, text=tr('nav.tournaments'), bg=PANEL, fg=TEXT,
@@ -53,6 +55,44 @@ class TournamentPanel(RoundFrame):
         self.bracket = self.table(('#0', 'p1', 'score', 'p2', 'status'),
                                   ('bracket.round', 'bracket.p1', 'bracket.score', 'bracket.p2', 'koth.state'), 8,
                                   expand=True)
+
+        self.connect = ttk.Button(buttons, text=tr('bracket.connect'), command=self.connect_selected,
+                                  state='disabled')
+        self.connect.pack(side='left')
+        self.bracket.bind('<<TreeviewSelect>>', self.sync_connect)
+
+    def sync_connect(self, _event=None):
+        selected = self.bracket.selection()
+        row = self.fixture_rows.get(selected[0], {}) if selected else {}
+        enabled = (row.get('status') == 'ready' and not self.checking_fixture and not self.app.backend.running
+                   and not self.app._koth_pending and self.app._after_sync is None and self.app._after_allow is None)
+        self.connect.configure(state='normal' if enabled else 'disabled')
+
+    def connect_selected(self):
+        selected = self.bracket.selection()
+        row = self.fixture_rows.get(selected[0]) if selected else None
+        event = self.selected()
+        if not row or row['status'] != 'ready' or not event or self.checking_fixture:
+            return
+        session = self.app.backend.session
+        if not session:
+            self.notice.configure(text=tr('bracket.login'))
+            return
+        url = self.url
+        self.checking_fixture = True
+        self.sync_connect()
+        def checked(fixture, error):
+            self.checking_fixture = False
+            self.sync_connect()
+            if (self.app.section.get() != 'tournaments' or self.selected() != event or self.url != url
+                    or self.app.backend.session != session or self.bracket.selection() != selected
+                    or self.fixture_rows.get(selected[0]) != row):
+                return
+            if error or not fixture:
+                self.notice.configure(text=error or tr('bracket.unassigned'))
+                return
+            self.app.zerotier(fixture=fixture)
+        self.run(lambda: assigned_fixture(url, session, event['id'], row), checked)
 
     def table(self, columns, titles, height, expand=False):
         frame = ttk.Frame(self.inner)
@@ -121,6 +161,8 @@ class TournamentPanel(RoundFrame):
 
     def select(self, _event=None):
         event = self.selected()
+        self.fixture_rows.clear()
+        self.sync_connect()
         self.bracket.delete(*self.bracket.get_children())
         self.web.configure(state='normal' if event else 'disabled')
         enabled = event and event.get('status', 'draft') == 'draft' and not self.joining
@@ -146,9 +188,10 @@ class TournamentPanel(RoundFrame):
                 if group not in groups:
                     title = tr('bracket.stage_round', stage=tr('bracket.' + group[0]), number=group[1])
                     groups[group] = self.bracket.insert('', 'end', text=title, open=True)
-                self.bracket.insert(groups[group], 'end', text=f"#{row['number']}", values=(
+                item = self.bracket.insert(groups[group], 'end', text=f"#{row['number']}", values=(
                     fixture_slot(row, 1), f"{row['p1_wins']} – {row['p2_wins']}", fixture_slot(row, 2),
                     tr('bracket.' + row['status'])))
+                self.fixture_rows[item] = row
             self.notice.configure(text=' '.join(filter(None, (confirmed, '' if groups else tr('bracket.pending')))))
         self.run(lambda: tournament_bracket(url, event['id']), loaded)
 

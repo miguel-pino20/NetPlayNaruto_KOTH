@@ -713,6 +713,7 @@ class Launcher(tk.Tk):
 
     def _set_buttons(self, running):
         self._show_stop()
+        self.tournaments.sync_connect()
         running = running or self._koth_pending
         state = "disabled" if running else "normal"
         for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn, self.hill_btn, self.zerotier_btn):
@@ -850,40 +851,55 @@ class Launcher(tk.Tk):
         scan_job[0] = dialog.after(0, refresh_networks)
         return lambda: address_for(selected_network.get())
 
-    def zerotier(self):
-        if self.backend.running or self._koth_pending or not self._ensure_state_dir() or not self._pick_game():
+    def zerotier(self, *, fixture=None):
+        if self.backend.running or self._koth_pending or self._after_sync or self._after_allow:
+            return
+        if not self._ensure_state_dir() or not self._pick_game():
             return
         dialog = tk.Toplevel(self)
         dialog.title(tr('zt.title'))
         dialog.transient(self)
         dialog.configure(bg=PANEL, padx=20, pady=16)
-        role = tk.StringVar(value=self.casual_role.get())
-        Segmented(dialog, [('host', 'HOST · P1'), ('guest', 'GUEST · P2')], role).pack(fill='x', pady=(0, 8))
+        login = self.backend.session
+        if fixture:
+            role = tk.StringVar(value='host' if fixture['role'] == 'p1' else 'guest')
+            title = tr('bracket.match_role', p1=fixture['p1']['name'], p2=fixture['p2']['name'],
+                       role=fixture['role'].upper())
+            dialog.title(tr('bracket.connect'))
+            ttk.Label(dialog, text=title).pack(fill='x', pady=(0, 8))
+        else:
+            role = tk.StringVar(value=self.casual_role.get())
+            Segmented(dialog, [('host', 'HOST · P1'), ('guest', 'GUEST · P2')], role).pack(fill='x', pady=(0, 8))
         local_address = tk.StringVar()
         get_address = self._zerotier_picker(dialog, self.v['zerotier_address'].get(), local_address)
-        host_label = tk.Label(dialog, bg=PANEL, fg=TEXT)
-        host_label.pack(anchor='w', pady=(12, 3))
         host = tk.StringVar(value=self.v['zerotier_host'].get())
-        entry = ttk.Entry(dialog, textvariable=host, width=65)
-        entry.pack(fill='x')
-        def sync_role(*_):
-            joining = role.get() == 'guest'
-            host_label.configure(text=tr('zt.host_ip' if joining else 'zt.share_ip'))
-            entry.configure(textvariable=host if joining else local_address,
-                            state='normal' if joining else 'readonly')
-        role.trace_add('write', sync_role)
-        sync_role()
-        tk.Label(dialog, text=tr('zt.note'), bg=PANEL, fg=MUTED, wraplength=480,
-                 justify='left').pack(pady=12)
+        if fixture:
+            tk.Label(dialog, text=tr('bracket.zt_wait'), bg=PANEL, fg=MUTED, wraplength=480).pack(pady=12)
+        else:
+            host_label = tk.Label(dialog, bg=PANEL, fg=TEXT)
+            host_label.pack(anchor='w', pady=(12, 3))
+            entry = ttk.Entry(dialog, textvariable=host, width=65)
+            entry.pack(fill='x')
+            def sync_role(*_):
+                joining = role.get() == 'guest'
+                host_label.configure(text=tr('zt.host_ip' if joining else 'zt.share_ip'))
+                entry.configure(textvariable=host if joining else local_address,
+                                state='normal' if joining else 'readonly')
+            role.trace_add('write', sync_role)
+            sync_role()
+            tk.Label(dialog, text=tr('zt.note'), bg=PANEL, fg=MUTED, wraplength=480,
+                     justify='left').pack(pady=12)
         def begin():
             cfg = {**self.cfg(), 'transport': 'zerotier', 'zerotier_address': get_address(),
                    'zerotier_host': host.get().strip(), 'zerotier_role': role.get()}
+            if fixture:
+                cfg.update(fixture=fixture, game=self.game, hill_url=self.tournaments.url)
             # Validate before starting the asynchronous state download.
             try:
                 core.zerotier_args(cfg, role.get())
             except ValueError as error:
                 return messagebox.showerror(tr('zt.title'), str(error), parent=dialog)
-            for key in ('zerotier_address', 'zerotier_host', 'zerotier_role'):
+            for key in (('zerotier_address',) if fixture else ('zerotier_address', 'zerotier_host', 'zerotier_role')):
                 self.v[key].set(cfg[key])
             core.save_config(self.raw())
             dialog.destroy()
@@ -894,8 +910,15 @@ class Launcher(tk.Tk):
                     self._set_buttons(False)
                     self._set_status('READY', MUTED)
                     return messagebox.showerror(tr('zt.title'), str(error))
-                if cfg['zerotier_role'] == 'host':
+                if not fixture and cfg['zerotier_role'] == 'host':
                     self._log(tr('zt.share', ip=cfg['zerotier_address'], port=core.HOST_PORT), 'info')
+                if fixture:
+                    if self.backend.session != login:
+                        self._log(tr('bracket.login'), 'error')
+                        self._set_status('READY', MUTED)
+                        return
+                    self._spawn(args, title, session_env={'UN5_FIXTURE_LOGIN': login})
+                    return
                 session = self.backend.session
                 self._spawn(args, tr('zt.title'), session_env={'UN5_SCOREBOARD_SESSION': session} if session else None)
             self._after_sync = launch
