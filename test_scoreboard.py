@@ -280,6 +280,75 @@ class SinkTests(unittest.TestCase):
         self.assertEqual({k: v for k, v in body.items() if k != 'timestamp'}, expected)
         self.assertEqual(sorted(body), sorted(list(expected) + ['timestamp']))
 
+    def test_tournament_detects_guest_win_and_only_host_reports(self):
+        from unittest.mock import Mock
+        ram = FakeUn6()
+        pine = Mock(game_id=lambda: 'SLUS-55606', game_crc=lambda: '688C83D6', read=ram.read)
+        args = argparse.Namespace(tournament_fixture=(1, 2), session_epoch='a'*32, api_url='https://site.test',
+                                  fixture_result_grant={'session': 'b'*32, 'ticket': 'signed',
+                                                        'series': {'p1_wins': 0, 'p2_wins': 0}})
+        response = {'session': 'b'*32, 'status': 'recorded',
+                    'series': {'status': 'ready', 'p1_wins': 0, 'p2_wins': 1}}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(sb.appdata, 'DATA_DIR', Path(tmp)), \
+                patch('scoreboard.load_config', return_value=cfg(enabled=False, outputs={'file': {'enabled': False}})), \
+                patch('discord_auth.api_call', return_value=response) as post:
+            grant = args.fixture_result_grant
+            for host in (False, True):
+                args.fixture_result_grant = grant if host else None
+                service = sb.start_for_session(args, pine, host, log=lambda line: None)
+                service.board.record('p1', 'manual')
+                for second, state in enumerate([(15, 1, 1), (15, 0, 1), (17,), (19,), (20,)]):
+                    ram.set(*state)
+                    service.detector.tick(now=second)
+                service.close()
+                self.assertEqual(post.call_count, int(host))
+            self.assertEqual(post.call_args.args[3]['winner'], 'p2')
+            self.assertEqual(post.call_args.args[3]['match_number'], 1)
+            self.assertEqual(post.call_args.args[3]['session'], 'b'*32)
+            self.assertEqual(post.call_args.kwargs['token'], 'signed')
+            self.assertFalse(list(Path(tmp).rglob('*-*.json')))
+
+    def test_both_fixture_detectors_report_same_p2_victory_with_separate_tickets(self):
+        from unittest.mock import Mock
+        keys = []
+        with tempfile.TemporaryDirectory() as tmp, patch.object(sb.appdata, 'DATA_DIR', Path(tmp)), \
+                patch('scoreboard.load_config', return_value=cfg(enabled=False, outputs={'file': {'enabled': False}})):
+            for role in ('host', 'guest'):
+                args = argparse.Namespace(cmd=role, tournament_fixture=(1, 2), session_epoch='c'*32,
+                    api_url='https://site.test', fixture_result_grant={'session': 'd'*32, 'ticket': role,
+                        'epoch_proof': 'signed', 'series': {'p1_wins': 0, 'p2_wins': 0}})
+                ram = FakeUn6()
+                pine = Mock(game_id=lambda: 'SLUS-55606', game_crc=lambda: '688C83D6', read=ram.read)
+                reply = {'status': 'recorded', 'session': 'd'*32,
+                         'series': {'status': 'ready', 'p1_wins': 0, 'p2_wins': 1}}
+                with patch('discord_auth.api_call', return_value=reply) as post:
+                    service = sb.start_for_session(args, pine, role == 'host', log=lambda _: None)
+                    for second, state in enumerate([(15, 1, 1), (15, 0, 1), (17,), (19,)]):
+                        ram.set(*state)
+                        service.detector.tick(now=second)
+                    service.close()
+                    post.assert_called_once()
+                    body = post.call_args.args[3]
+                    self.assertEqual(body['winner'], 'p2')
+                    self.assertEqual(post.call_args.kwargs['token'], role)
+                    keys.append(body['idempotency_key'])
+        self.assertEqual(keys, ['c'*32 + '-1']*2)
+
+    def test_dual_fixture_keys_identify_the_fight_even_if_first_report_was_missed(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(sb.appdata, 'DATA_DIR', Path(temp)):
+            bodies = []
+            for role, detected in [('host', [1, 2]), ('guest', [2])]:
+                args = argparse.Namespace(cmd=role, api_url='https://test', session_epoch='a'*32,
+                    fixture_result_grant={'session': 'b'*32, 'ticket': role, 'epoch_proof': 'signed',
+                                          'series': {'p1_wins': 0, 'p2_wins': 0}})
+                sink = sb.FixtureResults(args, print)
+                board = sb.Scoreboard(cfg())
+                for number in detected:
+                    sink.record(board.record('p2', 'memoria', fight_number=number))
+                bodies.append(json.loads(sorted(sink.directory.glob('*.json'))[-1].read_text()))
+            self.assertEqual(bodies[0]['idempotency_key'], bodies[1]['idempotency_key'])
+            self.assertEqual(bodies[1]['match_number'], 2)
+
     def test_koth_only_submits_first_detected_victory_and_retries_same_payload(self):
         from discord_auth import AccountError
         from hill import submit_pending_result

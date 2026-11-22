@@ -857,11 +857,14 @@ def play_connected(args, is_host, server_mode, pine, core):
         print('the game is not frozen at frame 0 of an armed match. Load the match state (made with "prepare") first.')
         return 1
     if getattr(args, 'tournament_fixture', None):
-        from koth_client import wait_fixture
+        from koth_client import fixture_result_grant, wait_fixture
         from discord_auth import AccountError
         try:
-            if not wait_fixture(args, is_host, os.environ.get('UN5_FIXTURE_LOGIN'), lambda: stop_requested(args)):
+            login = os.environ.get('UN5_FIXTURE_LOGIN')
+            if not wait_fixture(args, is_host, login, lambda: stop_requested(args)):
                 return 0
+            if is_host and not args.fixture_result_grant:
+                args.fixture_result_grant = fixture_result_grant(args, login)
         except (AccountError, ValueError, KeyError, OSError) as error:
             print(f'No se pudo coordinar el cruce por ZeroTier: {error}', flush=True)
             return 1

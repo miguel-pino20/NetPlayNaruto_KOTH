@@ -464,10 +464,16 @@ class Dispatcher:
                 except Exception as error:
                     self.log(f'Placar: registro de sala pendiente ({describe_error(error)}).')
         waiting = [s for s in self.sinks if isinstance(s, DjangoSink) and s.node]
+        fixtures = [s for s in self.sinks if isinstance(s, FixtureResults)]
         while True:
             try:
-                event = self.q.get(timeout=3 if waiting else None)
+                event = self.q.get(timeout=3 if waiting or fixtures else None)
             except queue.Empty:
+                for sink in fixtures:
+                    try:
+                        sink.flush()
+                    except (OSError, ValueError) as error:
+                        self.log(f'Torneo: error al leer el resultado pendiente ({error}).')
                 for sink in waiting.copy():
                     try:
                         if sink.refresh_players():
@@ -491,6 +497,81 @@ class Dispatcher:
     def close(self, wait=3.0):
         self.q.put(None)
         self.thread.join(wait)
+
+
+class FixtureResults:
+    """Journal local detections and send them with the shared fight identity."""
+    label = 'torneo'
+
+    def __init__(self, args, log):
+        self.url = args.api_url.rstrip('/')
+        grant = args.fixture_result_grant
+        self.session, self.ticket = grant['session'], grant['ticket']
+        self.epoch_proof = grant.get('epoch_proof')
+        self.epoch = args.session_epoch
+        self.log = log
+        scope = hashlib.sha256(f'{self.url}:{self.session}'.encode()).hexdigest()
+        self.directory = appdata.DATA_DIR / 'fixture-results' / scope
+        if getattr(args, 'cmd', '') == 'guest':
+            self.directory = self.directory / 'p2'
+        self.directory.mkdir(parents=True, exist_ok=True)
+        series = grant['series']
+        self.number = max([series['p1_wins'] + series['p2_wins']] +
+                          [int(p.name.split('-')[0]) for p in self.directory.glob('[0-9]*-*.json')])
+        self.finished = False
+        self.last_error = None
+
+    def record(self, event):
+        entry = event.get('entry') or {}
+        if (self.finished or entry.get('source') != 'memoria' or event['event'] != 'result'
+                or entry.get('winner') not in ('p1', 'p2')):
+            return
+        number = entry.get('fight_number') if self.epoch_proof else self.number + 1
+        if not number:
+            self.log('Torneo: falta el número de pelea del detector.')
+            return
+        key = f'{self.epoch}-{number}'
+        body = {'event': 'result', 'source': 'memoria', 'winner': entry['winner'], 'session': self.session,
+                'match_number': number, 'idempotency_key': key, 'timestamp': entry['ts']}
+        if self.epoch_proof:
+            body['epoch_proof'] = self.epoch_proof
+        if entry.get('chars'):
+            body['characters'] = entry['chars']
+        try:
+            appdata.write_json(self.directory / f'{number:09d}-{key}.json', body, private=True)
+        except OSError as error:
+            self.log(f'Torneo: no se pudo guardar la victoria localmente ({error}).')
+            return
+        self.number = number
+
+    def flush(self):
+        from discord_auth import AccountError, api_call
+        for path in sorted(self.directory.glob('[0-9]*-*.json')):
+            body = json.loads(path.read_text(encoding='utf-8'))
+            try:
+                reply = api_call(self.url, 'POST', '/api/netplay/result/', body, token=self.ticket,
+                                 extra_headers={'Idempotency-Key': body['idempotency_key']},
+                                 timeout=5, follow_redirects=False)
+                series = reply['series']
+                if reply.get('status') != 'recorded' or reply.get('session') != self.session:
+                    raise ValueError('respuesta sin confirmación del cruce')
+            except (AccountError, KeyError, ValueError) as error:
+                if getattr(error, 'code', None) == 409 and body.get('epoch_proof'):
+                    self.log(f'Torneo: Django rechazó el resultado ({error}). Guardado para revisión.')
+                    path.replace(path.with_suffix('.conflict'))
+                    continue
+                if str(error) != self.last_error:
+                    self.log(f'Torneo: resultado pendiente de confirmación ({error}).')
+                    self.last_error = str(error)
+                return
+            self.last_error = None
+            self.finished = series['status'] == 'finished'
+            path.unlink(missing_ok=True)
+            self.log(f"Torneo: victoria de {body['winner'].upper()} confirmada. "
+                     f"Marcador oficial {series['p1_wins']}–{series['p2_wins']}.")
+
+    def send(self, event):
+        self.flush()
 
 
 class FileSink:
@@ -806,7 +887,7 @@ def profile_config(cfg, serial, crc=''):
     return cfg
 
 
-def build(cfg, read=None, is_host=True, session='', log=print, state_path=None, serial='', crc='', registration=None, node=None, host_secret=None):
+def build(cfg, read=None, is_host=True, session='', log=print, state_path=None, serial='', crc='', registration=None, node=None, host_secret=None, fixture_sink=None):
     """Monta o servico a partir da configuracao. Devolve None se estiver desligado."""
     if not cfg.get('enabled'):
         return None
@@ -830,10 +911,13 @@ def build(cfg, read=None, is_host=True, session='', log=print, state_path=None, 
     add('webhook', lambda s: WebhookSink(s, board), external=True)
     if is_host or node:
         add('django', lambda spec: DjangoSink(spec, board, session, registration, node, host_secret))
+    if fixture_sink:
+        sinks.insert(0, fixture_sink)
+        board.listeners.append(fixture_sink.record)
     dispatcher = Dispatcher(sinks, log)
     board.listeners.append(dispatcher.push)
     def record(who, chars=None):
-        number = None
+        number = detector.fight_number if fixture_sink and fixture_sink.epoch_proof else None
         if node:
             number = detector.fight_number
             if not is_host and (not node.score_secret or node.score_round != number):
@@ -924,8 +1008,10 @@ def start_for_session(args, pine, is_host, log=print, room='', online=False, nod
         cfg = online_config(load_config(getattr(args, 'scoreboard_config', None)),
                             casual and (online or zerotier))
         report_path = os.environ.get('UN5_KOTH_RESULT_FILE') if not casual else None
+        fixture = getattr(args, 'tournament_fixture', None)
+        fixture_sink = FixtureResults(args, log) if fixture and getattr(args, 'fixture_result_grant', None) else None
         if not casual:
-            cfg = merge(cfg, {'enabled': bool(report_path or cfg['enabled']),
+            cfg = merge(cfg, {'enabled': bool(fixture or report_path or cfg['enabled']),
                               'outputs': {'django': {'enabled': False}}})
         serial = crc = ''
         try:
@@ -953,7 +1039,7 @@ def start_for_session(args, pine, is_host, log=print, room='', online=False, nod
         log(f'Placar: juego {serial} {crc}, {"host" if is_host else "guest"}, partida {session or "?"}, '
             f'{"online" if online else "directa"}, activo={bool(cfg.get("enabled"))}.')
         service = build(cfg, lambda addr, size: pine.read(addr, size), is_host, session, log, serial=serial, crc=crc, registration=registration,
-                        node=score_node, host_secret=host_secret)
+                        node=score_node, host_secret=host_secret, fixture_sink=fixture_sink)
         if service and report_path:
             service.board.players = json.loads(os.environ.get('UN5_KOTH_PLAYERS') or '{}')
             service.board.listeners.append(koth_reporter(Path(report_path), session))

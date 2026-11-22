@@ -109,6 +109,18 @@ def assigned_fixture(url, session, event_id):
                  if fixture['event_id'] == event_id and fixture['role'] in ('p1', 'p2') and fixture['session']), None)
 
 
+def fixture_result_grant(args, login):
+    event, fixture = args.tournament_fixture
+    url = site_url(args.api_url)
+    if urlsplit(url).scheme != 'https' or not login:
+        raise AccountError('El marcador del torneo requiere una sesión verificada por HTTPS.')
+    grant = api_call(url, 'POST', f'/api/netplay/events/{event}/fixtures/{fixture}/result-ticket/', {},
+                     extra_headers={'X-Netplay-Session': login}, follow_redirects=False)
+    if grant.get('fixture_id') != fixture or not grant.get('ticket') or not grant.get('session'):
+        raise AccountError('Django no confirmó el permiso de marcador para este cruce.')
+    return grant
+
+
 def wait_fixture(args, is_host, login, stopped):
     import ipaddress
     import time
@@ -119,7 +131,7 @@ def wait_fixture(args, is_host, login, stopped):
     event, fixture = args.tournament_fixture
     path = f'/api/netplay/events/{event}/fixtures/{fixture}/sync/'
     body = {'address': args.bind_address, 'game': args.fixture_game, 'state_tag': file_tag(args.state),
-            'symbols_tag': file_tag(args.symbols), 'attempt': uuid4().hex, 'peer_attempt': ''}
+            'symbols_tag': file_tag(args.symbols), 'attempt': uuid4().hex, 'peer_attempt': '', 'dual_report': True}
     print('ZeroTier: esperando al otro jugador del cruce…', flush=True)
     while not stopped():
         try:
@@ -136,6 +148,7 @@ def wait_fixture(args, is_host, login, stopped):
             if result['ready']:
                 peer = str(ipaddress.IPv4Address(result['address']))
                 args.session_epoch = result['session_epoch']
+                args.fixture_result_grant = result.get('result_grant')
                 if is_host:
                     args.expect_guest_ip = peer
                 else:

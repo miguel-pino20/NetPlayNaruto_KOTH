@@ -30,6 +30,8 @@ class TournamentPanel(RoundFrame):
         self.events = {}
         self.url = ''
         self.generation = 0
+        self.bracket_request = 0
+        self.poll_bracket = None
         self.joining = False
         self.confirmed = {}
         self.checking_fixture = False
@@ -164,6 +166,11 @@ class TournamentPanel(RoundFrame):
         self.run(lambda: scheduled_tournaments(url, all_statuses=True), loaded)
 
     def select(self, _event=None):
+        self.bracket_request += 1
+        request = self.bracket_request
+        if self.poll_bracket:
+            self.after_cancel(self.poll_bracket)
+            self.poll_bracket = None
         event = self.selected()
         self.sync_connect()
         self.bracket.delete(*self.bracket.get_children())
@@ -178,24 +185,43 @@ class TournamentPanel(RoundFrame):
         participant = self.confirmed.get(key)
         confirmed = tr('tourney.confirmed', name=event['name'], id=participant) if participant else ''
         self.notice.configure(text=confirmed or tr('koth.loading'))
+        def current():
+            return (request == self.bracket_request and generation == self.generation and self.selected() == event
+                    and self.app.section.get() == 'tournaments')
+
+        def fetch():
+            self.poll_bracket = None
+            if current():
+                self.run(lambda: tournament_bracket(url, event['id']), loaded)
+
         def loaded(data, error):
-            if generation != self.generation or self.selected() != event:
+            if not current():
                 return
-            self.bracket.delete(*self.bracket.get_children())
+            status = event.get('status')
             if error:
                 self.notice.configure(text=' '.join(filter(None, (confirmed, error))))
-                return
-            groups = {}
-            for row in data['fixtures']:
-                group = row['stage'], row['round_number']
-                if group not in groups:
-                    title = tr('bracket.stage_round', stage=tr('bracket.' + group[0]), number=group[1])
-                    groups[group] = self.bracket.insert('', 'end', text=title, open=True)
-                self.bracket.insert(groups[group], 'end', text=f"#{row['number']}", values=(
-                    fixture_slot(row, 1), f"{row['p1_wins']} – {row['p2_wins']}", fixture_slot(row, 2),
-                    tr('bracket.' + row['status'])))
-            self.notice.configure(text=' '.join(filter(None, (confirmed, '' if groups else tr('bracket.pending')))))
-        self.run(lambda: tournament_bracket(url, event['id']), loaded)
+            else:
+                status = data.get('status', status)
+                for row in data['fixtures']:
+                    group = f"{row['stage']}-{row['round_number']}"
+                    if not self.bracket.exists(group):
+                        title = tr('bracket.stage_round', stage=tr('bracket.' + row['stage']), number=row['round_number'])
+                        self.bracket.insert('', 'end', iid=group, text=title, open=True)
+                    key = str(row['number'])
+                    values = (fixture_slot(row, 1), f"{row['p1_wins']} – {row['p2_wins']}", fixture_slot(row, 2),
+                              tr('bracket.' + row['status']))
+                    if self.bracket.exists(key):
+                        self.bracket.item(key, values=values)
+                    else:
+                        self.bracket.insert(group, 'end', iid=key, text=f"#{key}", values=values)
+                if status != event.get('status', 'draft'):
+                    self.refresh()
+                    return
+                if self.notice.cget('text') == tr('koth.loading') or not self.notice.cget('text'):
+                    self.notice.configure(text=' '.join(filter(None, (confirmed, '' if data['fixtures'] else tr('bracket.pending')))))
+            if status == 'running':
+                self.poll_bracket = self.after(5000, fetch)
+        fetch()
 
     def enroll(self):
         event = self.selected()
