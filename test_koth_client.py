@@ -21,6 +21,25 @@ class KothClientTests(unittest.TestCase):
         self.url = 'https://events.example.test'
         self.event = {'id': 2, 'version': 4}
 
+    def test_scheduled_registration_uses_official_endpoint_and_verified_session(self):
+        from koth_client import TOURNAMENT_FORMATS, scheduled_tournaments, join_tournament, tournament_label
+        events = [dict(id=n, name='Copa', format=kind, enrolled=2, max_participants=8, event_date=None)
+                  for n, kind in enumerate(TOURNAMENT_FORMATS, 1)]
+        with patch('koth_client.api_call', return_value={'events': events}) as api:
+            self.assertEqual(scheduled_tournaments(self.url), events)
+            api.assert_called_once_with(self.url, 'GET', '/api/netplay/tournaments/', timeout=8)
+            api.return_value = {'participant_id': 17}
+            for event in events:
+                self.assertIn('2/8', tournament_label(event))
+                self.assertEqual(join_tournament(self.url, 'session', event['id']), 17)
+                api.assert_called_with(self.url, 'POST', f"/api/netplay/tournaments/{event['id']}/join/", {},
+                                       timeout=12, extra_headers={'X-Netplay-Session': 'session'}, follow_redirects=False)
+            api.reset_mock()
+            for url, session in ((self.url, ''), ('http://example.test', 'session')):
+                with self.assertRaises(AccountError):
+                    join_tournament(url, session, 1)
+            api.assert_not_called()
+
     def test_membership_survives_restart_and_is_scoped_to_site_and_event(self):
         first = self.store.member(self.url, 2)
         self.assertEqual(MembershipStore(self.path).member(self.url, 2), first)

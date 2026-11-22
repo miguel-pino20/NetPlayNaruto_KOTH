@@ -25,12 +25,10 @@ How a match starts (the game is frozen by the in-game filter, so nobody runs ahe
   python netplay.py stop      gives the real pads back (also unfreezes a game that is stuck in the stall).
 
   INPUT DELAY (--delay N, default 0 = automatic):
-     The delay is part of the session id, so both PCs must agree on it BEFORE they talk. Automatic mode:
-       - host, online (--server): measures the ping to the server (best of 3) and picks the delay that hides the
-         estimated host<->guest round trip (2 x that ping), between 2 and 10 frames. It is published in the room.
-       - guest, online: always uses the delay of the room it joins.
-       - LAN / VPN (--connect, no server): nothing to measure beforehand, so 3 frames.
-     Give --delay N (N >= 1) on the host to force a value; on a LAN / VPN the guest must give the same N.
+     Before the game starts, compatible peers measure the host-to-guest round trip on the game path.
+     The host picks 2..10 frames from the usual high ping and keeps that value for the session.
+     Older peers use the initial room delay. A positive --delay forces a fixed delay unless
+     --auto-delay is also set. For direct connections both peers need the same initial delay.
 
   RNG + selection sync (same on both PCs; the defaults are what you want):
      --rng-mode N       0 off, 1 reseed the game's RNG at the first live frame of every scene, 2 (default) = 1 + at
@@ -821,6 +819,7 @@ def cmd_play(args, is_host):
     if getattr(args, 'relay_only', False) and not server_mode:
         print('--relay-only necesita --server: no se iniciará una pelea por conexión directa.')
         return 1
+    args.auto_delay = getattr(args, 'auto_delay', False) or args.delay <= 0
     if args.delay <= 0 and not server_mode:
         args.delay = LAN_DELAY                         # LAN / VPN: nothing to measure before connecting
     if not is_host and not server_mode and not args.connect:
@@ -890,6 +889,7 @@ def play_connected(args, is_host, server_mode, pine, core):
         if str(getattr(args, 'session_epoch', '0')) != '0':
             node.peers[1].strict = True
         print(f'guest: connecting to {args.connect} (delay {args.delay} frames, state tag {tag}) ...')
+    node.calibrate_delay = not is_host or getattr(args, 'auto_delay', False)
     if is_host and getattr(args, 'ignore_desync', False):
         node.desync_stop = False
         print('--ignore-desync: hash mismatches are only printed, the match keeps going.')
@@ -1060,12 +1060,12 @@ def play_connected(args, is_host, server_mode, pine, core):
                     # seen = 1: the filter has seen the fighters alive, so the scene barrier is armed (new code runs).
                     print(f"frame={h['frame']:7d}  {fps:4.1f}/s  rtt={rtt if rtt is None else round(rtt)}ms  "
                           f"stalls={h['stalls']}  status={h['status']}  abort={h['abort']}  "
-                          f"idle={h['idle']} seen={h['live_state'] & 1}")
-                    if rtt is not None and node_mod.delay_for_rtt(rtt) > args.delay:
+                          f"idle={h['idle']} seen={h['live_state'] & 1}  delay={node.delay}")
+                    if rtt is not None and node_mod.delay_for_rtt(rtt) > node.delay:
                         need = node_mod.delay_for_rtt(rtt)
                         if need != warned_need:
                             warned_need = need
-                            print(f'    (the connection would need delay {need}; you use {args.delay})')
+                            print(f'    (the connection would need delay {need}; you use {node.delay})')
                     last_frame = h['frame']
                     if h['abort']:
                         print('the game gave up waiting for inputs (stall timeout).')
@@ -1116,6 +1116,7 @@ def main(argv=None):
     hill.add_argument('--load-slot', type=int, default=9)
     hill.add_argument('--port', type=int, choices=range(1024, 65534), default=47400, metavar='PORT')
     hill.add_argument('--delay', type=int, choices=(0, *range(2, 11)), default=3)
+    hill.add_argument('--auto-delay', action='store_true')
     hill.add_argument('--nick', default='')
     hill.add_argument('--transport', choices=('zerotier',), default='zerotier')
     hill.add_argument('--personal-code', action='store_true', help='use the tournament registration as the player identity')
@@ -1137,8 +1138,10 @@ def main(argv=None):
         q = sub.add_parser(name)
         q.add_argument('--state', help='the match state file (both PCs: identical bytes); makes the session id')
         q.add_argument('--delay', type=int, default=0,
-                       help='frames of input delay (33 ms each). 0 = automatic (default): the host picks it from its '
-                            'ping to the server, the online guest uses the room\'s, LAN / VPN uses 3')
+                       help='initial input delay in frames (33 ms each), 0 = automatic')
+        if name != 'watch':
+            q.add_argument('--auto-delay', action='store_true',
+                           help='measure peer RTT before play, using --delay as the compatible fallback')
         q.add_argument('--nick', default='', help='your name on the screen (up to 15 characters, ASCII)')
         q.add_argument('--session-epoch', default='0', help='unique match identity shared by both PCs')
         q.add_argument('--state-dir', default=None, help="PCSX2's save-state folder (needed with --load-slot)")

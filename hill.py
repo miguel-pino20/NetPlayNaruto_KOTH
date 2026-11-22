@@ -92,7 +92,9 @@ def match_command(args, snapshot, stop_file):
     command = [sys.executable, '-u', str(Path(__file__).with_name('netplay.py')),
                '--symbols', args.symbols, '--pine-slot', str(args.pine_slot), '--stop-file', str(stop_file),
                role, '--state', args.state, '--state-dir', args.state_dir, '--load-slot', str(args.load_slot),
-               '--delay', str(args.delay if role == 'host' else host['delay']), '--nick', round_nick(snapshot, args.nick)]
+               '--delay', str((args.delay or 3) if role == 'host' else host['delay']), '--nick', round_nick(snapshot, args.nick)]
+    if role == 'host' and (getattr(args, 'auto_delay', False) or not args.delay):
+        command.append('--auto-delay')
     if snapshot.get('session_epoch') or snapshot.get('round_id'):
         command += ['--session-epoch', str(snapshot.get('session_epoch') or snapshot['round_id'])]
     if args.stop_file:

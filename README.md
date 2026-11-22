@@ -66,15 +66,21 @@ red ZeroTier y tener PCSX2 abierto con el juego y PINE habilitado.
    **Host's ZeroTier IPv4**. Después pulsa **START ZEROTIER**.
 
 El launcher comprueba y descarga el estado y los símbolos del servidor habitual
-antes de iniciar. La pelea conecta directamente por ZeroTier con delay 3;
+antes de iniciar. La pelea conecta directamente por ZeroTier con delay automático:
 no necesita un torneo, código KOTH ni sala del servidor principal. Permite UDP
 47400 en el firewall del host. La conexión se enlaza a la IP local seleccionada.
 Estas partidas no aparecen en la lista de salas online. **STOP** termina la sesión.
 
+En el launcher de escritorio, **Casual** reúne los roles P1 y P2 y las dos conexiones,
+Netplay y ZeroTier. **KOTH** incluye el acceso por código personal. En **Tournaments**
+puedes consultar los torneos oficiales, inscribirte con Discord y revisar los cruces
+por ronda. Las llaves se generan cuando el organizador inicia el torneo. Usa
+**Refresh** para consultar resultados nuevos o **Tournament page** para abrir la vista pública.
+
 ## Rey de la colina con Django y ZeroTier
 
 Django coordina los turnos. Las peleas de KOTH conectan directamente por ZeroTier,
-con 3 frames de delay. Los participantes en espera también pueden observar por
+con delay automático. Los participantes en espera también pueden observar por
 ZeroTier en su propio PCSX2. HOST/GUEST fuera de KOTH conserva el servidor principal.
 
 La URL pública de Django es `https://narutimateonline.servegame.com/`.
@@ -191,8 +197,9 @@ python netplay.py --symbols /ruta/symbols.json hill \
   --state /ruta/match.p2s --state-dir /ruta/PCSX2/sstates --load-slot 9
 ```
 
-El launcher y KOTH usan **3 frames** de input delay. Ambos jugadores siguen el
-valor publicado por el host. Desde terminal puedes indicar `--delay 0` para
+El launcher y KOTH miden el ping entre jugadores antes de cada partida. El host
+elige entre 2 y 10 frames y ambos mantienen ese valor durante la sesión. Con una
+versión anterior se conserva el delay inicial de la sala. Desde terminal puedes indicar `--delay 0` para
 calcularlo por el ping, o elegir 2–10 frames manualmente.
 KOTH usa ZeroTier. `--api-url` es la URL de Django.
 `--no-spectators` permite comparar el comportamiento sin transmisión de espectadores.
@@ -218,7 +225,7 @@ Desktop launcher (Python/Tkinter) for **UN5 Netplay**, a 2-player lockstep onlin
 
 - **Discord login:** your name and avatar show up in the room list and in the game.
 - **Room list** with host and guest avatars, match phase (`SELECTING` / `IN FIGHT`), real ping, and match time.
-- **Fixed input delay:** the launcher uses 3 frames; the guest uses the room's value.
+- **Automatic input delay:** the players measure the connection before the match and use the same delay throughout.
 - **Match state sync:** the default save state and `symbols.json` are downloaded from the server when yours differ.
 - **Owner-only PREPARE:** the room owner prepares the match state, which is then published to the server automatically.
 - **Extra tools:** load the match state into PCSX2, solo test, PINE test, and release game.
@@ -277,7 +284,7 @@ Launcher desktop (Python/Tkinter) do **UN5 Netplay**, um modo online lockstep pa
 
 - **Login com Discord:** seu nome e avatar aparecem na lista de salas e dentro do jogo.
 - **Lista de salas** com avatar do host e do guest, fase da partida (`SELECTING` / `IN FIGHT`), ping real e tempo de partida.
-- **Input delay fixo:** o launcher usa 3 frames; o guest usa o valor definido pelo host.
+- **Delay automático:** os jogadores medem a conexão antes da partida e usam o mesmo delay até o final.
 - **Sincronização do estado da partida:** o save state padrão e o `symbols.json` são baixados do servidor quando os arquivos locais são diferentes.
 - **PREPARE exclusivo do dono:** o dono da sala prepara o estado da partida, que é publicado automaticamente no servidor.
 - **Ferramentas extras:** carregar o estado da partida no PCSX2, teste solo, teste do PINE e liberar o jogo.

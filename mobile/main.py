@@ -164,6 +164,7 @@ class MobileApp(App):
 
         koth = self.page(tabs, 'KOTH')
         self.field(koth, 'koth_url', 'Servidor KOTH (HTTPS)', 'https://narutimateonline.servegame.com')
+        self.button(koth, 'Inscripción a torneos', self.open_tournaments)
         self.button(koth, 'Actualizar eventos', self.list_events)
         self.koth_create = self.button(koth, 'Crear evento casual', self.create_casual)
         self.koth_owner_scope = None
@@ -432,6 +433,36 @@ class MobileApp(App):
         else:
             self.koth_join.disabled = False
             self.set_text(self.koth_info, 'Si tu IP de ZeroTier registrada cambia, perderás hasta 1 punto.')
+
+    def open_tournaments(self):
+        from koth_client import scheduled_tournaments, join_tournament, tournament_label
+        source = self.inputs['koth_url'].text.strip()
+        def show(events):
+            if source != self.inputs['koth_url'].text.strip():
+                return
+            if not events:
+                self.say('No hay torneos con inscripción abierta.')
+                return
+            scroll = ScrollView()
+            items = BoxLayout(orientation='vertical', spacing=dp(8), size_hint_y=None)
+            items.bind(minimum_height=items.setter('height'))
+            scroll.add_widget(items)
+            popup = Popup(title=tr('Inscripción a torneos'), content=scroll, size_hint=(0.94, 0.8))
+            def enroll(event):
+                popup.dismiss()
+                session = self.account.session if self.discord_verified else None
+                if not session:
+                    self.say('Inicia sesión con Discord para inscribirte.')
+                    return
+                self.run_job(lambda: join_tournament(source, session, event['id']),
+                             lambda participant: self.say('Inscripción confirmada en {name} (#{id}).',
+                                                          name=event['name'], id=participant))
+            for event in events:
+                text = tr('Inscribirme en {event}', event=tournament_label(event))
+                self.button(items, text, lambda event=event: enroll(event))
+            self.button(items, 'Cancelar', popup.dismiss)
+            popup.open()
+        self.run_job(lambda: scheduled_tournaments(source), show)
 
     def list_events(self):
         try:

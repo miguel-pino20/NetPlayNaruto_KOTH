@@ -103,6 +103,12 @@ class Node:
         self.core, self.member, self.slot, self.active = core, member, slot, list(active)
         self.roster_locked, self.generic = roster_locked, generic
         self.delay, self.tag, self.name, self.loss = delay, tag, name, loss
+        self.session_delay = delay
+        self.calibrate_delay = False
+        self.delay_chosen = None
+        self.probe_started = None
+        self.probe_times = set()
+        self.delay_samples = []
         self.session = wire.session_id(tag, delay, epoch)
         self.is_host = host is None
         self.score_challenge = None
@@ -125,16 +131,8 @@ class Node:
             self.peers[1].cands = [tuple(c) for c in (cands or [])]
             self.peers[1].strict = relay is not None
         self.expect = (len(self.active) - 1) if expect is None and self.is_host else (1 if expect is None else expect)
-        self.known = {s: {f: NEUTRAL for f in range(delay)} for s in self.active}
-        self.need = {s: delay for s in self.active}          # next frame not yet known (contiguous)
-        self.published = {s: 0 for s in self.active}
         self.first_capture = first_capture
-        self.cap_next = first_capture
-        for f in range(first_capture):                     # their captures are ignored (stale after a loaded state):
-            if self.slot is not None:                      # those frames enter as the neutral pad
-                self.known[self.slot][f + delay] = NEUTRAL
-        if self.slot is not None:
-            self._advance(self.slot)
+        self._init_input_frames(delay)
         self.started = False
         self.hash_local_next = 0
         self.reports = {}                                    # host: {member: {frame: hash}}
@@ -146,7 +144,6 @@ class Node:
         self.soft_log = []                                   # mismatches where one PC had no player objects
         self.shift_log = []                                  # [(frame, k)]  k: host(f+k) == guest(f); None = no offset explains it
         self._last_shift = None
-        self.tick_next = first_capture + delay               # first net frame whose capture really came from the game
         self.tick_log = []                                   # [(frame, host counter, guest counter, offset)] on every change
         self._tick_off = None
         self._tick_hold = False
@@ -169,6 +166,60 @@ class Node:
         self.sel_tx_seq = 0                                  # host: sequence number of the SELX packets
         self.sel_rx_seq = None                               # guest: newest sequence number applied
         self._sel_crc = zlib.crc32(repr(self.session).encode()) & 0xFFFFFFFF
+
+    def _init_input_frames(self, delay):
+        self.delay = delay
+        self.tick_next = self.first_capture + delay
+        self.known = {s: {f: NEUTRAL for f in range(delay)} for s in self.active}
+        self.need = {s: delay for s in self.active}          # next frame not yet known (contiguous)
+        self.published = {s: 0 for s in self.active}
+        self.cap_next = self.first_capture
+        for f in range(self.first_capture):                     # their captures are ignored (stale after a loaded state):
+            if self.slot is not None:                      # those frames enter as the neutral pad
+                self.known[self.slot][f + delay] = NEUTRAL
+        if self.slot is not None:
+            self._advance(self.slot)
+
+    def _delay_hello(self, message):
+        """Negotiate only while the game is frozen and before accepting any input."""
+        if not self.calibrate_delay or self.delay_chosen is not None:
+            return
+        choice = message['auto_delay']
+        if choice is None:  # legacy peer or a host configured for a fixed delay
+            self.calibrate_delay = False
+        elif self.is_host:
+            if self.probe_started is None:
+                self.probe_started = time.monotonic()
+            echo = message['echo']
+            if echo in self.probe_times:
+                self.probe_times.remove(echo)
+                elapsed = (now_ms() - echo) & 0xFFFFFFFF
+                if message['hold'] <= elapsed < 5000:
+                    self.delay_samples.append(elapsed - message['hold'])
+        elif choice:
+            self._choose_delay(choice)
+
+    def _hello_choice(self, now):
+        if not self.calibrate_delay:
+            return None
+        if not self.is_host or self.delay_chosen is not None or self.probe_started is None:
+            return self.delay_chosen or 0
+        if len(self.delay_samples) < 10 and time.monotonic() - self.probe_started < 4:
+            self.probe_times.add(now)
+            return 0
+        delay = self.session_delay
+        if self.delay_samples:
+            samples = sorted(self.delay_samples)
+            # Nearest-rank 90th percentile ignores one isolated spike in ten.
+            delay = delay_for_rtt(samples[(9 * len(samples) - 1) // 10])
+        self._choose_delay(max(2, min(10, delay)))
+        return self.delay_chosen
+
+    def _choose_delay(self, choice):
+        self._init_input_frames(choice)
+        self.delay_chosen = choice
+        self.probe_times.clear()
+        print(f'Input delay automático: {choice} frames.', flush=True)
 
     # ---- helpers -------------------------------------------------------------------------------------------------
     def _sendto(self, datagram, addr):
@@ -324,7 +375,7 @@ class Node:
                 continue
             if m['kind'] == wire.HELLO:
                 slot = m['slot']
-                if m['delay'] != self.delay or m['tag'] != self.tag:
+                if m['delay'] != self.session_delay or m['tag'] != self.tag:
                     continue
                 if peer is not None and peer.slot is not None and slot != peer.slot:
                     continue
@@ -338,6 +389,7 @@ class Node:
                     continue
                 peer.slot, peer.hello = slot, True
                 peer.name = clean_nick(m.get('name'))
+                self._delay_hello(m)
             elif peer is None or not peer.hello:
                 continue
             now_t = time.perf_counter()
@@ -349,7 +401,8 @@ class Node:
                 peer.addr, peer.direct_rx = addr, now_t      # follows the peer if its NAT port changed
             self._clock(peer, m)
             if m['kind'] == wire.DATA:
-                self._on_data(peer, m)
+                if not self.calibrate_delay or self.delay_chosen is not None:
+                    self._on_data(peer, m)
             elif m['kind'] == wire.BYE:
                 self.closed_reason = m['reason']
                 self.closed_member = peer.member
@@ -593,8 +646,10 @@ class Node:
         for p in self.peers.values():
             if p.confirmed:
                 continue
-            pkt = wire.hello(self.member, self.session, p.seq, now_ms(), delay=self.delay, tag=self.tag,
-                             name=self.name, slot=self.slot)
+            now = now_ms()
+            pkt = wire.hello(self.member, self.session, p.seq, now, delay=self.session_delay, tag=self.tag,
+                             name=self.name, slot=self.slot, auto_delay=self._hello_choice(now), echo=p.last_t,
+                             hold=(now - p.last_rx) & 0xFFFFFFFF if p.last_t else 0)
             p.seq += 1
             self._tx(p, pkt)
 
@@ -639,7 +694,11 @@ class Node:
         if self.score_challenge:
             self._request_score_round()
         self._send_hello()                                  # until every peer answered with DATA
-        if not self.ready():
+        if not self.ready() or (self.calibrate_delay and self.delay_chosen is None):
+            return
+        # A negotiated guest sends DATA only after installing our choice. Repeat
+        # the HELLO proposal until that DATA arrives, even if the proposal was lost.
+        if self.calibrate_delay and self.is_host and not all(p.confirmed for p in self.peers.values()):
             return
         if not self.started:                                 # keep telling the peers we are here ...
             self._send_data()

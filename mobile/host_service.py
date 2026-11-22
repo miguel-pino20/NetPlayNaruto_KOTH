@@ -74,7 +74,7 @@ def main():
                 if config.get('role') == 'koth':
                     continue
                 if line.startswith('host: waiting'):
-                    report('waiting', 'HOST P1 · UDP 47400 · delay 3\n' + line)
+                    report('waiting', 'HOST P1 · UDP 47400\n' + line)
                 elif line.startswith('host: room '):
                     report('waiting', tr('HOST P1 · Sala publicada en el servidor UN5. Esperando jugador 2.'))
                 elif line.startswith('guest:'):

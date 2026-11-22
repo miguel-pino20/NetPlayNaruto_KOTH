@@ -19,6 +19,11 @@ def tr(message, **values):
 
 # Spanish source text maps to English and Brazilian Portuguese.
 TRANSLATIONS = {
+    'Inscripción a torneos': ('Tournament registration', 'Inscrições em torneios'),
+    'No hay torneos con inscripción abierta.': ('No tournaments open for registration.', 'Nenhum torneio com inscrições abertas.'),
+    'Inscribirme en {event}': ('Register for {event}', 'Inscrever-se em {event}'),
+    'Inicia sesión con Discord para inscribirte.': ('Sign in with Discord to register.', 'Entre com Discord para se inscrever.'),
+    'Inscripción confirmada en {name} (#{id}).': ('Registered for {name} (#{id}).', 'Inscrição confirmada em {name} (#{id}).'),
     'Cancelar': ('Cancel', 'Cancelar'),
     'Crear evento casual': ('Create casual event', 'Criar evento casual'),
     'Iniciar evento casual': ('Start casual event', 'Iniciar evento casual'),

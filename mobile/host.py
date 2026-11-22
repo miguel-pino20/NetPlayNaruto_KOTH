@@ -83,7 +83,7 @@ def session_arguments(config):
     if not 1 <= slot <= 65535:
         raise ValueError(tr('Puerto PINE inválido.'))
     args = ['--symbols', str(symbols), '--pine-slot', str(slot), '--stop-file', config['stop_file'],
-            role, '--state', str(state), '--delay', '3',
+            role, '--state', str(state), '--delay', '3', '--auto-delay',
             '--nick', config.get('nick', 'Player1')]
     args += ['--port', '47400', '--no-announce'] if role == 'host' else ['--bind-port', '0']
     if transport == 'server':

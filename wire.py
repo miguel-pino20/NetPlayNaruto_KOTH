@@ -29,6 +29,9 @@ MAX_DATA = 1400                 # below every common path MTU: no fragmentation
 MAX_HASHES = 32
 
 HEADER = struct.Struct('<4sBBBIIIIH')
+# HELLO sequence numbers are informational in v1. Reserve a prefix so older peers
+# still parse the same HELLO and can play using the advertised session delay.
+HELLO_AUTO_PREFIX = 0xDA1A0000
 HELLO_BODY = struct.Struct('<H8s16sB')
 DATA_BODY = struct.Struct(f'<II{SLOTS}IBB')     # frame, hash_ack, acks[SLOTS], nblocks, nhash
 BLOCK = struct.Struct('<BBI')                   # slot, count, first frame
@@ -46,8 +49,10 @@ def header(kind, member, session, seq, t_send, echo=0, hold=0):
                        t_send & 0xFFFFFFFF, echo & 0xFFFFFFFF, min(max(int(hold), 0), 0xFFFF))
 
 
-def hello(member, session, seq, t_send, *, delay, tag, name='', slot=None, echo=0, hold=0):
+def hello(member, session, seq, t_send, *, delay, tag, name='', slot=None, echo=0, hold=0, auto_delay=None):
     tag = bytes.fromhex(tag[:16]) if isinstance(tag, str) else bytes(tag[:8])
+    if auto_delay is not None:
+        seq = HELLO_AUTO_PREFIX | auto_delay  # 0 = measuring, 1..10 = host's final choice
     return header(HELLO, member, session, seq, t_send, echo, hold) + HELLO_BODY.pack(
         delay, tag.ljust(8, b'\0'), name.encode('utf-8')[:16].ljust(16, b'\0'), NO_SLOT if slot is None else slot)
 
@@ -88,6 +93,8 @@ def parse(datagram):
         if len(body) != HELLO_BODY.size:
             raise ProtocolError('bad HELLO')
         delay, tag, name, slot = HELLO_BODY.unpack(body)
+        choice = seq & 0xFFFF
+        out['auto_delay'] = choice if seq & 0xFFFF0000 == HELLO_AUTO_PREFIX and choice <= 10 else None
         out.update(delay=delay, tag=tag.hex(), name=name.rstrip(b'\0').decode('utf-8', 'replace'),
                    slot=None if slot == NO_SLOT else slot)
     elif kind == DATA:

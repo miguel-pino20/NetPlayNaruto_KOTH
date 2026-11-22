@@ -46,7 +46,7 @@ def play_round(config, snapshot, state, symbols, stop):
         args += ['--preloaded-state', '--connect', f"{host['address']}:{host['spectator_port']}"]
         os.environ['UN5_SPECTATOR_SOURCES'] = json.dumps(snapshot.get('spectator_sources', []))
     else:
-        args += ['--bind-address', config['address']]
+        args += ['--auto-delay', '--bind-address', config['address']]
         if role == 'guest':
             args += ['--bind-port', '0', '--connect', f"{host['address']}:{host['port']}"]
         else:

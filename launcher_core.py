@@ -61,7 +61,7 @@ SERVER_URL = DEFAULT_API_URL                           # API (salas, conta, save
 SERVER_ADDR = DEFAULT_SERVER                           # UDP (descoberta e relay): NAO passa pelo Caddy
 HOST_PORT = "47400"                                    # porta UDP local do host (fixa, sem campo na tela)
 GUEST_BIND_PORT = "0"                                  # porta UDP local do guest (0 = automatica)
-MATCH_DELAY = "3"                                      # atraso fixo de entrada para as partidas
+MATCH_DELAY = "3"                                      # delay inicial para pares de versões anteriores
 SOLO_DELAY = "3"                                       # solo nao tem rede: nada para medir
 
 STAT_RE = re.compile(r"frame=\s*(\d+)\s+([\d.]+)/s(?:\s+rtt=(\d+|None)ms)?\s+stalls=(\d+)")
@@ -346,7 +346,7 @@ def zerotier_args(cfg, action):
 def make_args(cfg: dict, action: str, state_path=None):
     """Argumentos depois das opcoes globais do netplay.py. `cfg` e o resultado de full_config() (+ `nick`, que o
     launcher tira do perfil do Discord). Levanta ValueError com o motivo. Nenhuma flag de diagnostico (mascara, rng,
-    watch) e enviada: valem os padroes do NetPad.c / netpad_core.h e do netplay.py. O launcher usa delay 3."""
+    watch) e enviada: valem os padroes do NetPad.c / netpad_core.h e do netplay.py. O launcher mede o delay antes da partida."""
     missing_state = tr("err.no_state", name=STATE_NAME)
     if action == "prepare":
         args = ["prepare", "--save-slot", int_in(cfg["save_slot"], "Save slot", 0, 99)]
@@ -369,7 +369,7 @@ def make_args(cfg: dict, action: str, state_path=None):
     fetch = action == "guest" and bool(cfg.get("fetch_state", True)) and not direct
     if not state_path or (not Path(state_path).is_file() and not fetch):
         raise ValueError(missing_state)
-    args = [action, "--state", str(state_path), "--delay", delay]
+    args = [action, "--state", str(state_path), "--delay", delay, "--auto-delay"]
     if fetch:
         args.append("--fetch-state")
     if cfg.get("auto_load", True):

@@ -37,6 +37,7 @@ from i18n import has, tr
 from launcher_account import DiscordDialog, ProfileDialog
 from launcher_core import SERVER_ADDR
 from launcher_koth import KothPanel
+from launcher_tournaments import TournamentPanel
 from launcher_theme import (ACCENT, BG, BLUE, BORDER, COLORS, DIM, GREEN, MUTED, ON_ACCENT, PANEL, RED, TEXT, WARN,
                             AvatarView, PillButton, RoundEntry, RoundFrame, Segmented, Switch, apply_style)
 
@@ -86,6 +87,9 @@ class Launcher(tk.Tk):
         self.v = {k: (tk.BooleanVar(value=val) if isinstance(val, bool) else tk.StringVar(value=val))
                   for k, val in cfg.items()}
 
+        mode = self.v['mode'].get()
+        self.section = tk.StringVar(value=mode if mode in ('koth', 'tournaments') else 'casual')
+        self.casual_role = tk.StringVar(value='guest' if mode == 'guest' else 'host')
         self.backend = core.Backend()                     # carrega a sessao do Discord salva no AppData
         self.dialog = None
         self.game = "un5"                                 # jogo detectado pelo CRC (ver _pick_game)
@@ -195,6 +199,7 @@ class Launcher(tk.Tk):
         self._console(console_host)
         self._rooms_panel(right)                          # as salas ocupam o resto: e a informacao principal
         self.koth_panel = KothPanel(right, self)
+        self.tournaments = TournamentPanel(right, self)
 
         foot = tk.Frame(self, bg=BG, padx=22, pady=8)
         foot.pack(fill="x")
@@ -305,10 +310,15 @@ class Launcher(tk.Tk):
                                  justify="left", wraplength=300)
         self.nick_sub.pack(anchor="w", pady=(2, 0))
 
-        self._label(inner, tr("your_role"))
-        Segmented(inner, [("host", "HOST · P1"), ("guest", "GUEST · P2"), ("koth", "KOTH")], self.v["mode"],
-                  self._sync_mode).pack(fill="x")
-        self._note(inner, tr("note.delay"))
+        self._label(inner, tr("nav.play"))
+        Segmented(inner, [('casual', tr('nav.casual')), ('koth', 'KOTH'), ('tournaments', tr('nav.tournaments'))],
+                  self.section, self._select_section).pack(fill='x')
+        self.casual_box = tk.Frame(inner, bg=PANEL)
+        self.casual_box.pack(fill='x')
+        self._label(self.casual_box, tr('your_role'))
+        Segmented(self.casual_box, [('host', 'Host · P1'), ('guest', 'Guest · P2')], self.casual_role,
+                  self._select_section).pack(fill='x')
+        self._note(self.casual_box, tr("note.delay"))
 
         self.mode_box = tk.Frame(inner, bg=PANEL)         # host_box / guest_box alternam aqui dentro
         self.mode_box.pack(fill="x")
@@ -327,15 +337,17 @@ class Launcher(tk.Tk):
 
         tk.Frame(inner, bg=BORDER, height=1).pack(fill="x", pady=(14, 12))   # separador
 
-        self.start_btn = PillButton(inner, text=tr("btn.start_host"), style="Accent.TButton", command=self.start)
+        self.play_actions = tk.Frame(inner, bg=PANEL)
+        self.play_actions.pack(fill="x")
+        self.start_btn = PillButton(self.play_actions, text=tr("btn.start_host"), style="Accent.TButton", command=self.start)
         self.start_btn.pack(fill="x", pady=(0, 6))
-        self.stop_btn = PillButton(inner, text=tr("btn.stop"), style="Danger.TButton", command=self.stop,
+        self.stop_btn = PillButton(self.play_actions, text=tr("btn.stop"), style="Danger.TButton", command=self.stop,
                                    state="disabled")
         self.stop_btn.pack(fill="x")
-        self.hill_btn = PillButton(inner, text=tr("koth.manual"), command=self.hill)
+        self.hill_btn = PillButton(self.play_actions, text=tr("koth.manual"), command=self.hill)
         self.hill_btn.pack(fill="x", pady=(6, 0))
 
-        self.zerotier_btn = PillButton(inner, text=tr('zt.button'), command=self.zerotier)
+        self.zerotier_btn = PillButton(self.play_actions, text=tr('zt.button'), command=self.zerotier)
         self.zerotier_btn.pack(fill='x', pady=(6, 0))
 
         # PREPARAR PARTIDA e Ferramentas: so para o dono (ver _sync_admin)
@@ -452,24 +464,50 @@ class Launcher(tk.Tk):
             self.nick_hint.configure(text=tr("nick.none"), fg=MUTED)
             self.nick_sub.configure(text=tr("nick.none_sub"))
 
+    def _select_section(self):
+        section = self.section.get()
+        mode = self.casual_role.get() if section == 'casual' else section
+        self.v['mode'].set(mode)
+        self._sync_mode()
+
     def _sync_mode(self):
         if self._koth_pending or (self.backend.running and self.backend.session_role == 'hill'):
             self.v['mode'].set('koth')
         mode = self.v['mode'].get()
+        casual = mode in ('host', 'guest')
+        self.section.set('casual' if casual else mode)
+        if casual:
+            self.casual_role.set(mode)
+            self.casual_box.pack(fill='x', before=self.mode_box)
+        else:
+            self.casual_box.pack_forget()
         for role, box in (('host', self.host_box), ('guest', self.guest_box), ('koth', self.koth_box)):
             box.pack(fill='x') if mode == role else box.pack_forget()
-        if hasattr(self, 'koth_panel'):
-            if mode == 'koth':
-                self.rooms_panel.pack_forget()
-                self.koth_panel.pack(side='top', fill='both', expand=True, pady=(0, 13))
-                self.koth_panel.refresh()
-                self.console.configure(height=5)
-            else:
-                self.koth_panel.pack_forget()
-                self.rooms_panel.pack(side='top', fill='both', expand=True, pady=(0, 13))
-                self.console.configure(height=7)
-        if hasattr(self, "start_btn"):
-            self.start_btn.configure(text=tr('koth.join') if mode == 'koth' else tr("btn.start_guest") if mode == 'guest' else tr("btn.start_host"))
+        for button in (self.start_btn, self.hill_btn, self.zerotier_btn):
+            button.pack_forget()
+        self._show_stop()
+        if mode != 'tournaments':
+            self.start_btn.pack(fill='x', before=self.stop_btn, pady=(0, 6))
+        if casual:
+            self.zerotier_btn.configure(text=tr('nav.zt_host' if mode == 'host' else 'nav.zt_guest'))
+            self.zerotier_btn.pack(fill='x', pady=(6, 0))
+        elif mode == 'koth':
+            self.hill_btn.pack(fill='x', pady=(6, 0))
+        panel = self.rooms_panel if casual else self.koth_panel if mode == 'koth' else self.tournaments
+        for other in (self.rooms_panel, self.koth_panel, self.tournaments):
+            if other != panel:
+                other.pack_forget()
+        panel.pack(side='top', fill='both', expand=True, pady=(0, 13))
+        if not casual:
+            panel.refresh()
+        self.console.configure(height=7 if casual else 5)
+        self.start_btn.configure(text=tr('koth.join') if mode == 'koth' else tr('nav.net_guest') if mode == 'guest' else tr('nav.net_host'))
+
+    def _show_stop(self):
+        if self.section.get() == 'tournaments' and not self.backend.running:
+            self.stop_btn.pack_forget()
+        elif not self.stop_btn.winfo_manager():
+            self.stop_btn.pack(fill='x')
 
     def _detect_game(self):
         """Le o CRC do jogo aberto no PCSX2 (PINE). Retorna "un5" / "un6", ou None (o aviso ja foi mostrado)."""
@@ -592,6 +630,8 @@ class Launcher(tk.Tk):
         if self.v['mode'].get() == 'koth':
             self.koth_panel.tick()
             return
+        if self.section.get() == 'tournaments':
+            return
         self.backend.poll_rooms()
         found, error = self.backend.online_rooms, self.backend.online_error
         self.rooms_data = {r["id"]: r for r in found}
@@ -619,7 +659,7 @@ class Launcher(tk.Tk):
 
     def pick_room(self):
         """One click on a room: fills the room id and switches to guest. Nothing else to confirm."""
-        if self.backend.running:
+        if self.backend.running or self.section.get() != 'casual':
             return
         selected = self.rooms_tree.selection()
         room = self.rooms_data.get(selected[0]) if selected else None
@@ -672,6 +712,7 @@ class Launcher(tk.Tk):
         # o indicador visual foi removido do cabecalho
 
     def _set_buttons(self, running):
+        self._show_stop()
         running = running or self._koth_pending
         state = "disabled" if running else "normal"
         for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn, self.hill_btn, self.zerotier_btn):
@@ -816,7 +857,7 @@ class Launcher(tk.Tk):
         dialog.title(tr('zt.title'))
         dialog.transient(self)
         dialog.configure(bg=PANEL, padx=20, pady=16)
-        role = tk.StringVar(value=self.v['zerotier_role'].get())
+        role = tk.StringVar(value=self.casual_role.get())
         Segmented(dialog, [('host', 'HOST · P1'), ('guest', 'GUEST · P2')], role).pack(fill='x', pady=(0, 8))
         local_address = tk.StringVar()
         get_address = self._zerotier_picker(dialog, self.v['zerotier_address'].get(), local_address)
@@ -984,7 +1025,7 @@ class Launcher(tk.Tk):
         def launch():
             cfg = self.cfg()
             args = ['hill', '--api-url', url, '--address', address, '--game', self.game,
-                    '--delay', core.MATCH_DELAY, '--transport', 'zerotier',
+                    '--delay', core.MATCH_DELAY, '--auto-delay', '--transport', 'zerotier',
                     '--state', cfg['state_file'], '--state-dir', cfg['state_dir'], '--load-slot', cfg['load_slot'],
                     '--nick', cfg.get('nick', '')]
             if personal_code:
@@ -1024,7 +1065,7 @@ class Launcher(tk.Tk):
             self._spawn(args, tr("run.load"))
 
     def start(self):
-        if self._koth_pending or self.backend.running:
+        if self._koth_pending or self.backend.running or self.section.get() == 'tournaments':
             return
         if self.v['mode'].get() == 'koth':
             event = self.koth_panel.selected_event()

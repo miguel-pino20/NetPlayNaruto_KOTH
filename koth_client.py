@@ -82,6 +82,39 @@ def get_event(url, event_id):
     return api_call(site_url(url), 'GET', f'/api/netplay/events/{int(event_id)}/', timeout=4)
 
 
+TOURNAMENT_FORMATS = {'round_robin': 'Round Robin', 'single_elimination': 'Single Elimination',
+                      'double_elimination': 'Double Elimination'}
+
+
+def scheduled_tournaments(url, *, all_statuses=False):
+    path = '/api/netplay/tournaments/' + ('?scope=all' if all_statuses else '')
+    result = api_call(site_url(url), 'GET', path, timeout=8)
+    if not isinstance(result, dict) or not isinstance(result.get('events'), list):
+        raise AccountError('El servidor no devolvió la lista de torneos.')
+    return [event for event in result['events'] if event.get('format') in TOURNAMENT_FORMATS]
+
+
+def tournament_bracket(url, event_id):
+    return api_call(site_url(url), 'GET', f'/api/netplay/tournaments/{int(event_id)}/bracket/', timeout=8)
+
+
+def tournament_label(event):
+    parts = [event['name'], TOURNAMENT_FORMATS[event['format']], event.get('event_date'),
+             f"{event['enrolled']}/{event['max_participants']}"]
+    return ' · '.join(part for part in parts if part)
+
+
+def join_tournament(url, session, event_id):
+    url = site_url(url)
+    if urlsplit(url).scheme != 'https' or not session:
+        raise AccountError('La inscripción requiere HTTPS y una sesión de Discord en Netplay.')
+    result = api_call(url, 'POST', f'/api/netplay/tournaments/{int(event_id)}/join/', {}, timeout=12,
+                      extra_headers={'X-Netplay-Session': session}, follow_redirects=False)
+    if not isinstance(result, dict) or type(result.get('participant_id')) is not int or result['participant_id'] < 1:
+        raise AccountError('El servidor no confirmó la inscripción.')
+    return result['participant_id']
+
+
 def _management_request(url, session, method, path, body=None):
     url = site_url(url)
     if urlsplit(url).scheme != 'https':
