@@ -516,6 +516,7 @@ class FixtureResults:
             self.directory = self.directory / 'p2'
         self.directory.mkdir(parents=True, exist_ok=True)
         series = grant['series']
+        self.score = (series['p1_wins'], series['p2_wins'])
         self.number = max([series['p1_wins'] + series['p2_wins']] +
                           [int(p.name.split('-')[0]) for p in self.directory.glob('[0-9]*-*.json')])
         self.finished = False
@@ -565,6 +566,7 @@ class FixtureResults:
                     self.last_error = str(error)
                 return
             self.last_error = None
+            self.score = (series['p1_wins'], series['p2_wins'])
             self.finished = series['status'] == 'finished'
             path.unlink(missing_ok=True)
             self.log(f"Torneo: victoria de {body['winner'].upper()} confirmada. "

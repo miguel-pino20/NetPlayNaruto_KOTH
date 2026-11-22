@@ -949,6 +949,16 @@ def play_connected(args, is_host, server_mode, pine, core):
     board = scoreboard.start_for_session(args, pine, is_host,    # None unless scoreboard.json has enabled: true
                                          room=getattr(poller, 'room_id', '') if poller else '',
                                          online=server_mode, node=node)
+    fixture_results = next((sink for sink in (board.sinks if board else ())
+                            if isinstance(sink, scoreboard.FixtureResults)), None)
+    koth_scores = (None, None)
+    if os.environ.get('UN5_KOTH_RESULT_FILE'):
+        try:
+            scores = json.loads(os.environ.get('UN5_KOTH_OVERLAY_SCORES', 'null'))
+            if isinstance(scores, list) and len(scores) == 2:
+                koth_scores = scores
+        except ValueError:
+            pass
     presence_stop = threading.Event()
     if server_mode and os.environ.get('UN5_NETPLAY_SESSION'):
         def presence_loop():
@@ -1006,9 +1016,11 @@ def play_connected(args, is_host, server_mode, pine, core):
                 info_at = time.time()
                 flow.report()
                 try:
+                    names, pings = node.info()
                     if board is not None:
-                        board.set_nicks(node.info()[0])
-                    core.set_info(*node.info())
+                        board.set_nicks(names)
+                    scores = fixture_results.score if fixture_results else koth_scores
+                    core.set_info(names, pings, scores)
                 except Exception:                           # noqa: BLE001 - purely cosmetic, never stop a match for it
                     pass
                 try:                                        # the selection this PC locked when the fight started

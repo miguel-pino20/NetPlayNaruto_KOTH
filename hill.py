@@ -86,6 +86,13 @@ def round_nick(snapshot, fallback):
     return fallback
 
 
+def round_scores(snapshot):
+    current = (snapshot.get('event') or {}).get('current_match') or {}
+    players = snapshot.get('players') or {}
+    return [(current.get(key) or {}).get('points', (players.get(slot) or {}).get('points'))
+            for slot, key in (('p1', 'player1'), ('p2', 'player2'))]
+
+
 def match_command(args, snapshot, stop_file):
     host = snapshot['host']
     role = 'watch' if snapshot['role'] == 'spectator' else snapshot['role']
@@ -263,8 +270,10 @@ def run(args):
                         child_env = os.environ.copy()
                         child_env.pop('UN5_HILL_TICKET', None)
                         child_env.pop('UN5_KOTH_RESULT_FILE', None)
+                        child_env.pop('UN5_KOTH_OVERLAY_SCORES', None)
                         if active_role in ('host', 'guest'):
                             child_env['UN5_KOTH_PLAYERS'] = json.dumps(snapshot.get('players') or {})
+                            child_env['UN5_KOTH_OVERLAY_SCORES'] = json.dumps(round_scores(snapshot))
                             child_env['UN5_KOTH_RESULT_FILE'] = str(result_file)
                         if active_role == 'spectator':
                             child_env.pop('UN5_NETPLAY_SESSION', None)

@@ -325,12 +325,18 @@ class PineCore:
             out[f] = h
         return out
 
-    def set_info(self, names, pings):
+    def set_info(self, names, pings, scores=(None, None)):
         """Nicks and ping (ms) of player 1 / player 2 for the on-screen display. names: two str (ASCII, cut to 15
         characters), pings: two ints (0xFFFFFFFF = unknown)."""
         raw = b''
-        for name in list(names)[:2] + [''] * (2 - len(names)):
-            raw += name.encode('ascii', 'replace')[:NAME_LEN - 1].ljust(NAME_LEN, b'\0')
+        for slot, name in enumerate((list(names) + ['', ''])[:2]):
+            nick = name.encode('ascii', 'replace')[:NAME_LEN - 1]
+            score = scores[slot]
+            if nick and type(score) is int and 0 <= score <= 0xFFFFFFFF:
+                marker = str(score).encode('ascii')
+                nick = nick[:NAME_LEN - 3 - len(marker)].rstrip()
+                nick = nick + b': ' + marker if slot == 0 else marker + b' :' + nick
+            raw += nick.ljust(NAME_LEN, b'\0')
         raw += struct.pack('<II', *[int(p) & 0xFFFFFFFF for p in (list(pings) + [PING_UNKNOWN] * 2)[:2]])
         self._write64([(self.base + INFO + 8 * i, int.from_bytes(raw[8 * i:8 * i + 8], 'little'))
                        for i in range(len(raw) // 8)])
