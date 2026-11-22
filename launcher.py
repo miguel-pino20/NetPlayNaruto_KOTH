@@ -77,8 +77,10 @@ class Launcher(tk.Tk):
         windows_icon = Path(__file__).with_name("un5-netplay.ico")
         if os.name == "nt" and windows_icon.is_file():
             self.iconbitmap(default=str(windows_icon))
-        self.geometry("1120x740")
-        self.minsize(980, 660)
+        width = min(1120, self.winfo_screenwidth() - 24)
+        height = min(740, self.winfo_screenheight() - 92)
+        self.geometry(f"{width}x{height}")
+        self.minsize(min(980, width), min(540, height))
         self.configure(bg=BG)
         cfg = core.load_config()
         cfg["ignore_desync"] = False                      # debug: sempre OFF ao abrir
@@ -194,9 +196,10 @@ class Launcher(tk.Tk):
 
         right = tk.Frame(body, bg=BG)
         right.pack(side="left", fill="both", expand=True)
-        console_host = tk.Frame(right, bg=BG)             # console pequeno, colado embaixo
-        console_host.pack(side="bottom", fill="x")
-        self._console(console_host)
+        self.left_column, self.right_column = left, right
+        self.console_host = tk.Frame(body, bg=BG)
+        self.console_host.pack(in_=right, side='bottom', fill='x')
+        self._console(self.console_host)
         self._rooms_panel(right)                          # as salas ocupam o resto: e a informacao principal
         self.koth_panel = KothPanel(right, self)
         self.tournaments = TournamentPanel(right, self)
@@ -439,6 +442,8 @@ class Launcher(tk.Tk):
                                                                                                    padx=(0, 6))
         PillButton(top, text=tr("btn.copy_cmd"), style="Small.TButton", command=self.copy_command).pack(
             side="right", padx=(0, 6))
+        self.console_status = tk.Label(inner, anchor='w', bg=PANEL, font=('Segoe UI', 9, 'bold'))
+        self.console_status.pack(fill='x', pady=(0, 4))
         box = RoundFrame(inner, fill="#070a10", border=BORDER, radius=12, padx=6, pady=6, bg=PANEL)
         box.pack(fill="x")
         wrap = box.inner
@@ -500,7 +505,15 @@ class Launcher(tk.Tk):
         panel.pack(side='top', fill='both', expand=True, pady=(0, 13))
         if not casual:
             panel.refresh()
-        self.console.configure(height=7 if casual else 5)
+        tournament = mode == 'tournaments'
+        column = self.left_column if tournament else self.right_column
+        if self.console_host.pack_info()['in'] != column:
+            self.console_host.pack_forget()
+            if tournament:
+                self.console_host.pack(in_=column, side='top', fill='x', pady=(8, 0))
+            else:
+                self.console_host.pack(in_=column, side='bottom', fill='x', before=panel)
+        self.console.configure(height=6 if tournament else 7 if casual else 5)
         self.start_btn.configure(text=tr('koth.join') if mode == 'koth' else tr('nav.net_guest') if mode == 'guest' else tr('nav.net_host'))
 
     def _show_stop(self):
@@ -709,7 +722,7 @@ class Launcher(tk.Tk):
         color = COLORS.get(color, color)                  # aceita nome do backend ou hex
         self.status_key, self.status_color = text, color
         key = "st." + text
-        # o indicador visual foi removido do cabecalho
+        self.console_status.configure(text=tr(key), fg=color)
 
     def _set_buttons(self, running):
         self._show_stop()
@@ -1306,7 +1319,9 @@ class Launcher(tk.Tk):
         self._koth_pending = False
         self.koth_panel.display(self.koth_live_event)
         self._set_buttons(False)
-        if self.status_key not in ("DESYNC", "FROZEN"):
+        if code not in (0, None) and self.status_key != "DESYNC":
+            self._set_status("FAILED", RED)
+        elif self.status_key not in ("DESYNC", "FROZEN"):
             self._set_status("READY", MUTED)
 
     def destroy(self):

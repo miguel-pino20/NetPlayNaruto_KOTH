@@ -76,8 +76,8 @@ Netplay y ZeroTier. **KOTH** incluye el acceso por código personal. En **Tourna
 puedes consultar los torneos oficiales, inscribirte con Discord y revisar los cruces
 por ronda. Las llaves se generan cuando el organizador inicia el torneo. Usa
 **Refresh** para consultar resultados nuevos o **Tournament page** para abrir la vista pública.
-Para jugar, ambos participantes seleccionan su mismo cruce **Ready** y pulsan
-**Connect to selected match**. Con PCSX2 y el juego abiertos, cada jugador elige su red ZeroTier y pulsa iniciar. Django verifica el cruce, el
+Para jugar, ambos participantes eligen el torneo en curso y pulsan **Connect to my match**.
+El launcher encuentra el cruce listo de cada cuenta de Discord. Con PCSX2 y el juego abiertos, cada jugador elige su red ZeroTier y pulsa iniciar. Django verifica el cruce, el
 juego y los archivos de ambos, asigna P1/P2 según la cuenta Discord e intercambia
 las direcciones. La partida conecta por UDP directo cuando ambos están listos.
 

@@ -261,6 +261,14 @@ def parse_stat(line: str):
 def classify(line: str):
     """(tag do console, (texto de status, cor) ou None). Cores sao nomes: red green blue warn muted."""
     low = line.lower()
+    if low.startswith("zerotier: esperando"):
+        return "info", ("WAITING FOR OPPONENT", "warn")
+    if low.startswith("zerotier: reintentando"):
+        return "warn", ("RETRYING", "warn")
+    if low.startswith("zerotier: ambos jugadores"):
+        return "success", ("CONNECTING", "blue")
+    if low.startswith("no se pudo coordinar el cruce"):
+        return "error", ("FAILED", "red")
     if "desync at frame" in low:
         return "error", ("DESYNC", "red")
     if "hash differs at frame" in low:             # "Ignore desync" ligado: a partida continua

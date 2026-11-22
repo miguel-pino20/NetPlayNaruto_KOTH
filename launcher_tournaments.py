@@ -32,72 +32,76 @@ class TournamentPanel(RoundFrame):
         self.generation = 0
         self.joining = False
         self.confirmed = {}
-        self.fixture_rows = {}
         self.checking_fixture = False
+        self.inner.columnconfigure(0, weight=1)
+        self.inner.rowconfigure(1, weight=1)
+        self.inner.rowconfigure(5, weight=3)
+        # The rooms view uses tall rows for avatars. Tournament rows only contain text.
+        from tkinter import font
+        line = font.nametofont('TkDefaultFont').metrics('linespace')
+        ttk.Style(self).configure('Tournament.Treeview', rowheight=line + 8)
         bar = tk.Frame(self.inner, bg=PANEL)
-        bar.pack(fill='x')
+        bar.grid(row=0, column=0, sticky='ew')
         tk.Label(bar, text=tr('nav.tournaments'), bg=PANEL, fg=TEXT,
                  font=('Segoe UI', 14, 'bold')).pack(side='left')
         ttk.Button(bar, text=tr('koth.refresh'), command=self.refresh).pack(side='right')
         self.listing = self.table(('#0', 'format', 'date', 'players', 'status'),
-                                  ('koth.event', 'tourney.format', 'tourney.date', 'koth.players', 'koth.state'), 5)
+                                  ('koth.event', 'tourney.format', 'tourney.date', 'koth.players', 'koth.state'), row=1)
         self.listing.bind('<<TreeviewSelect>>', self.select)
         buttons = tk.Frame(self.inner, bg=PANEL)
-        buttons.pack(fill='x', pady=6)
+        buttons.grid(row=2, column=0, sticky='ew', pady=3)
         self.join = ttk.Button(buttons, text=tr('tourney.join'), command=self.enroll, state='disabled')
         self.join.pack(side='left')
         self.web = ttk.Button(buttons, text=tr('bracket.public'), command=self.public_page, state='disabled')
         self.web.pack(side='left', padx=8)
         self.notice = tk.Label(self.inner, bg=PANEL, fg=MUTED, anchor='w', wraplength=650)
-        self.notice.pack(fill='x')
+        self.notice.grid(row=3, column=0, sticky='ew')
+        self.inner.bind('<Configure>', lambda e: self.notice.configure(wraplength=max(1, e.width)), add='+')
         tk.Label(self.inner, text=tr('bracket.title'), bg=PANEL, fg=TEXT, anchor='w',
-                 font=('Segoe UI', 11, 'bold')).pack(fill='x', pady=(10, 2))
+                 font=('Segoe UI', 11, 'bold')).grid(row=4, column=0, sticky='ew', pady=(4, 2))
         self.bracket = self.table(('#0', 'p1', 'score', 'p2', 'status'),
-                                  ('bracket.round', 'bracket.p1', 'bracket.score', 'bracket.p2', 'koth.state'), 8,
-                                  expand=True)
+                                  ('bracket.round', 'bracket.p1', 'bracket.score', 'bracket.p2', 'koth.state'), row=5)
 
-        self.connect = ttk.Button(buttons, text=tr('bracket.connect'), command=self.connect_selected,
+        self.connect = ttk.Button(buttons, text=tr('bracket.connect'), command=self.connect_my_match,
                                   state='disabled')
         self.connect.pack(side='left')
-        self.bracket.bind('<<TreeviewSelect>>', self.sync_connect)
 
-    def sync_connect(self, _event=None):
-        selected = self.bracket.selection()
-        row = self.fixture_rows.get(selected[0], {}) if selected else {}
-        enabled = (row.get('status') == 'ready' and not self.checking_fixture and not self.app.backend.running
-                   and not self.app._koth_pending and self.app._after_sync is None and self.app._after_allow is None)
+    def sync_connect(self):
+        event = self.selected()
+        enabled = (event and event.get('status') == 'running' and not self.checking_fixture
+                   and not self.app.backend.running and not self.app._koth_pending
+                   and self.app._after_sync is None and self.app._after_allow is None)
         self.connect.configure(state='normal' if enabled else 'disabled')
 
-    def connect_selected(self):
-        selected = self.bracket.selection()
-        row = self.fixture_rows.get(selected[0]) if selected else None
+    def connect_my_match(self):
         event = self.selected()
-        if not row or row['status'] != 'ready' or not event or self.checking_fixture:
+        if not event or event.get('status') != 'running' or self.checking_fixture:
             return
         session = self.app.backend.session
         if not session:
             self.notice.configure(text=tr('bracket.login'))
             return
         url = self.url
+        self.app._log(tr('bracket.lookup'), 'info')
         self.checking_fixture = True
         self.sync_connect()
         def checked(fixture, error):
             self.checking_fixture = False
             self.sync_connect()
             if (self.app.section.get() != 'tournaments' or self.selected() != event or self.url != url
-                    or self.app.backend.session != session or self.bracket.selection() != selected
-                    or self.fixture_rows.get(selected[0]) != row):
+                    or self.app.backend.session != session):
                 return
             if error or not fixture:
                 self.notice.configure(text=error or tr('bracket.unassigned'))
+                self.app._log(error or tr('bracket.unassigned'), 'error' if error else 'info')
                 return
             self.app.zerotier(fixture=fixture)
-        self.run(lambda: assigned_fixture(url, session, event['id'], row), checked)
+        self.run(lambda: assigned_fixture(url, session, event['id']), checked)
 
-    def table(self, columns, titles, height, expand=False):
+    def table(self, columns, titles, row):
         frame = ttk.Frame(self.inner)
-        frame.pack(fill='both' if expand else 'x', expand=expand, pady=4)
-        tree = ttk.Treeview(frame, columns=columns[1:], height=height, selectmode='browse')
+        frame.grid(row=row, column=0, sticky='nsew', pady=2)
+        tree = ttk.Treeview(frame, columns=columns[1:], height=1, selectmode='browse', style='Tournament.Treeview')
         for key, title in zip(columns, titles):
             tree.heading(key, text=tr(title))
             tree.column(key, width=150 if key == '#0' else 90, minwidth=35)
@@ -161,7 +165,6 @@ class TournamentPanel(RoundFrame):
 
     def select(self, _event=None):
         event = self.selected()
-        self.fixture_rows.clear()
         self.sync_connect()
         self.bracket.delete(*self.bracket.get_children())
         self.web.configure(state='normal' if event else 'disabled')
@@ -188,10 +191,9 @@ class TournamentPanel(RoundFrame):
                 if group not in groups:
                     title = tr('bracket.stage_round', stage=tr('bracket.' + group[0]), number=group[1])
                     groups[group] = self.bracket.insert('', 'end', text=title, open=True)
-                item = self.bracket.insert(groups[group], 'end', text=f"#{row['number']}", values=(
+                self.bracket.insert(groups[group], 'end', text=f"#{row['number']}", values=(
                     fixture_slot(row, 1), f"{row['p1_wins']} – {row['p2_wins']}", fixture_slot(row, 2),
                     tr('bracket.' + row['status'])))
-                self.fixture_rows[item] = row
             self.notice.configure(text=' '.join(filter(None, (confirmed, '' if groups else tr('bracket.pending')))))
         self.run(lambda: tournament_bracket(url, event['id']), loaded)
 

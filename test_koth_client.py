@@ -42,18 +42,17 @@ class KothClientTests(unittest.TestCase):
 
     def test_ready_fixture_is_scoped_to_authenticated_pair_and_event(self):
         from koth_client import assigned_fixture
-        row = {'status': 'ready', 'player1__name': 'Alie el', 'player2__name': 'DRAGON LUCARIO'}
         fixture = {'event_id': 7, 'fixture_id': 42, 'session': 'round-id', 'role': 'p2',
                    'p1': {'name': 'Alie el'}, 'p2': {'name': 'DRAGON LUCARIO'}}
-        with patch('koth_client.api_call', return_value={'fixtures': [fixture]}) as api:
-            self.assertEqual(assigned_fixture(self.url, 'session', 7, row), fixture)
+        with patch('koth_client.api_call', return_value={'fixtures': [dict(fixture, event_id=9), fixture, dict(fixture, fixture_id=43)]}) as api:
+            self.assertEqual(assigned_fixture(self.url, 'session', 7), fixture)
             api.assert_called_once_with(self.url, 'GET', '/api/netplay/fixtures/', timeout=8,
                                         extra_headers={'X-Netplay-Session': 'session'}, follow_redirects=False)
-            self.assertIsNone(assigned_fixture(self.url, 'session', 8, row))
-            self.assertIsNone(assigned_fixture(self.url, 'session', 7, dict(row, player1__name='Other')))
-            self.assertIsNone(assigned_fixture(self.url, 'session', 7, dict(row, status='waiting')))
+            self.assertIsNone(assigned_fixture(self.url, 'session', 8))
+            api.return_value = {'fixtures': []}
+            self.assertIsNone(assigned_fixture(self.url, 'session', 7))
             with self.assertRaises(AccountError):
-                assigned_fixture(self.url, '', 7, row)
+                assigned_fixture(self.url, '', 7)
 
     def test_fixture_client_and_launcher_use_direct_udp_with_automatic_addresses(self):
         from koth_client import wait_fixture

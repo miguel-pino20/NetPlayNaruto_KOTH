@@ -98,22 +98,15 @@ def tournament_bracket(url, event_id):
     return api_call(site_url(url), 'GET', f'/api/netplay/tournaments/{int(event_id)}/bracket/', timeout=8)
 
 
-def assigned_fixture(url, session, event_id, row):
-    """Resolve the selected public row against the signed-in player's ready assignments."""
+def assigned_fixture(url, session, event_id):
+    """Return the account's first ready match in this tournament, in Django's fixture order."""
     url = site_url(url)
     if not session or urlsplit(url).scheme != 'https':
         raise AccountError('Conectar al cruce requiere HTTPS y una sesión de Discord.')
-    if row.get('status') != 'ready':
-        return None
     result = api_call(url, 'GET', '/api/netplay/fixtures/', timeout=8,
                       extra_headers={'X-Netplay-Session': session}, follow_redirects=False)
-    # Older bracket responses expose the player names but omit the fixture ID.
-    # Participant names are unique within the tournament. Require one exact pair.
-    matches = [f for f in result['fixtures'] if f['event_id'] == event_id
-               and (f['fixture_id'] == row['id'] if 'id' in row else
-                    (f['p1']['name'], f['p2']['name']) == (row['player1__name'], row['player2__name']))
-               and f['role'] in ('p1', 'p2') and f['session']]
-    return matches[0] if len(matches) == 1 else None
+    return next((fixture for fixture in result['fixtures']
+                 if fixture['event_id'] == event_id and fixture['role'] in ('p1', 'p2') and fixture['session']), None)
 
 
 def wait_fixture(args, is_host, login, stopped):
