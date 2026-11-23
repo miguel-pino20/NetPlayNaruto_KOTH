@@ -80,6 +80,7 @@ class MobileApp(App):
         root.add_widget(brand)
         root.add_widget(self.label('Base Android · PINE / ZeroTier / KOTH', 26))
         tabs = TabbedPanel(do_default_tab=False, tab_width=dp(88))
+        tabs.bind(width=lambda panel, width: setattr(panel, 'tab_width', min(dp(88), width / 6)))
         self.connection = self.page(tabs, 'Conexión')
         self.available_release = None
         row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
@@ -106,6 +107,7 @@ class MobileApp(App):
         self.button(self.connection, 'Descargar estado en Descargas', self.export_state)
         self.label_in(self.connection, 'Se guarda en Descargas/NarutoNetplay. '
                       'Debes pasarlo a ARMSX2 por tu cuenta.', 14, 80)
+        self.label_in(self.connection, 'Para ZeroTier, instala el estado actualizado en el slot 1 de ARMSX2.', 14, 60)
         self.label_in(self.connection, 'ZeroTier')
         self.field(self.connection, 'zt_address', 'Tu IPv4 de ZeroTier', '')
         self.button(self.connection, 'Guardar configuración', self.save_connection)
@@ -164,7 +166,6 @@ class MobileApp(App):
 
         koth = self.page(tabs, 'KOTH')
         self.field(koth, 'koth_url', 'Servidor KOTH (HTTPS)', 'https://narutimateonline.servegame.com')
-        self.button(koth, 'Inscripción a torneos', self.open_tournaments)
         self.button(koth, 'Actualizar eventos', self.list_events)
         self.koth_create = self.button(koth, 'Crear evento casual', self.create_casual)
         self.koth_owner_scope = None
@@ -174,7 +175,7 @@ class MobileApp(App):
         self.koth_selected_id = None
         self.koth_events_box = BoxLayout(orientation='vertical', spacing=dp(6), size_hint_y=None)
         self.koth_events_box.bind(minimum_height=self.koth_events_box.setter('height'))
-        self.label_in(self.koth_events_box, 'Pulsa Actualizar eventos para buscar torneos.', 14, 50)
+        self.label_in(self.koth_events_box, 'Pulsa Actualizar eventos para buscar eventos KOTH.', 14, 50)
         koth.add_widget(self.koth_events_box)
         self.koth_game = Spinner(text=self.prefs.get('koth_game', self.game.text), values=('un5', 'un6'),
                                  size_hint_y=None, height=dp(48))
@@ -187,6 +188,15 @@ class MobileApp(App):
         self.koth_info = self.label_in(koth, '', 14, 92)
         self.inputs['koth_url'].bind(text=self.refresh_koth_entry)
         self.refresh_koth_entry()
+        tournaments = self.page(tabs, 'Torneos')
+        self.button(tournaments, 'Actualizar torneos', self.open_tournaments)
+        self.tournament_events = self.tournament_column(tournaments)
+        self.tournament_details = self.tournament_column(tournaments)
+        self.tournament_id = None
+        self.button(tournaments, 'Detener partida', self.stop_host)
+        self.button(tournaments, 'Volver a ARMSX2', self.open_emulator)
+        self.tournament_status = self.label_in(tournaments, 'Sin conexión.', 14, 110)
+        self.inputs['koth_url'].bind(text=self.clear_tournaments)
         account = self.page(tabs, 'Discord')
         self.account_label = self.label_in(account, 'Sin sesión verificada', 17, 70)
         self.login_button = self.button(account, 'Iniciar sesión con Discord', self.login)
@@ -434,35 +444,171 @@ class MobileApp(App):
             self.koth_join.disabled = False
             self.set_text(self.koth_info, 'Si tu IP de ZeroTier registrada cambia, perderás hasta 1 punto.')
 
+    def tournament_column(self, parent):
+        content = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(6))
+        content.bind(minimum_height=content.setter('height'))
+        parent.add_widget(content)
+        return content
+
+    def tournament_source(self):
+        return self.inputs['koth_url'].text.strip().rstrip('/')
+
+    def clear_tournaments(self, *_):
+        self.tournament_id = None
+        self.tournament_events.clear_widgets()
+        self.tournament_details.clear_widgets()
+
     def open_tournaments(self):
-        from koth_client import scheduled_tournaments, join_tournament, tournament_label
-        source = self.inputs['koth_url'].text.strip()
+        from koth_client import scheduled_tournaments, tournament_label
+        source = self.tournament_source()
+
         def show(events):
-            if source != self.inputs['koth_url'].text.strip():
+            if source != self.tournament_source():
                 return
-            if not events:
-                self.say('No hay torneos con inscripción abierta.')
-                return
-            scroll = ScrollView()
-            items = BoxLayout(orientation='vertical', spacing=dp(8), size_hint_y=None)
-            items.bind(minimum_height=items.setter('height'))
-            scroll.add_widget(items)
-            popup = Popup(title=tr('Inscripción a torneos'), content=scroll, size_hint=(0.94, 0.8))
-            def enroll(event):
-                popup.dismiss()
-                session = self.account.session if self.discord_verified else None
-                if not session:
-                    self.say('Inicia sesión con Discord para inscribirte.')
-                    return
-                self.run_job(lambda: join_tournament(source, session, event['id']),
-                             lambda participant: self.say('Inscripción confirmada en {name} (#{id}).',
-                                                          name=event['name'], id=participant))
+            self.tournament_events.clear_widgets()
+            selected = next((event for event in events if event['id'] == self.tournament_id), None)
             for event in events:
-                text = tr('Inscribirme en {event}', event=tournament_label(event))
-                self.button(items, text, lambda event=event: enroll(event))
-            self.button(items, 'Cancelar', popup.dismiss)
-            popup.open()
-        self.run_job(lambda: scheduled_tournaments(source), show)
+                self.button(self.tournament_events, tournament_label(event) + ' · ' +
+                            self.tournament_state(event.get('status', 'draft')),
+                            lambda event=event: self.select_tournament(source, event))
+            self.tournament_details.clear_widgets()
+            if events:
+                self.select_tournament(source, selected or events[0])
+            else:
+                self.tournament_id = None
+                self.label_in(self.tournament_events, 'No hay torneos disponibles.')
+
+        self.run_job(lambda: scheduled_tournaments(https_url(source), all_statuses=True), show)
+
+    @staticmethod
+    def tournament_state(status):
+        labels = {'draft': 'Inscripciones', 'running': 'En curso', 'finished': 'Finalizado',
+                  'waiting': 'Pendiente', 'ready': 'Listo', 'bye': 'Pase libre', 'cancelled': 'Cancelado'}
+        return tr(labels.get(status, status))
+
+    def select_tournament(self, source, event):
+        from koth_client import tournament_bracket
+        if self.busy or source != self.tournament_source():
+            return
+        self.tournament_id = event['id']
+        panel = self.tournament_details
+        panel.clear_widgets()
+        self.label_in(panel, event['name'], 19)
+        self.run_job(lambda: tournament_bracket(https_url(source), event['id']),
+                     lambda data: self.show_tournament(source, event, data))
+
+    def show_tournament(self, source, event, data):
+        import webbrowser
+        from koth_client import site_url
+        if not self.is_current_tournament(source, event):
+            return
+        panel = self.tournament_details
+        status = data.get('status', event.get('status', 'draft'))
+        if status == 'draft':
+            self.button(panel, 'Inscribirme en el torneo', lambda: self.enroll_tournament(source, event))
+        if status == 'running':
+            self.label_in(panel, 'Juego del cruce', 14, 30)
+            game = Spinner(text=self.game.text, values=('un5', 'un6'),
+                           size_hint_y=None, height=dp(48))
+            panel.add_widget(game)
+            self.button(panel, 'Conectar a mi cruce', lambda: self.connect_tournament(source, event, game.text))
+        self.button(panel, 'Abrir cuadro público', lambda: webbrowser.open(
+            f"{site_url(source)}/torneos/{int(event['id'])}/publico/"))
+        bracket = self.tournament_column(panel)
+        self.label_in(bracket, 'Cuadro del torneo', 17)
+        if not data['fixtures']:
+            self.label_in(bracket, 'El cuadro todavía no está disponible.')
+        stages = {'winners': 'Ganadores', 'losers': 'Perdedores', 'grand_final': 'Gran final',
+                  'reset': 'Final decisiva', 'tiebreak': 'Desempate', 'round_robin': 'Todos contra todos'}
+        previous = None
+        for row in data['fixtures']:
+            group = row['stage'], row['round_number']
+            if group != previous:
+                previous = group
+                self.label_in(bracket, tr('{stage} · Ronda {number}', stage=tr(stages.get(group[0], group[0])),
+                                         number=group[1]), 15, 34)
+            p1, p2 = (self.tournament_player(row, slot) for slot in (1, 2))
+            self.label_in(bracket, f"#{row['number']} · {self.tournament_state(row['status'])}\n"
+                          f"{p1}  {row['p1_wins']} – {row['p2_wins']}  {p2}", 14, 58)
+
+    @staticmethod
+    def tournament_player(row, slot):
+        if name := row.get(f'player{slot}__name'):
+            return name
+        if number := row.get(f'source{slot}__number'):
+            return tr('Perdedor #{number}' if row.get(f'source{slot}_loser') else 'Ganador #{number}',
+                      number=number)
+        return '—'
+
+    def is_current_tournament(self, source, event):
+        return source == self.tournament_source() and event['id'] == self.tournament_id
+
+    def enroll_tournament(self, source, event):
+        from koth_client import join_tournament
+        session = self.account.session if self.discord_verified else None
+        if not session:
+            self.say('Inicia sesión con Discord para inscribirte.')
+            return
+
+        def show(participant):
+            if self.is_current_tournament(source, event) and self.account.session == session:
+                self.say('Inscripción confirmada en {name} (#{id}).', name=event['name'], id=participant)
+
+        self.run_job(lambda: join_tournament(source, session, event['id']), show)
+
+    def connect_tournament(self, source, event, game):
+        from host import prepare_files
+        from koth_client import assigned_fixture
+        if platform != 'android':
+            self.say('El servicio host se inicia desde la APK Android.')
+            return
+        session = self.account.session if self.discord_verified else None
+        if not session:
+            self.say('Inicia sesión con Discord para conectar al cruce.')
+            return
+        if self.active_mobile_session():
+            self.say('Ya hay una partida activa. Deténla antes de crear otra.')
+            return
+        try:
+            url = https_url(source)
+            try:
+                address = validate_address(self.inputs['zt_address'].text.strip())
+            except ValueError:
+                raise ValueError(tr('Revisa la IPv4 de ZeroTier en la pestaña Conexión.')) from None
+            slot = int(self.inputs['pine_slot'].text)
+            if not 1 <= slot <= 65535:
+                raise ValueError(tr('Puerto PINE inválido.'))
+            self.persist()
+        except (ValueError, OSError) as error:
+            self.say(str(error))
+            return
+
+        def prepare():
+            fixture = assigned_fixture(url, session, event['id'])
+            if fixture:
+                prepare_files(self.user_data_dir, game)
+            return fixture
+
+        def show(fixture):
+            if (not self.is_current_tournament(source, event) or not self.discord_verified
+                    or self.account.session != session):
+                return
+            if not fixture:
+                self.say('Todavía no tienes un cruce listo en este torneo.')
+                return
+            if self.active_mobile_session():
+                self.say('Ya hay una partida activa. Deténla antes de crear otra.')
+                return
+            role = fixture['role']
+            config = {'directory': self.user_data_dir, 'game': game, 'pine_slot': slot,
+                      'address': address, 'transport': 'direct', 'fixture': {
+                          'event_id': fixture['event_id'], 'fixture_id': fixture['fixture_id']},
+                      'url': url, 'role': 'host' if role == 'p1' else 'guest',
+                      'nick': fixture[role]['name'], 'overlay': False,
+                      'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
+            self.launch_mobile_service(config)
+
+        self.run_job(prepare, show)
 
     def list_events(self):
         try:
@@ -722,6 +868,7 @@ class MobileApp(App):
         message = state.get('message')
         self.host_status.text = message or tr('Host detenido.')
         self.client_status.text = message or tr('Sin conexión.')
+        self.tournament_status.text = (message if state.get('tournament') else None) or tr('Sin conexión.')
         self.koth_status.text = (message if state.get('role') == 'koth' else None) or tr('KOTH desconectado.')
         if state.get('phase') in ('starting', 'preparing', 'waiting', 'playing', 'stopping'):
             updated = state.get('time')
@@ -802,7 +949,8 @@ class MobileApp(App):
         Path(config['stop_file']).unlink(missing_ok=True)
         (Path(self.user_data_dir) / 'host-room.json').unlink(missing_ok=True)
         write_json(Path(self.user_data_dir) / 'host-status.json',
-                   {'phase': 'starting', 'role': config['role'], 'message': tr('Servicio iniciando…')}, private=True)
+                   {'phase': 'starting', 'role': config['role'], 'tournament': bool(config.get('fixture')),
+                    'message': tr('Servicio iniciando…')}, private=True)
         config = dict(config, language=self.language)
         service = autoclass('org.un5.narutonetplay.ServiceHost')
         activity = autoclass('org.kivy.android.PythonActivity').mActivity

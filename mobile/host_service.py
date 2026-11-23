@@ -45,11 +45,9 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         return
-    phase = 'starting'
+    coordination_error = ''
 
     def report(state, message):
-        nonlocal phase
-        phase = state
         room_id = config.get('room_id', '') if config.get('role') == 'guest' else ''
         if config.get('transport') == 'server' and config.get('role', 'host') == 'host':
             try:
@@ -61,19 +59,25 @@ def main():
         write_json(status_path, {'phase': state, 'message': str(message)[-1800:],
                                  'room_id': room_id, 'transport': config.get('transport', 'direct'),
                                  'role': config.get('role', 'host'),
+                                 'tournament': bool(config.get('fixture')),
                                  'time': time.time(), 'pid': os.getpid()}, private=True)
 
     class StatusOutput:
         def __init__(self, output):
             self.output, self.pending = output, ''
         def write(self, text):
+            nonlocal coordination_error
             self.output.write(text)
             self.pending = (self.pending + text)[-4000:]
             while '\n' in self.pending:
                 line, self.pending = self.pending.split('\n', 1)
                 if config.get('role') == 'koth':
                     continue
-                if line.startswith('host: waiting'):
+                if line.startswith('ZeroTier:'):
+                    report('waiting', line)
+                elif line.startswith('No se pudo coordinar el cruce'):
+                    coordination_error = line
+                elif line.startswith('host: waiting'):
                     report('waiting', 'HOST P1 · UDP 47400\n' + line)
                 elif line.startswith('host: room '):
                     report('waiting', tr('HOST P1 · Sala publicada en el servidor UN5. Esperando jugador 2.'))
@@ -104,7 +108,8 @@ def main():
         else:
             report('starting', tr('Host P1 iniciando. Vuelve a ARMSX2 y pulsa Reanudar.'))
             code = run_host(config, report)
-        report('stopped' if code == 0 else 'error', tr('Sesión finalizada (código {code}).', code=code))
+        report('stopped' if code == 0 else 'error',
+               coordination_error or tr('Sesión finalizada (código {code}).', code=code))
     except InterruptedError as error:
         report('stopped', str(error))
     except BaseException as error:

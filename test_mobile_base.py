@@ -77,6 +77,29 @@ class MobileBaseTests(unittest.TestCase):
         self.assertEqual(validate_address('10.147.0.12'), '10.147.0.12')
 
 class MobileHostTests(unittest.TestCase):
+    def test_tournament_roles_use_the_shared_fixture_connection(self):
+        from mobile.host import session_arguments
+        from netplay import main
+
+        for role in ('host', 'guest'):
+            with self.subTest(role=role), patch('netplay.cmd_play') as play:
+                command = session_arguments({
+                    'directory': '/private/mobile', 'game': 'un6', 'pine_slot': 28011,
+                    'address': '10.147.0.12', 'stop_file': '/private/mobile/host.stop',
+                    'role': role, 'url': 'https://events.example.com',
+                    'fixture': {'event_id': 7, 'fixture_id': 42},
+                })
+                main(command)
+                args, is_host = play.call_args.args
+                self.assertEqual(is_host, role == 'host')
+                self.assertEqual(args.tournament_fixture, [7, 42])
+                self.assertEqual(args.fixture_game, 'un6')
+                self.assertEqual(args.api_url, 'https://events.example.com')
+                self.assertEqual(args.bind_address, '10.147.0.12')
+                self.assertFalse(args.server)
+                self.assertTrue(args.auto_delay)
+                self.assertNotIn('--connect', command)
+
     def test_host_reuses_desktop_protocol_options_without_relay(self):
         from mobile.host import host_arguments
         args = host_arguments({'directory': '/private/mobile', 'game': 'un6', 'pine_slot': 28011,

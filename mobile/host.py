@@ -97,6 +97,12 @@ def session_arguments(config):
         return args + ['--room', room, '--fetch-state']
     bind = validate_address(config['address']) if config.get('address') else '0.0.0.0'
     args += ['--zerotier', '--bind-address', bind, '--server', '']
+    if fixture := config.get('fixture'):
+        if bind == '0.0.0.0':
+            raise ValueError(tr('El cruce necesita una dirección local de ZeroTier.'))
+        args += ['--tournament-fixture', str(fixture['event_id']), str(fixture['fixture_id']),
+                 '--api-url', config['url'], '--fixture-game', config['game']]
+        return args + (['--no-share-state'] if role == 'host' else [])
     if role == 'guest':
         args += ['--connect', validate_address(config.get('host_ip', '')) + ':47400']
     return args
@@ -205,6 +211,8 @@ def run_host(config, report):
     else:
         from appdata import load_session
         token, _ = load_session()
+        if config.get('fixture') and not token:
+            raise ValueError(tr('Inicia sesión con Discord para conectar al cruce.'))
         if token:
             os.environ['UN5_SCOREBOARD_SESSION'] = token
         else:
@@ -213,8 +221,12 @@ def run_host(config, report):
     # Android detection is built into Pine. No subprocess executable is required.
     report('preparing', tr('Estado, mandos y hook comprobados. Conectando…'))
     try:
+        if config.get('fixture'):
+            os.environ['UN5_FIXTURE_LOGIN'] = token
         return netplay.main(argv)
     finally:
+        if config.get('fixture'):
+            os.environ.pop('UN5_FIXTURE_LOGIN', None)
         # The UI can freeze ARMSX2 while stopping. Retry release after the user
         # returns, rather than leaving the game's NetPad barrier armed forever.
         from core_link import PineCore, resolve_base
