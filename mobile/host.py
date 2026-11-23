@@ -35,14 +35,15 @@ def paths(directory, game):
     return root / 'match.p2s', root / 'symbols.json'
 
 
-def prepare_files(directory, game):
+def prepare_files(directory, game, *, relay=False):
     from discord_auth import api_call, ssl_context
+    from netlink import default_file
     state, symbols = paths(directory, game)
     query = '?game=un6' if game == 'un6' else ''
     info = api_call(SERVER, 'GET', '/default' + query)
     for kind, destination in (('state', state), ('symbols', symbols)):
-        expected = info.get(kind, '')
-        if len(expected) != 16 or any(c not in '0123456789abcdef' for c in expected):
+        url, expected = default_file(SERVER, game, kind, info, relay=relay)
+        if not isinstance(expected, str) or len(expected) != 16 or any(c not in '0123456789abcdef' for c in expected):
             raise ValueError(tr('El servidor no publicó un identificador válido para {kind}', kind=kind))
         if destination.exists() and file_tag(destination) == expected:
             continue
@@ -50,7 +51,7 @@ def prepare_files(directory, game):
         temp = destination.with_suffix('.part')
         try:
             digest, total = hashlib.sha256(), 0
-            request = Request(SERVER + '/default/' + kind + query, headers={'User-Agent': 'UN5Mobile/0.2'})
+            request = Request(url, headers={'User-Agent': 'UN5Mobile/0.2'})
             with urlopen(request, timeout=30, context=ssl_context()) as response, temp.open('wb') as output:
                 while chunk := response.read(65536):
                     total += len(chunk)
@@ -125,7 +126,14 @@ def ensure_controllers(client):
 def wait_for_match(config, report):
     from core_link import PineCore, resolve_base
     from pine import Pine, PineError
-    _, symbols = paths(config['directory'], config['game'])
+    from netlink import UN6_ORIGINAL_STATE_TAG, UN6_PORTAL_STATE_TAG
+    state, symbols = paths(config['directory'], config['game'])
+    expected_un6 = file_tag(state) if config['game'] == 'un6' else None
+    # ARMSX2 loads the file installed by the player, which can differ from the download.
+    awakening_instruction = {
+        UN6_ORIGINAL_STATE_TAG: 0x0C07FA84,
+        UN6_PORTAL_STATE_TAG: 0x24020001,
+    }.get(expected_un6)
     deadline = time.monotonic() + 90
     loaded, configured, last, last_report = False, False, '', 0.0
     while time.monotonic() < deadline and not Path(config['stop_file']).exists():
@@ -148,6 +156,8 @@ def wait_for_match(config, report):
             base, _, _ = resolve_base(client, symbols)
             if not PineCore(base, pine=client, serial=None).frozen():
                 raise ValueError(tr('Falta el estado compartido preparado en el slot 1 de ARMSX2.'))
+            if awakening_instruction is not None and client.read(0xA19A34, 4) != awakening_instruction:
+                raise ValueError(tr('El estado de UN6 en el slot 1 de ARMSX2 no coincide con el de esta partida.'))
             return
         except (PineError, OSError, RuntimeError, ValueError, KeyError) as error:
             last = str(error)

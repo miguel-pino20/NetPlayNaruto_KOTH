@@ -51,7 +51,7 @@ import urllib.request
 from pathlib import Path
 
 from i18n import tr
-from netlink import DEFAULT_SERVER, DEFAULT_API_URL
+from netlink import DEFAULT_SERVER, DEFAULT_API_URL, default_file
 from appdata import CONFIG_FILE, DATA_DIR, STATE_NAME, STATE_PATH, SYMBOLS_PATH, write_json      # noqa: F401
 from discord_auth import (UA, ssl_context, AccountError, DiscordMixin, account_game_nick, api_call,   # noqa: F401
                           fetch_avatar)
@@ -655,12 +655,12 @@ class Backend(DiscordMixin):
         return bool(self.account and self.account.get("admin"))
 
     @staticmethod
-    def _download(path: str, dest: Path, want_tag: str):
-        """Baixa http://SERVER_ADDR<path> para `dest`, conferindo o sha256[:16]. Levanta AccountError."""
+    def _download(url: str, dest: Path, want_tag: str):
+        """Baixa a URL para `dest`, conferindo o sha256[:16]. Levanta AccountError."""
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_name(dest.name + ".part")
         digest = hashlib.sha256()
-        req = urllib.request.Request(f"{SERVER_URL}{path}", headers={"User-Agent": UA})
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
         try:
             with urllib.request.urlopen(req, timeout=30, context=ssl_context()) as resp, open(tmp, "wb") as f:
                 while True:
@@ -679,7 +679,7 @@ class Backend(DiscordMixin):
         finally:
             tmp.unlink(missing_ok=True)
 
-    def sync_default(self, game="un5"):
+    def sync_default(self, game="un5", *, relay=False):
         """Baixa o save state (e o symbols.json, se nao for o dono) do servidor quando o local for diferente.
         Roda em thread; evento: ("sync", ok, texto)."""
         admin = self.is_admin()
@@ -695,13 +695,13 @@ class Backend(DiscordMixin):
                 state_p, sym_p = game_paths(game)
                 wanted = [("state", state_p)] + ([] if admin else [("symbols", sym_p)])
                 for kind, dest in wanted:
-                    want = info.get(kind)
+                    url, want = default_file(SERVER_URL, game, kind, info, relay=relay)
                     if not want:
                         raise AccountError(tr("err.no_kind", kind=kind))
                     local = state_tag(dest) if dest.is_file() else ""
                     if local != want:
                         self.q.put(("line", tr("log.dl_default", kind=kind)))
-                        self._download(f"/default/{kind}{game_q(game)}", dest, want)
+                        self._download(url, dest, want)
                 self.q.put(("sync", True, ""))
             except AccountError as exc:
                 self.q.put(("sync", False, str(exc)))

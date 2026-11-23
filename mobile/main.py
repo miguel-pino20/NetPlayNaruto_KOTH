@@ -779,7 +779,7 @@ class MobileApp(App):
                   'nick': (self.account.account or {}).get('nick') or (('Android P1' if role == 'host' else 'Android P2') if transport == 'server' else ('Player1' if role == 'host' else 'Player2')),
                   'overlay': self.overlay.active,
                   'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
-        self.run_job(lambda: prepare_files(self.user_data_dir, game),
+        self.run_job(lambda: prepare_files(self.user_data_dir, game, relay=transport == 'server'),
                      lambda _: self.launch_mobile_service(config))
 
     def active_mobile_session(self):

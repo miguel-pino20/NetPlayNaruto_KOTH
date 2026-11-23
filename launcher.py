@@ -1129,7 +1129,7 @@ class Launcher(tk.Tk):
         self._set_status("LOADING", BLUE)
         self._set_buttons(True)
         self.stop_btn.configure(state="disabled")
-        self.backend.sync_default(self.game)
+        self.backend.sync_default(self.game, relay=True)
 
     def _launch(self, role):
         if role == "guest":                               # the server decides first (same IP / same account)

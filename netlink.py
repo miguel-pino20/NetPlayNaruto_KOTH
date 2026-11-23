@@ -18,6 +18,20 @@ MAGIC = b"UN5\xfe"
 DEFAULT_PORT = 47500
 DEFAULT_SERVER = '137.131.158.54:47500'
 DEFAULT_API_URL = 'https://un5netplay.duckdns.org'
+UN6_PORTAL_STATE_URL = 'https://narutimateonline.servegame.com/descargas/un6/'
+UN6_PORTAL_STATE_TAG = '391a68957bb8a006'
+UN6_ORIGINAL_STATE_TAG = '613a17e2973ea6a8'
+UN6_PORTAL_SYMBOLS_TAG = 'e785298325987dad'
+
+
+def default_file(api_url, game, kind, metadata, *, relay=False):
+    """Pair the verified portal patch with its symbols and respect the relay's advertised tag."""
+    query = '?game=un6' if game == 'un6' else ''
+    tag = metadata.get(kind)
+    if (game == 'un6' and kind == 'state' and metadata.get('symbols') == UN6_PORTAL_SYMBOLS_TAG
+            and (tag == UN6_PORTAL_STATE_TAG or (not relay and tag == UN6_ORIGINAL_STATE_TAG))):
+        return UN6_PORTAL_STATE_URL, UN6_PORTAL_STATE_TAG
+    return f'{api_url}/default/{kind}{query}', tag
 
 
 class ServerError(Exception):
