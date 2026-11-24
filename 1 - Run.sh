@@ -41,8 +41,11 @@ if ! "$PYTHON" -m pip install --upgrade --quiet --retries 0 --timeout 10 certifi
     echo 'AVISO: No se pudo actualizar certifi. Se continúa con los certificados disponibles.' >&2
 fi
 
-# UN5_SKIP_UPDATE=1 permite iniciar la versión local sin consultar GitHub.
-if [[ "${UN5_SKIP_UPDATE:-0}" != 1 ]]; then
+# Un checkout Git se actualiza con su propio remoto y rama.
+# El actualizador de ZIP no debe sobreescribir sus archivos versionados.
+if [[ -e .git ]]; then
+    echo 'Iniciando el código de este checkout Git. Para actualizarlo, usa git pull --ff-only con su remoto y rama.'
+elif [[ "${UN5_SKIP_UPDATE:-0}" != 1 ]]; then
     echo 'Buscando actualizaciones del launcher...'
     "$PYTHON" - <<'PY'
 import io
@@ -58,6 +61,12 @@ import zipfile
 
 root = Path.cwd()
 marker = root / '.update_commit'
+repository, branch = 'zMath3usMSF/UN5-Netplay', 'main'
+if (root / 'release_info.py').is_file():
+    from release_info import REPOSITORY
+    if REPOSITORY == 'miguel-pino20/NetPlayNaruto_KOTH':
+        repository, branch = REPOSITORY, 'KOTH'
+archive_root = repository.split('/')[-1]
 try:
     import certifi
     context = ssl.create_default_context(cafile=certifi.where())
@@ -72,7 +81,7 @@ def download(url, timeout):
 
 
 try:
-    commit = json.loads(download('https://api.github.com/repos/zMath3usMSF/UN5-Netplay/commits/main', 10))
+    commit = json.loads(download(f'https://api.github.com/repos/{repository}/commits/{branch}', 10))
     sha = commit['sha']
     if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
         raise ValueError('GitHub devolvió un identificador de versión inválido')
@@ -82,20 +91,21 @@ try:
     else:
         print('Actualización disponible. Descargando...')
         # Descargar el mismo commit que se registra, aunque main cambie entretanto.
-        archive = download(f'https://github.com/zMath3usMSF/UN5-Netplay/archive/{sha}.zip', 60)
+        archive = download(f'https://github.com/{repository}/archive/{sha}.zip', 60)
         excluded = {'.git', '.agents', '.codex', '.aws', '.venv', 'venv', '__pycache__',
                     '.vscode', '.idea', 'config.json', 'session.json', 'symbols.json',
                     'un5_launcher.json', '.env', '.update_commit', '1 - Run.sh'}
         with tempfile.TemporaryDirectory(prefix='un5-update-') as tmp:
             staged = []
             with zipfile.ZipFile(io.BytesIO(archive)) as source:
-                if f'UN5-Netplay-{sha}/launcher.py' not in source.namelist():
+                prefix = f'{archive_root}-{sha}'
+                if f'{prefix}/launcher.py' not in source.namelist():
                     raise ValueError('El archivo descargado no contiene launcher.py')
                 for entry in source.infolist():
                     parts = PurePosixPath(entry.filename).parts
                     if entry.is_dir() or len(parts) < 2:
                         continue
-                    if parts[0] != f'UN5-Netplay-{sha}' or '..' in parts or entry.filename.startswith('/'):
+                    if parts[0] != prefix or '..' in parts or entry.filename.startswith('/'):
                         raise ValueError('Ruta inválida en la actualización')
                     rel = Path(*parts[1:])
                     if any(p in excluded or re.search(r'\.bak($|[0-9])|\.bak_seguranca$|\.(p2s|key|pem)$', p)

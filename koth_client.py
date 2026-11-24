@@ -149,13 +149,20 @@ def wait_fixture(args, is_host, login, stopped):
             body['peer_attempt'] = result['peer_attempt']
             if result['ready'] and result['session_epoch'] != getattr(args, 'previous_fixture_epoch', None):
                 peer = str(ipaddress.IPv4Address(result['address']))
+                if peer == args.bind_address:
+                    raise AccountError('Ambos jugadores registraron la misma IPv4 de ZeroTier. Revisen la red elegida.')
                 args.session_epoch = result['session_epoch']
                 args.fixture_result_grant = result.get('result_grant')
                 if is_host:
                     args.expect_guest_ip = peer
                 else:
-                    args.connect = f"{peer}:{int(result['port'])}"
-                print('ZeroTier: ambos jugadores listos. Conectando…', flush=True)
+                    port = int(result['port'])
+                    if not 1 <= port <= 65535:
+                        raise AccountError('Django devolvió un puerto UDP inválido para P1.')
+                    args.connect = f'{peer}:{port}'
+                endpoint = peer if is_host else args.connect
+                print(f'ZeroTier: cruce {fixture} · {"P1" if is_host else "P2"} · '
+                      f'local {args.bind_address} · rival {endpoint} · sesión {args.session_epoch}.', flush=True)
                 return not stopped()
         for _ in range(10):
             if stopped():

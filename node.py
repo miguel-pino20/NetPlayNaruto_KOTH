@@ -134,6 +134,8 @@ class Node:
         self.first_capture = first_capture
         self._init_input_frames(delay)
         self.started = False
+        self.startup_mismatched_session = False
+        self.startup_unexpected_ip = False
         self.hash_local_next = 0
         self.reports = {}                                    # host: {member: {frame: hash}}
         self.hash_need = {}                                  # host: {member: next hash frame it needs}
@@ -368,10 +370,14 @@ class Node:
                 m = wire.parse(data)
             except wire.ProtocolError:
                 continue
-            if m['session'] != self.session:
-                continue
             peer = self.peers.get(m['member'])
+            if m['session'] != self.session:
+                if not self.started and peer and peer.strict and self._known_ip(peer, addr):
+                    self.startup_mismatched_session = True
+                continue
             if peer is not None and not via_relay and peer.strict and not self._known_ip(peer, addr):
+                if not self.started:
+                    self.startup_unexpected_ip = True
                 continue
             if m['kind'] == wire.HELLO:
                 slot = m['slot']

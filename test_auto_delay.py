@@ -1,5 +1,6 @@
 """Exercise the real UDP handshake with a simulated clock and game-path latency."""
 import unittest
+import socket
 from unittest.mock import Mock, patch
 
 import node
@@ -63,3 +64,29 @@ class DelayTests(unittest.TestCase):
         host.probe_started = 1
         host.delay_samples = [180, 182, 189, 192, 190, 188, 194, 197, 200, 280]
         self.assertEqual(host._hello_choice(2000), 3)
+
+    def test_tournament_startup_distinguishes_wrong_session_and_wrong_ip(self):
+        from netplay import fixture_udp_timeout
+
+        host = node.Node(Mock(), 1, 0, 0, [0, 1], bind='127.0.0.1', epoch='current')
+        self.addCleanup(host.sock.close)
+        host.add_expected_peer(2, 1, ('127.0.0.2', 0))
+        self.assertIn('P2 no llegó a P1', fixture_udp_timeout(host))
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as guest:
+            guest.bind(('127.0.0.2', 0))
+            stale = wire.session_id(host.tag, host.delay, 'previous')
+            guest.sendto(wire.hello(2, stale, 0, 1, delay=host.delay, tag=host.tag, slot=1),
+                         host.sock.getsockname())
+            host._recv()
+            self.assertFalse(host.ready())
+            self.assertIn('otra sesión', fixture_udp_timeout(host))
+            host.sock.sendto(wire.hello(2, host.session, 0, 1, delay=host.delay, tag=host.tag, slot=1),
+                             host.sock.getsockname())
+            host._recv()
+            self.assertTrue(host.startup_unexpected_ip)
+            self.assertFalse(host.ready())
+            guest.sendto(wire.hello(2, host.session, 0, 1, delay=host.delay, tag=host.tag, slot=1),
+                         host.sock.getsockname())
+            host._recv()
+            self.assertTrue(host.ready())
+            self.assertIn('Llegó el saludo', fixture_udp_timeout(host))

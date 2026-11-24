@@ -1005,6 +1005,17 @@ def run_tournament(args, prepare_fixture=None):
                 print(f'Torneo: no se pudieron liberar los controles ({error}).', flush=True)
 
 
+def fixture_udp_timeout(node):
+    if node.ready():
+        return 'Llegó el saludo UDP del rival, pero el intercambio inicial quedó incompleto.'
+    if node.startup_mismatched_session:
+        return 'Llegó tráfico UDP del rival para otra sesión. Ambos deben detener el cruce y volver a iniciarlo.'
+    if node.startup_unexpected_ip:
+        return 'Llegó tráfico UDP desde otra IP. Ambos deben seleccionar la red ZeroTier del torneo.'
+    direction = 'P2 no llegó a P1' if node.is_host else 'P2 no recibió respuesta de P1'
+    return f'{direction} por UDP. Revisen la red ZeroTier y el puerto UDP de P1.'
+
+
 def play_connected(args, is_host, server_mode, pine, core):
     if not core.frozen():
         print('the game is not frozen at frame 0 of an armed match. Load the match state (made with "prepare") first.')
@@ -1135,6 +1146,7 @@ def play_connected(args, is_host, server_mode, pine, core):
                     break
         threading.Thread(target=presence_loop, daemon=True).start()
     _fine_timer(True)
+    fixture_deadline = time.monotonic() + 40 if getattr(args, 'tournament_fixture', None) else None
     last, last_frame, t0 = time.time(), 0, time.time()
     seen = 0
     soft_seen = 0
@@ -1149,6 +1161,9 @@ def play_connected(args, is_host, server_mode, pine, core):
     try:
         while not stop_requested(args):
             desync, closed = session.step()
+            if fixture_deadline and not node.started and time.monotonic() >= fixture_deadline:
+                print(f'ZeroTier: conexión agotada. {fixture_udp_timeout(node)}', flush=True)
+                return 1
             if board is not None:
                 board.tick()
             if fixture_results and fixture_results.confirmed_point is not None:

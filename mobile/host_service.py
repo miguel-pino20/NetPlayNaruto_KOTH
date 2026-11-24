@@ -73,7 +73,9 @@ def main():
                 line, self.pending = self.pending.split('\n', 1)
                 if config.get('role') == 'koth':
                     continue
-                if line.startswith('ZeroTier:'):
+                if line.startswith('ZeroTier: conexión agotada.'):
+                    terminal_message = line
+                elif line.startswith('ZeroTier:'):
                     report('waiting', line)
                 elif line.startswith(('No se pudo coordinar el cruce', 'Torneo: completaste tus cruces', 'Torneo: serie completada',
                                       'Torneo: conexión cerrada', 'Torneo: el cruce inicial')):
