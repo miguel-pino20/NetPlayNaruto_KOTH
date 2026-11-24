@@ -604,6 +604,7 @@ class MobileApp(App):
                       'address': address, 'transport': 'direct', 'fixture': {
                           'event_id': fixture['event_id'], 'fixture_id': fixture['fixture_id']},
                       'url': url, 'role': 'host' if role == 'p1' else 'guest',
+                      'round_robin': event['format'] == 'round_robin',
                       'nick': fixture[role]['name'], 'overlay': False,
                       'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
             self.launch_mobile_service(config)

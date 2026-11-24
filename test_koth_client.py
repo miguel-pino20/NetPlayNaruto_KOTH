@@ -80,6 +80,61 @@ class KothClientTests(unittest.TestCase):
             else:
                 self.assertEqual(args.connect, '10.1.2.2:47400')
 
+    def test_round_robin_reloads_and_waits_for_next_assigned_opponent(self):
+        from netplay import run_round_robin
+        from types import SimpleNamespace
+
+        first = {'fixture_id': 42, 'role': 'p1', 'p1': {'name': 'Ana'}, 'p2': {'name': 'Luis'}}
+        second = {'fixture_id': 43, 'role': 'p2', 'p1': {'name': 'Eva'}, 'p2': {'name': 'Ana'}}
+        played = []
+
+        def play(match, host):
+            played.append((match.tournament_fixture, match.cmd, host, match.nick, match.load_slot))
+            if host:
+                match.fixture_finished = True
+            # P2 can see the peer close before receiving its own acknowledgement.
+            return 0
+
+        def bracket(status):
+            return {'status': 'running', 'fixtures': [
+                {'stage': 'round_robin', 'player1__name': 'Ana', 'player2__name': 'Luis', 'status': 'finished'},
+                {'stage': 'round_robin', 'player1__name': 'Eva', 'player2__name': 'Ana', 'status': status},
+                {'stage': 'round_robin', 'player1__name': 'Luis', 'player2__name': 'Eva', 'status': 'waiting'},
+            ]}
+
+        args = SimpleNamespace(tournament_fixture=[7, 42], api_url=self.url, load_slot=None)
+        prepare = Mock(return_value=True)
+        with (patch.dict('os.environ', {'UN5_FIXTURE_LOGIN': 'login'}),
+              patch('koth_client.assigned_fixture', side_effect=[first, None, second]) as assigned,
+              patch('koth_client.tournament_bracket', side_effect=[
+                  bracket('waiting'), bracket('waiting'), bracket('ready'), bracket('finished')]),
+              patch('netplay.cmd_play', side_effect=play), patch('netplay.time.sleep')):
+            self.assertEqual(run_round_robin(args, prepare), 0)
+        self.assertEqual(prepare.call_count, 2)
+        self.assertEqual(played, [([7, 42], 'host', True, 'Ana', None), ([7, 43], 'guest', False, 'Ana', None)])
+        self.assertEqual(assigned.call_args.kwargs['exclude'], {42})
+
+    def test_round_robin_does_not_skip_a_disconnected_unfinished_series(self):
+        from netplay import run_round_robin
+        from types import SimpleNamespace
+
+        fixture = {'fixture_id': 42, 'role': 'p1', 'p1': {'name': 'Ana'}, 'p2': {'name': 'Luis'}}
+        bracket = {'status': 'running', 'fixtures': [
+            {'stage': 'round_robin', 'player1__name': 'Ana', 'player2__name': 'Luis',
+             'status': 'ready', 'p1_wins': 1, 'p2_wins': 0},
+        ]}
+        args = SimpleNamespace(tournament_fixture=[7, 42], api_url=self.url, load_slot=9)
+        with (patch('koth_client.assigned_fixture', return_value=fixture) as assigned,
+              patch('koth_client.tournament_bracket', return_value=bracket),
+              patch('netplay.cmd_play', return_value=0) as play,
+              patch('netplay.load_match_state', return_value=True) as prepare,
+              patch('netplay.cmd_stop') as release, patch('netplay.time.sleep')):
+            self.assertEqual(run_round_robin(args), 0)
+        assigned.assert_called_once()
+        play.assert_called_once()
+        prepare.assert_called_once_with(args)
+        release.assert_called_once_with(args)
+
     def test_membership_survives_restart_and_is_scoped_to_site_and_event(self):
         first = self.store.member(self.url, 2)
         self.assertEqual(MembershipStore(self.path).member(self.url, 2), first)

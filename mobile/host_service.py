@@ -45,7 +45,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         return
-    coordination_error = ''
+    terminal_message = ''
 
     def report(state, message):
         room_id = config.get('room_id', '') if config.get('role') == 'guest' else ''
@@ -66,7 +66,7 @@ def main():
         def __init__(self, output):
             self.output, self.pending = output, ''
         def write(self, text):
-            nonlocal coordination_error
+            nonlocal terminal_message
             self.output.write(text)
             self.pending = (self.pending + text)[-4000:]
             while '\n' in self.pending:
@@ -75,8 +75,9 @@ def main():
                     continue
                 if line.startswith('ZeroTier:'):
                     report('waiting', line)
-                elif line.startswith('No se pudo coordinar el cruce'):
-                    coordination_error = line
+                elif line.startswith(('No se pudo coordinar el cruce', 'Torneo: completaste tus cruces',
+                                      'Torneo: conexión cerrada', 'Torneo: el cruce inicial')):
+                    terminal_message = line
                 elif line.startswith('host: waiting'):
                     report('waiting', 'HOST P1 · UDP 47400\n' + line)
                 elif line.startswith('host: room '):
@@ -109,7 +110,7 @@ def main():
             report('starting', tr('Host P1 iniciando. Vuelve a ARMSX2 y pulsa Reanudar.'))
             code = run_host(config, report)
         report('stopped' if code == 0 else 'error',
-               coordination_error or tr('Sesión finalizada (código {code}).', code=code))
+               terminal_message or tr('Sesión finalizada (código {code}).', code=code))
     except InterruptedError as error:
         report('stopped', str(error))
     except BaseException as error:

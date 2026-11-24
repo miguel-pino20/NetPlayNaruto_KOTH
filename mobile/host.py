@@ -102,6 +102,8 @@ def session_arguments(config):
             raise ValueError(tr('El cruce necesita una dirección local de ZeroTier.'))
         args += ['--tournament-fixture', str(fixture['event_id']), str(fixture['fixture_id']),
                  '--api-url', config['url'], '--fixture-game', config['game']]
+        if config.get('round_robin'):
+            args.append('--round-robin')
         return args + (['--no-share-state'] if role == 'host' else [])
     if role == 'guest':
         args += ['--connect', validate_address(config.get('host_ip', '')) + ':47400']
@@ -217,12 +219,19 @@ def run_host(config, report):
             os.environ['UN5_SCOREBOARD_SESSION'] = token
         else:
             os.environ.pop('UN5_SCOREBOARD_SESSION', None)
-    wait_for_match(config, report)
     # Android detection is built into Pine. No subprocess executable is required.
-    report('preparing', tr('Estado, mandos y hook comprobados. Conectando…'))
+    def prepare():
+        wait_for_match(config, report)
+        report('preparing', tr('Estado, mandos y hook comprobados. Conectando…'))
+        return True
+
+    if not config.get('round_robin'):
+        prepare()
     try:
         if config.get('fixture'):
             os.environ['UN5_FIXTURE_LOGIN'] = token
+        if config.get('round_robin'):
+            return netplay.main(argv, prepare_fixture=prepare)
         return netplay.main(argv)
     finally:
         if config.get('fixture'):

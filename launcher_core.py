@@ -347,6 +347,8 @@ def zerotier_args(cfg, action):
         fixture = cfg['fixture']
         args += ['--tournament-fixture', str(fixture['event_id']), str(fixture['fixture_id']),
                  '--api-url', cfg['hill_url'], '--fixture-game', cfg['game']]
+        if cfg.get('round_robin'):
+            args.append('--round-robin')
         if action == 'guest':
             return args + ['--bind-port', GUEST_BIND_PORT]
     if action == 'host':

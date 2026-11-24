@@ -98,7 +98,7 @@ def tournament_bracket(url, event_id):
     return api_call(site_url(url), 'GET', f'/api/netplay/tournaments/{int(event_id)}/bracket/', timeout=8)
 
 
-def assigned_fixture(url, session, event_id):
+def assigned_fixture(url, session, event_id, *, fixture_id=None, exclude=()):
     """Return the account's first ready match in this tournament, in Django's fixture order."""
     url = site_url(url)
     if not session or urlsplit(url).scheme != 'https':
@@ -106,7 +106,9 @@ def assigned_fixture(url, session, event_id):
     result = api_call(url, 'GET', '/api/netplay/fixtures/', timeout=8,
                       extra_headers={'X-Netplay-Session': session}, follow_redirects=False)
     return next((fixture for fixture in result['fixtures']
-                 if fixture['event_id'] == event_id and fixture['role'] in ('p1', 'p2') and fixture['session']), None)
+                 if fixture['event_id'] == event_id and fixture['role'] in ('p1', 'p2') and fixture['session']
+                 and fixture['fixture_id'] not in exclude
+                 and (fixture_id is None or fixture['fixture_id'] == fixture_id)), None)
 
 
 def fixture_result_grant(args, login):

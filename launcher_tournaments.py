@@ -97,7 +97,7 @@ class TournamentPanel(RoundFrame):
                 self.notice.configure(text=error or tr('bracket.unassigned'))
                 self.app._log(error or tr('bracket.unassigned'), 'error' if error else 'info')
                 return
-            self.app.zerotier(fixture=fixture)
+            self.app.zerotier(fixture=fixture, round_robin=event['format'] == 'round_robin')
         self.run(lambda: assigned_fixture(url, session, event['id']), checked)
 
     def table(self, columns, titles, row):

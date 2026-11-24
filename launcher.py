@@ -864,7 +864,7 @@ class Launcher(tk.Tk):
         scan_job[0] = dialog.after(0, refresh_networks)
         return lambda: address_for(selected_network.get())
 
-    def zerotier(self, *, fixture=None):
+    def zerotier(self, *, fixture=None, round_robin=False):
         if self.backend.running or self._koth_pending or self._after_sync or self._after_allow:
             return
         if not self._ensure_state_dir() or not self._pick_game():
@@ -906,7 +906,7 @@ class Launcher(tk.Tk):
             cfg = {**self.cfg(), 'transport': 'zerotier', 'zerotier_address': get_address(),
                    'zerotier_host': host.get().strip(), 'zerotier_role': role.get()}
             if fixture:
-                cfg.update(fixture=fixture, game=self.game, hill_url=self.tournaments.url)
+                cfg.update(fixture=fixture, game=self.game, hill_url=self.tournaments.url, round_robin=round_robin)
             # Validate before starting the asynchronous state download.
             try:
                 core.zerotier_args(cfg, role.get())
