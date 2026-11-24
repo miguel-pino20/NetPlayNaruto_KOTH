@@ -509,6 +509,9 @@ class FixtureResults:
         self.session, self.ticket = grant['session'], grant['ticket']
         self.epoch_proof = grant.get('epoch_proof')
         self.epoch = args.session_epoch
+        self.reset_fixture = getattr(args, 'reset_fixture', False)
+        self.fight_recorded = False
+        self.confirmed_point = None
         self.log = log
         scope = hashlib.sha256(f'{self.url}:{self.session}'.encode()).hexdigest()
         self.directory = appdata.DATA_DIR / 'fixture-results' / scope
@@ -517,6 +520,7 @@ class FixtureResults:
         self.directory.mkdir(parents=True, exist_ok=True)
         series = grant['series']
         self.score = (series['p1_wins'], series['p2_wins'])
+        self.start_score = self.score
         self.number = max([series['p1_wins'] + series['p2_wins']] +
                           [int(p.name.split('-')[0]) for p in self.directory.glob('[0-9]*-*.json')])
         self.finished = False
@@ -524,7 +528,8 @@ class FixtureResults:
 
     def record(self, event):
         entry = event.get('entry') or {}
-        if (self.finished or entry.get('source') != 'memoria' or event['event'] != 'result'
+        if (self.finished or (self.reset_fixture and self.fight_recorded)
+                or entry.get('source') != 'memoria' or event['event'] != 'result'
                 or entry.get('winner') not in ('p1', 'p2')):
             return
         number = entry.get('fight_number') if self.epoch_proof else self.number + 1
@@ -544,6 +549,7 @@ class FixtureResults:
             self.log(f'Torneo: no se pudo guardar la victoria localmente ({error}).')
             return
         self.number = number
+        self.fight_recorded = True
 
     def flush(self):
         from discord_auth import AccountError, api_call
@@ -568,6 +574,9 @@ class FixtureResults:
             self.last_error = None
             self.score = (series['p1_wins'], series['p2_wins'])
             self.finished = series['status'] == 'finished'
+            if (self.reset_fixture and body['idempotency_key'] == f"{self.epoch}-{body['match_number']}"
+                    and sum(self.score) > sum(self.start_score)):
+                self.confirmed_point = self.score, self.finished
             path.unlink(missing_ok=True)
             self.log(f"Torneo: victoria de {body['winner'].upper()} confirmada. "
                      f"Marcador oficial {series['p1_wins']}–{series['p2_wins']}.")

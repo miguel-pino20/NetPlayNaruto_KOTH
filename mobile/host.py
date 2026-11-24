@@ -225,12 +225,12 @@ def run_host(config, report):
         report('preparing', tr('Estado, mandos y hook comprobados. Conectando…'))
         return True
 
-    if not config.get('round_robin'):
+    if not config.get('fixture'):
         prepare()
     try:
         if config.get('fixture'):
             os.environ['UN5_FIXTURE_LOGIN'] = token
-        if config.get('round_robin'):
+        if config.get('fixture'):
             return netplay.main(argv, prepare_fixture=prepare)
         return netplay.main(argv)
     finally:

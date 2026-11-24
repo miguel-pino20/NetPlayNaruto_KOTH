@@ -349,6 +349,27 @@ class SinkTests(unittest.TestCase):
             self.assertEqual(bodies[0]['idempotency_key'], bodies[1]['idempotency_key'])
             self.assertEqual(bodies[1]['match_number'], 2)
 
+    def test_tournament_restart_uses_one_confirmed_point_per_network_session(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(sb.appdata, 'DATA_DIR', Path(temp)):
+            args = argparse.Namespace(api_url='https://test', session_epoch='a'*32, reset_fixture=True,
+                fixture_result_grant={'session': 'b'*32, 'ticket': 'signed', 'epoch_proof': 'proof',
+                                      'series': {'p1_wins': 1, 'p2_wins': 0}})
+            sink = sb.FixtureResults(args, print)
+            board = sb.Scoreboard(cfg())
+            sink.record(board.record('p2', 'memoria', fight_number=1))
+            sink.record(board.record('p1', 'memoria', fight_number=2))
+            pending = {'status': 'pending', 'session': 'b'*32,
+                       'series': {'status': 'ready', 'p1_wins': 1, 'p2_wins': 0}}
+            recorded = {'status': 'recorded', 'session': 'b'*32,
+                        'series': {'status': 'ready', 'p1_wins': 1, 'p2_wins': 1}}
+            with patch('discord_auth.api_call', side_effect=[pending, recorded]) as post:
+                sink.flush()
+                self.assertIsNone(sink.confirmed_point)
+                sink.flush()
+                self.assertEqual(sink.confirmed_point, ((1, 1), False))
+                self.assertEqual(post.call_args_list[0], post.call_args_list[1])
+            self.assertFalse(list(sink.directory.glob('*.json')))
+
     def test_koth_only_submits_first_detected_victory_and_retries_same_payload(self):
         from discord_auth import AccountError
         from hill import submit_pending_result

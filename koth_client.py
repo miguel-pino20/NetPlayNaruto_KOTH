@@ -147,7 +147,7 @@ def wait_fixture(args, is_host, login, stopped):
             if result['role'] != ('p1' if is_host else 'p2'):
                 raise AccountError('El rol del cruce cambió. Actualiza la lista.')
             body['peer_attempt'] = result['peer_attempt']
-            if result['ready']:
+            if result['ready'] and result['session_epoch'] != getattr(args, 'previous_fixture_epoch', None):
                 peer = str(ipaddress.IPv4Address(result['address']))
                 args.session_epoch = result['session_epoch']
                 args.fixture_result_grant = result.get('result_grant')

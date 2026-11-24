@@ -855,27 +855,26 @@ def cmd_play(args, is_host):
         pine.close()
 
 
-def round_robin_progress(bracket, fixture):
-    """Return whether this pairing finished and whether this player still has matches."""
+def tournament_fixture_row(bracket, fixture, number=None):
+    if number is not None:
+        return next((row for row in bracket['fixtures'] if row['number'] == number), None)
     players = fixture['p1']['name'], fixture['p2']['name']
-    player = fixture[fixture['role']]['name']
-    own = []
-    pairing = []
-    for row in bracket['fixtures']:
-        names = row['player1__name'], row['player2__name']
-        if row['stage'] != 'round_robin':
-            continue
-        if player in names:
-            own.append(row)
-        if names == players:
-            pairing.append(row)
-    finished = len(pairing) == 1 and pairing[0]['status'] == 'finished'
-    remaining = bracket['status'] == 'running' and (
+    rows = [row for row in bracket['fixtures']
+            if (row['player1__name'], row['player2__name']) == players]
+    if len(rows) == 1:
+        return rows[0]
+    ready = [row for row in rows if row['status'] == 'ready']
+    return ready[0] if len(ready) == 1 else None
+
+
+def round_robin_remaining(bracket, player):
+    own = [row for row in bracket['fixtures'] if row['stage'] == 'round_robin'
+           and player in (row['player1__name'], row['player2__name'])]
+    return bracket['status'] == 'running' and (
         not own or any(row['status'] not in ('finished', 'cancelled', 'bye') for row in own))
-    return finished, remaining
 
 
-def run_round_robin(args, prepare_fixture=None):
+def run_tournament(args, prepare_fixture=None):
     from discord_auth import AccountError
     from koth_client import assigned_fixture, tournament_bracket
 
@@ -895,65 +894,96 @@ def run_round_robin(args, prepare_fixture=None):
         prepared = True
         return prepare_fixture() if prepare_fixture else load_match_state(args)
 
+    def read_bracket():
+        try:
+            return tournament_bracket(args.api_url, event_id)
+        except AccountError as error:
+            if error.code and error.code < 500:
+                raise
+            return None
+
+    def score_of(row):
+        return row['p1_wins'], row['p2_wins']
+
+    def await_point(match, fixture, row_number, previous_score):
+        point = getattr(match, 'fixture_point', None)
+        if point is not None:
+            return point
+        baseline = getattr(match, 'fixture_start_score', previous_score)
+        # A peer can close after its acknowledgement arrives but before ours.
+        for attempt in range(3):
+            if stop_requested(args):
+                break
+            bracket = read_bracket()
+            row = tournament_fixture_row(bracket, fixture, row_number) if bracket else None
+            if row and baseline is not None and sum(score_of(row)) > sum(baseline):
+                return score_of(row), row['status'] == 'finished'
+            if attempt < 2:
+                pause()
+        return None
+
     try:
         fixture = assigned_fixture(args.api_url, login, event_id, fixture_id=fixture_id)
         if not fixture:
             print('Torneo: el cruce inicial ya no está disponible. Actualiza el cuadro.', flush=True)
             return 1
-        if not stop_requested(args) and not prepare():
+        if stop_requested(args) or not prepare():
             return 0 if stop_requested(args) else 1
 
+        previous_epoch = None
         while not stop_requested(args):
             is_host = fixture['role'] == 'p1'
-            opponent = fixture['p2' if is_host else 'p1']['name']
-            print(f'ZeroTier: próximo rival: {opponent} · {fixture["role"].upper()}.', flush=True)
+            player = fixture[fixture['role']]['name']
+            if previous_epoch is None:
+                bracket = read_bracket()
+                row = tournament_fixture_row(bracket, fixture) if bracket else None
+                row_number = row['number'] if row else None
+                previous_score = score_of(row) if row else None
+                opponent = fixture['p2' if is_host else 'p1']['name']
+                print(f'ZeroTier: rival: {opponent} · {fixture["role"].upper()}.', flush=True)
+
             match = argparse.Namespace(**vars(args))
             match.cmd = 'host' if is_host else 'guest'
             match.tournament_fixture = [event_id, fixture['fixture_id']]
-            match.nick = fixture[fixture['role']]['name']
+            match.nick = player
             match.load_slot = None
             match.port = getattr(args, 'port', 47400)
             match.bind_port = getattr(args, 'bind_port', 0)
             match.no_announce = match.no_share_state = True
             match.connect = match.expect_guest_ip = ''
+            match.reset_fixture = True
+            match.previous_fixture_epoch = previous_epoch
             code = cmd_play(match, is_host)
             if code not in (0, 2) or stop_requested(args):
                 return code
 
-            # A BYE can arrive before this side receives its result acknowledgement.
-            # Confirm the pairing against Django before skipping it.
-            confirmed = getattr(match, 'fixture_finished', False)
-            for attempt in range(3):
-                if stop_requested(args):
-                    return 0
-                try:
-                    bracket = tournament_bracket(args.api_url, event_id)
-                    finished, remaining = round_robin_progress(bracket, fixture)
-                except AccountError as error:
-                    if error.code and error.code < 500:
-                        raise
-                    finished, remaining = False, True
-                if confirmed or finished:
-                    break
-                if attempt < 2:
-                    pause()
-            else:
-                print('Torneo: conexión cerrada antes de confirmar un ganador de la serie.', flush=True)
+            point = await_point(match, fixture, row_number, previous_score)
+            if stop_requested(args):
+                return 0
+            if point is None:
+                print('Torneo: conexión cerrada antes de confirmar el punto.', flush=True)
                 return code
+            previous_score, finished = point
+            print(f'ZeroTier: punto guardado. Marcador oficial {previous_score[0]}–{previous_score[1]}. '
+                  'Recargando el estado…', flush=True)
+            if not prepare():
+                return 0 if stop_requested(args) else 1
+            if not finished:
+                previous_epoch = match.session_epoch
+                print('ZeroTier: esperando al mismo rival para la siguiente pelea…', flush=True)
+                continue
+            if not getattr(args, 'round_robin', False):
+                print('Torneo: serie completada.', flush=True)
+                return 0
 
             completed.add(fixture['fixture_id'])
-            if not remaining:
-                print('Torneo: completaste tus cruces del Round Robin.', flush=True)
-                return 0
-            if stop_requested(args) or not prepare():
-                return 0 if stop_requested(args) else 1
-            print('ZeroTier: esperando el siguiente cruce del Round Robin…', flush=True)
-            previous = fixture
+            previous_epoch = None
             fixture = None
+            print('ZeroTier: esperando el siguiente cruce del Round Robin…', flush=True)
             while not stop_requested(args):
                 try:
-                    bracket = tournament_bracket(args.api_url, event_id)
-                    if not round_robin_progress(bracket, previous)[1]:
+                    bracket = read_bracket()
+                    if bracket and not round_robin_remaining(bracket, player):
                         print('Torneo: completaste tus cruces del Round Robin.', flush=True)
                         return 0
                     fixture = assigned_fixture(args.api_url, login, event_id, exclude=frozenset(completed))
@@ -1074,6 +1104,8 @@ def play_connected(args, is_host, server_mode, pine, core):
                                          online=server_mode, node=node)
     fixture_results = next((sink for sink in (board.sinks if board else ())
                             if isinstance(sink, scoreboard.FixtureResults)), None)
+    if fixture_results:
+        args.fixture_start_score = fixture_results.start_score
     koth_scores = (None, None)
     if os.environ.get('UN5_KOTH_RESULT_FILE'):
         try:
@@ -1119,9 +1151,8 @@ def play_connected(args, is_host, server_mode, pine, core):
             desync, closed = session.step()
             if board is not None:
                 board.tick()
-            if getattr(args, 'round_robin', False) and fixture_results and fixture_results.finished:
-                args.fixture_finished = True
-                print('Torneo: resultado de la serie confirmado por Django.', flush=True)
+            if fixture_results and fixture_results.confirmed_point is not None:
+                args.fixture_point = fixture_results.confirmed_point
                 return 0
             if server_mode:
                 path = node.path_summary()                  # direct (hole punched) or relay (through the server)
@@ -1375,10 +1406,11 @@ def main(argv=None, *, prepare_fixture=None):
         return cmd_stop(args)
     if args.cmd == 'load':
         return cmd_load(args)
-    if args.round_robin:
-        if not args.tournament_fixture or (prepare_fixture is None and args.load_slot is None):
-            ap.error('--round-robin requiere un cruce y carga automática del estado.')
-        return run_round_robin(args, prepare_fixture)
+    can_reload = prepare_fixture is not None or args.load_slot is not None
+    if args.round_robin and (not args.tournament_fixture or not can_reload):
+        ap.error('--round-robin requiere un cruce y carga automática del estado.')
+    if args.tournament_fixture and can_reload:
+        return run_tournament(args, prepare_fixture)
     return cmd_play(args, args.cmd == 'host')
 
 

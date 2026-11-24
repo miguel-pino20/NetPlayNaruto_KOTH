@@ -75,7 +75,7 @@ def main():
                     continue
                 if line.startswith('ZeroTier:'):
                     report('waiting', line)
-                elif line.startswith(('No se pudo coordinar el cruce', 'Torneo: completaste tus cruces',
+                elif line.startswith(('No se pudo coordinar el cruce', 'Torneo: completaste tus cruces', 'Torneo: serie completada',
                                       'Torneo: conexión cerrada', 'Torneo: el cruce inicial')):
                     terminal_message = line
                 elif line.startswith('host: waiting'):
