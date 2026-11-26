@@ -89,5 +89,6 @@ Marca cada personaje cuando esté disponible para seleccionar en Netplay.
 - [x] Sakon y Ukon · Puerta Oeste · separación y ataque coordinado de los gemelos
 - [x] Jirobo · Puerta Sur · muro de tierra
 - [x] Tayuya · Puerta Norte · genjutsu de flauta
+- [x] Kimimaro Kaguya · Danza de los Helechos
 
 [Tienda de Netplay](https://narutimateonline.servegame.com/tienda/)

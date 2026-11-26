@@ -17,6 +17,7 @@ Everything received here comes from the network, so it is validated field by fie
 capped, types are checked, nicks are reduced to printable ASCII.
 """
 import argparse
+from ipaddress import IPv4Interface
 import json
 import re
 import socket
@@ -42,10 +43,14 @@ def clean_nick(value, limit=15):
 
 
 # ---- packets ----------------------------------------------------------------------------------------------------------
-def encode_room(nick, port, delay, tag, status='waiting', game=None):
+def encode_room(nick, port, delay, tag, status='waiting', game=None, *, guest='', ping=None):
     body = {'n': clean_nick(nick) or 'Player', 'p': int(port), 'd': int(delay), 't': str(tag), 's': status}
     if game is not None:
         body['g'] = game
+    if status == 'playing' and guest:
+        body['guest'] = clean_nick(guest)
+    if status == 'playing' and ping is not None:
+        body['ping'] = ping
     return MAGIC + json.dumps(body, separators=(',', ':')).encode('ascii')
 
 
@@ -75,13 +80,37 @@ def parse_room(data, addr):
             'status': status}
     if body.get('g') in ('un5', 'un6'):
         room['game'] = body['g']
+    if status == 'playing':
+        guest = body.get('guest')
+        if isinstance(guest, str) and clean_nick(guest):
+            room['players'] = {'guest': {'nick': clean_nick(guest)}}
+        ping = _int_in(body.get('ping'), 0, 65535)
+        if ping is not None:
+            room['ping'] = ping
     return room
+
+
+def zerotier_targets(address):
+    from zerotier_networks import discover
+
+    targets = [ZEROTIER_GROUP]
+    choices, _status = discover()
+    for choice in choices:
+        if choice['address'] != address or 'prefix' not in choice:
+            continue
+        network = IPv4Interface(f"{address}/{choice['prefix']}").network
+        if 0 < network.prefixlen < 31:
+            broadcast = str(network.broadcast_address)
+            if uses_interface(broadcast, address) and broadcast not in targets:
+                targets.append(broadcast)
+    return targets
 
 
 def uses_interface(peer, local_address):
     """Ask the OS which interface a direct connection would use, without sending data."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             probe.connect((peer, ZEROTIER_DISCOVERY_PORT))
             return probe.getsockname()[0] == local_address
     except OSError:
@@ -141,7 +170,7 @@ class RoomAnnouncer:
             self.dest_port = ZEROTIER_DISCOVERY_PORT
             sock = self._socket(bind_ip, multicast=True)
             if sock:
-                self.routes.append((sock, [ZEROTIER_GROUP]))
+                self.routes.append((sock, zerotier_targets(bind_ip)))
                 self.ips.append(bind_ip)
         elif targets is not None:                              # tests: explicit destinations, any interface
             sock = self._socket(None)
@@ -159,11 +188,10 @@ class RoomAnnouncer:
         sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             if multicast:
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(bind_ip))
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
-            else:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             if bind_ip:
                 sock.bind((bind_ip, 0))
             sock.setblocking(False)
@@ -173,12 +201,12 @@ class RoomAnnouncer:
                 sock.close()
             return None
 
-    def tick(self, status='waiting', now=None):
+    def tick(self, status='waiting', now=None, *, guest='', ping=None):
         now = time.monotonic() if now is None else now
         if self._last is not None and now - self._last < self.interval:
             return False
         self._last = now
-        packet = encode_room(self.nick, self.port, self.delay, self.tag, status, self.game)
+        packet = encode_room(self.nick, self.port, self.delay, self.tag, status, self.game, guest=guest, ping=ping)
         for sock, targets in self.routes:
             for target in targets:
                 try:
@@ -202,6 +230,7 @@ class RoomListener:
     """poll() (non-blocking, call it every few hundred ms) returns the rooms heard recently, sorted by nick."""
 
     def __init__(self, port=DISCOVERY_PORT, bind='0.0.0.0', ttl=ROOM_TTL, *, zerotier_address=None):
+        self.zerotier_address = zerotier_address
         self.port = ZEROTIER_DISCOVERY_PORT if zerotier_address else port
         self.ttl, self.error, self.rooms, self.sock = ttl, None, {}, None
         sock = None
@@ -211,7 +240,11 @@ class RoomListener:
             sock.bind((bind, self.port))
             if zerotier_address:
                 membership = socket.inet_aton(ZEROTIER_GROUP) + socket.inet_aton(zerotier_address)
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+                try:
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+                except OSError:
+                    # Directed broadcast can still arrive on the discovery port.
+                    pass
             sock.setblocking(False)
             self.sock = sock
         except OSError as exc:

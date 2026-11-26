@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import queue
 import re
 import subprocess
@@ -51,7 +52,9 @@ import urllib.request
 from pathlib import Path
 
 from i18n import tr
-from netlink import DEFAULT_SERVER, DEFAULT_API_URL, default_file
+from netlink import (DEFAULT_SERVER, DEFAULT_API_URL, UN6_AUDIO20_STATE_TAG,
+                     UN6_ORIGINAL_STATE_TAG,
+                     UN6_PORTAL_STATE_TAG, UN6_PORTAL_SYMBOLS_TAG, default_file, un6_state_catalog)
 from appdata import CONFIG_FILE, DATA_DIR, STATE_NAME, STATE_PATH, SYMBOLS_PATH, write_json      # noqa: F401
 from discord_auth import (UA, ssl_context, AccountError, DiscordMixin, account_game_nick, api_call,   # noqa: F401
                           fetch_avatar)
@@ -82,7 +85,7 @@ AVATAR_RETRY = 30.0                                    # s ate tentar baixar de 
 DEFAULTS = dict(mode="host", control="p1", room_id="", ignore_desync=False, state_dir="", lang="", show_background=True,
                 hill_url="", hill_address="", hill_ticket="", hill_event_id="", hill_player_name="", hill_spectators=True,
                 zerotier_address="", zerotier_host="", zerotier_role="host", background_id="",
-                character_id="", character_version="")
+                character_id="", character_version="", pvp_game="UN6", zerotier_state="standard")
 
 # Valores fixos (antes eram campos na tela).
 FIXED = dict(pine_slot="28011", save_slot="1", load_slot="9", auto_copy=True, auto_load=True, fetch_state=True)
@@ -706,6 +709,17 @@ class Backend(DiscordMixin):
                         raise AccountError(tr("err.no_kind", kind=kind))
                     local = state_tag(dest) if dest.is_file() else ""
                     if local != want:
+                        bundled = HERE / "saves" / "UN6-partida-audio-20.p2s"
+                        if (kind == "state" and want == UN6_AUDIO20_STATE_TAG
+                                and bundled.is_file() and state_tag(bundled) == want):
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            tmp = dest.with_suffix(".part")
+                            try:
+                                shutil.copyfile(bundled, tmp)
+                                os.replace(tmp, dest)
+                            finally:
+                                tmp.unlink(missing_ok=True)
+                            continue
                         self.q.put(("line", tr("log.dl_default", kind=kind)))
                         self._download(url, dest, want)
                 self.q.put(("sync", True, ""))
@@ -713,6 +727,77 @@ class Backend(DiscordMixin):
                 self.q.put(("sync", False, str(exc)))
             except OSError as exc:
                 self.q.put(("sync", False, str(exc)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def sync_zerotier_state(self, cfg, role, announced_tag=None):
+        """Select a published state and verify local copies before downloading."""
+        def work():
+            from statesync import StateError, advertised_tag
+
+            try:
+                game = cfg['game']
+                choices = un6_state_catalog(SERVER_URL) if game == 'un6' else {}
+                key = cfg.get('zerotier_state', 'standard') if role == 'host' else None
+                selected = choices.get(key)
+                tag = announced_tag
+                if role == 'guest' and tag is None:
+                    try:
+                        tag = advertised_tag(cfg['zerotier_host'], int(HOST_PORT))
+                    except StateError:
+                        pass
+                if role == 'guest':
+                    selected = next((entry for entry in choices.values() if entry[1] == tag), None)
+                metadata = {} if selected else api_call(SERVER_URL, "GET", "/default" + game_q(game))
+                standard = default_file(SERVER_URL, game, "state", metadata, relay=True)
+                if role == 'host':
+                    url, tag = selected or standard
+                elif selected:
+                    url, tag = selected
+                else:
+                    if tag is None:
+                        # Older hosts use the existing ZeroTier default.
+                        url, tag = standard
+                        if (game == 'un6' and tag == UN6_ORIGINAL_STATE_TAG
+                                and metadata.get('symbols') == UN6_PORTAL_SYMBOLS_TAG):
+                            url, tag = choices['transformed']
+                    else:
+                        url, known_tag = standard
+                        if tag != known_tag:
+                            raise AccountError(tr("zt.state_unknown"))
+                if not tag:
+                    raise AccountError(tr("err.no_kind", kind="state"))
+                state_p, symbols_p = game_paths(game)
+                cached = state_p.with_name(f'{state_p.stem}-{tag}.p2s')
+                local_states = [cached, state_p]
+                if tag == UN6_AUDIO20_STATE_TAG:
+                    local_states.append(HERE / 'saves' / 'UN6-partida-audio-20.p2s')
+                elif tag == UN6_PORTAL_STATE_TAG:
+                    local_states.append(state_p.with_name('UN6-partida-despertar.p2s'))
+                state = next((path for path in local_states if path.is_file() and state_tag(path) == tag), None)
+                if state is None:
+                    self.q.put(("line", tr("log.dl_default", kind="state")))
+                    self._download(url, cached, tag)
+                    state = cached
+
+                if selected or tag in (UN6_PORTAL_STATE_TAG, UN6_AUDIO20_STATE_TAG):
+                    symbols_tag = UN6_PORTAL_SYMBOLS_TAG
+                    symbols_url = f'{SERVER_URL}/blob/{symbols_tag}'
+                else:
+                    symbols_url, symbols_tag = default_file(SERVER_URL, game, "symbols", metadata)
+                if not symbols_tag:
+                    raise AccountError(tr("err.no_kind", kind="symbols"))
+                cached_symbols = symbols_p.with_name(f'{symbols_p.stem}-{symbols_tag}.json')
+                symbols = next((path for path in (cached_symbols, symbols_p, Path(cfg['symbols_path']))
+                                if path.is_file() and state_tag(path) == symbols_tag), None)
+                if symbols is None:
+                    self.q.put(("line", tr("log.dl_default", kind="symbols")))
+                    self._download(symbols_url, cached_symbols, symbols_tag)
+                    symbols = cached_symbols
+                cfg.update(state_file=str(state), symbols_path=str(symbols))
+                self.q.put(("sync", True, ""))
+            except (AccountError, OSError) as error:
+                self.q.put(("sync", False, str(error)))
+
         threading.Thread(target=work, daemon=True).start()
 
     def publish_default(self, game="un5"):

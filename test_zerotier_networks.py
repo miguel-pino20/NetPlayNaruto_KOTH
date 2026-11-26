@@ -19,8 +19,8 @@ class ZeroTierNetworksTests(unittest.TestCase):
             {'nwid': 'network-c', 'status': 'OK', 'assignedAddresses': ['172.22.0.1/16']},
         ])
         self.assertEqual(len(choices), 3)
-        self.assertIn({'name': 'Naruto Netplay', 'address': '192.168.195.14', 'id': 'network-a'}, choices)
-        self.assertIn({'name': 'network-c', 'address': '172.22.0.1', 'id': 'network-c'}, choices)
+        self.assertIn({'name': 'Naruto Netplay', 'address': '192.168.195.14', 'id': 'network-a', 'prefix': 24}, choices)
+        self.assertIn({'name': 'network-c', 'address': '172.22.0.1', 'id': 'network-c', 'prefix': 16}, choices)
 
     def test_interface_fallback_ignores_physical_network_and_ipv6(self):
         choices = zt.parse_interfaces([

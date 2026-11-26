@@ -2,12 +2,12 @@
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, ttk
 
 from appdata import DATA_DIR
 from discord_auth import AccountError
 from i18n import tr
-from koth_client import DEFAULT_URL, MembershipStore, get_event, leave_casual, list_events, management_access, management_command
+from koth_client import DEFAULT_URL, KOTH_STATES, MembershipStore, get_event, leave_casual, list_events, management_access, management_command
 from launcher_theme import ACCENT, BORDER, DIM, GREEN, MUTED, PANEL, RED, TEXT, PillButton, RoundFrame
 
 
@@ -49,12 +49,14 @@ class KothPanel(RoundFrame):
         self.events_frame = tk.Frame(inner, bg=PANEL)
         self.events_frame.pack(fill='both', expand=True)
         scrollbar = ttk.Scrollbar(self.events_frame, orient='vertical')
-        self.tree = ttk.Treeview(self.events_frame, columns=('state', 'players', 'goal'), style='Koth.Treeview',
+        self.tree = ttk.Treeview(self.events_frame, columns=('game', 'state', 'players', 'goal', 'prize'),
+                                 displaycolumns=('game', 'state', 'players', 'goal'), style='Koth.Treeview',
                                  show='tree headings', selectmode='browse', height=7,
                                  yscrollcommand=scrollbar.set)
         self.tree.heading('#0', text=tr('koth.event'))
         self.tree.column('#0', width=240, minwidth=140)
-        for key, label, width in [('state', 'koth.state', 110), ('players', 'koth.players', 85), ('goal', 'koth.goal', 75)]:
+        for key, label, width in [('game', 'koth.game', 64), ('state', 'koth.state', 110), ('players', 'koth.players', 85),
+                                  ('goal', 'koth.goal', 75), ('prize', 'koth.prize', 110)]:
             self.tree.heading(key, text=tr(label))
             self.tree.column(key, width=width, minwidth=60, stretch=False)
         scrollbar.configure(command=self.tree.yview)
@@ -138,22 +140,56 @@ class KothPanel(RoundFrame):
                           self.admin_button.winfo_rooty() + self.admin_button.winfo_height())
 
     def _create_casual(self):
-        if self._connected() or self.app.koth_category.get() != 'casual':
+        if self._connected() or self.admin_busy or self.app.koth_category.get() != 'casual':
             return
         title = tr('koth.casual_new')
-        url = self.app.v['hill_url'].get().strip()
-        name = simpledialog.askstring(title, tr('koth.event'), parent=self)
-        if not name or not name.strip():
-            return
-        points = simpledialog.askinteger(title, tr('koth.casual_points'), initialvalue=5,
-                                         minvalue=1, maxvalue=1000, parent=self)
-        if points is None:
-            return
-        capacity = simpledialog.askinteger(title, tr('koth.casual_capacity'), initialvalue=8,
-                                           minvalue=2, maxvalue=100, parent=self)
-        if capacity is not None:
-            self._submit_management(url, {'name': name.strip(), 'target_points': points,
-                                      'max_participants': capacity})
+        dialog = tk.Toplevel(self, bg=PANEL, padx=20, pady=16)
+        dialog.title(title)
+        dialog.transient(self.winfo_toplevel())
+
+        def field(label, widget, **options):
+            tk.Label(dialog, text=tr(label), bg=PANEL, fg=TEXT).pack(anchor='w', pady=(6, 3))
+            control = widget(dialog, **options)
+            control.pack(fill='x')
+            return control
+
+        name = field('koth.event', ttk.Entry, width=40)
+        points = field('koth.casual_points', ttk.Spinbox, from_=1, to=1000)
+        points.set('5')
+        capacity = field('koth.casual_capacity', ttk.Spinbox, from_=2, to=100)
+        capacity.set('8')
+        game = field('koth.game', ttk.Combobox, values=('UN5', 'UN6'), state='readonly')
+        game.set('UN6')
+        state = field('koth.match_state', ttk.Combobox, state='readonly')
+        labels = {}
+
+        def update_states(_event=None):
+            labels.clear()
+            for key, (supported_game, variant) in KOTH_STATES.items():
+                if supported_game == game.get().lower():
+                    labels[tr('zt.state_' + ('standard' if variant == 'original' else variant))] = key
+            state.configure(values=tuple(labels))
+            state.current(0)
+
+        game.bind('<<ComboboxSelected>>', update_states)
+        update_states()
+
+        def submit():
+            event_name = name.get().strip()
+            try:
+                goal, slots = int(points.get()), int(capacity.get())
+                if not 1 <= len(event_name) <= 150 or not 1 <= goal <= 1000 or not 2 <= slots <= 100:
+                    raise ValueError
+            except ValueError:
+                return messagebox.showerror(title, tr('koth.invalid_event'), parent=dialog)
+            url = self.app.v['hill_url'].get().strip()
+            self._submit_management(url, {'name': event_name, 'target_points': goal,
+                                         'max_participants': slots, 'match_state': labels[state.get()]})
+            dialog.destroy()
+
+        PillButton(dialog, text=title, command=submit).pack(fill='x', pady=(12, 0))
+        dialog.grab_set()
+        name.focus_set()
 
     def _event_action(self, event, action):
         url = self.app.v['hill_url'].get().strip()
@@ -354,13 +390,18 @@ class KothPanel(RoundFrame):
 
     def render_events(self):
         casual = self.app.koth_category.get() == 'casual'
+        columns = ('game', 'state', 'players', 'goal')
+        self.tree.configure(displaycolumns=columns if casual else (*columns, 'prize'))
         events = {key: event for key, event in self.events.items() if bool(event.get('casual')) == casual}
         wanted = self.app.v['hill_event_id'].get()
         old_ids = set(self.tree.get_children())
         for key in old_ids - events.keys():
             self.tree.delete(key)
         for index, (key, event) in enumerate(events.items()):
-            values = (tr('koth.'+event['status']), f"{len(event['queue'])}/{event['max_participants']}", event['target_points'])
+            match = KOTH_STATES.get(event.get('match_state'))
+            game = match[0].upper() if match else '—'
+            values = (game, tr('koth.'+event['status']), f"{len(event['queue'])}/{event['max_participants']}",
+                      event['target_points'], event.get('prize_points') or '—')
             if key in old_ids:
                 self.tree.item(key, text=event['name'], values=values)
             else:
@@ -414,7 +455,10 @@ class KothPanel(RoundFrame):
         match = event.get('current_match') or {}
         if event['status'] == 'finished':
             self.status.configure(text=tr('koth.finished'), fg=GREEN)
-        self.goal.configure(text=tr('koth.target', n=event['target_points']))
+        goal = tr('koth.target', n=event['target_points'])
+        if not event.get('casual') and event.get('prize_points'):
+            goal += ' · ' + tr('koth.prize_points', n=event['prize_points'])
+        self.goal.configure(text=goal)
         for key in self.queue.get_children():
             self.queue.delete(key)
         for index, player in enumerate(event.get('queue', [])):

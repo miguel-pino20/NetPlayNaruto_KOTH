@@ -514,6 +514,7 @@ class ProfileStore(tk.Toplevel):
         def finished(data, error):
             if error is None:
                 self.items, self.balance = data["items"], data["balance"]
+                self.app.set_store_balance(self.balance, self.session)
                 self.render_items()
             empty = tr("store.empty_characters" if self.characters else "store.empty")
             self.status.configure(text=error if error is not None else "" if self.items else empty)
@@ -554,6 +555,7 @@ class ProfileStore(tk.Toplevel):
             balance, error = result if error is None else (None, error)
             if balance is not None:
                 self.balance = balance
+                self.app.set_store_balance(balance, self.session)
                 item["owned"] = True
                 self.filter_items()
             if error is None and self.app.backend.session == self.session:

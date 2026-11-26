@@ -1,13 +1,13 @@
 """Desktop tournament registration and round-by-round bracket viewer."""
 from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 import webbrowser
 
 from i18n import tr
-from koth_client import (TOURNAMENT_FORMATS, assigned_fixture, join_tournament, scheduled_tournaments,
+from koth_client import (KOTH_STATES, TOURNAMENT_FORMATS, assigned_fixture, join_tournament, manage_casual_tournament, scheduled_tournaments,
                          site_url, tournament_bracket)
-from launcher_theme import MUTED, PANEL, TEXT, PillButton, RoundFrame
+from launcher_theme import MUTED, PANEL, TEXT, PillButton, RoundFrame, Segmented
 
 
 def fixture_slot(row, slot):
@@ -22,7 +22,7 @@ def fixture_slot(row, slot):
 
 
 class TournamentPanel(RoundFrame):
-    def __init__(self, parent, app, actions_parent):
+    def __init__(self, parent, app, actions_parent, category_parent):
         super().__init__(parent, radius=20, padx=16, pady=14, grow=True)
         self.app = app
         self.pool = ThreadPoolExecutor(max_workers=2)
@@ -35,6 +35,8 @@ class TournamentPanel(RoundFrame):
         self.joining = False
         self.confirmed = {}
         self.checking_fixture = False
+        self.managing = False
+        self.category = tk.StringVar(master=self, value='official')
         self.inner.columnconfigure(0, weight=1)
         self.inner.rowconfigure(1, weight=1)
         self.inner.rowconfigure(4, weight=3)
@@ -46,10 +48,13 @@ class TournamentPanel(RoundFrame):
         bar.grid(row=0, column=0, sticky='ew')
         tk.Label(bar, text=tr('nav.tournaments'), bg=PANEL, fg=TEXT,
                  font=('Segoe UI', 14, 'bold')).pack(side='left')
-        self.listing = self.table(('#0', 'format', 'date', 'players', 'status'),
-                                  ('koth.event', 'tourney.format', 'tourney.date', 'koth.players', 'koth.state'), row=1)
+        self.listing = self.table(('#0', 'format', 'game', 'date', 'players', 'status'),
+                                  ('koth.event', 'tourney.format', 'koth.game', 'tourney.date',
+                                   'koth.players', 'koth.state'), row=1)
         self.listing.bind('<<TreeviewSelect>>', self.select)
         self.actions = tk.Frame(actions_parent, bg=PANEL)
+        Segmented(category_parent, [('casual', tr('nav.casual')), ('official', tr('koth.official'))],
+                  self.category, self.render_events).pack(fill='x', pady=(8, 0))
         PillButton(self.actions, text=tr('koth.refresh'), command=self.refresh).pack(fill='x', pady=(0, 6))
         self.join = PillButton(self.actions, text=tr('tourney.join'), command=self.enroll, state='disabled')
         self.join.pack(fill='x', pady=(0, 6))
@@ -58,6 +63,8 @@ class TournamentPanel(RoundFrame):
         self.connect.pack(fill='x', pady=(0, 6))
         self.web = PillButton(self.actions, text=tr('bracket.public'), command=self.public_page, state='disabled')
         self.web.pack(fill='x')
+        self.create = PillButton(self.actions, text=tr('tourney.casual_create'), command=self.create_casual)
+        self.start = PillButton(self.actions, text=tr('tourney.casual_start'), command=self.start_casual)
         self.notice = tk.Label(self.inner, bg=PANEL, fg=MUTED, anchor='w', wraplength=650)
         self.notice.grid(row=2, column=0, sticky='ew')
         self.inner.bind('<Configure>', lambda e: self.notice.configure(wraplength=max(1, e.width)), add='+')
@@ -133,7 +140,7 @@ class TournamentPanel(RoundFrame):
         selected = self.listing.selection()
         return self.events.get(selected[0]) if selected else None
 
-    def refresh(self):
+    def refresh(self, *, preferred=None):
         self.generation += 1
         generation = self.generation
         url = self.app.v['hill_url'].get().strip()
@@ -149,19 +156,119 @@ class TournamentPanel(RoundFrame):
             if error:
                 self.notice.configure(text=error)
                 return
-            old = self.listing.selection()
             self.events = {str(e['id']): e for e in events}
-            self.listing.delete(*self.listing.get_children())
-            for key, event in self.events.items():
-                self.listing.insert('', 'end', iid=key, text=event['name'], values=(
-                    TOURNAMENT_FORMATS[event['format']], event.get('event_date') or '—',
-                    f"{event['enrolled']}/{event['max_participants']}", tr('bracket.' + event.get('status', 'draft'))))
-            if events:
-                self.listing.selection_set(old[0] if old and old[0] in self.events else str(events[0]['id']))
-            else:
+            self.render_events(preferred)
+        session = self.app.backend.session
+        self.run(lambda: scheduled_tournaments(url, all_statuses=True, session=session), loaded)
+
+    def render_events(self, selected=None):
+        old = self.listing.selection()
+        casual = self.category.get() == 'casual'
+        self.listing.delete(*self.listing.get_children())
+        keys = []
+        for key, event in self.events.items():
+            if bool(event.get('casual')) != casual:
+                continue
+            keys.append(key)
+            match = KOTH_STATES.get(event.get('match_state'))
+            self.listing.insert('', 'end', iid=key, text=event['name'], values=(
+                tr('tourney.format_' + event['format']), match[0].upper() if match else '—',
+                event.get('event_date') or '—', f"{event['enrolled']}/{event['max_participants']}",
+                tr('bracket.' + event.get('status', 'draft'))))
+        wanted = selected or (old[0] if old else None)
+        if keys:
+            self.listing.selection_set(wanted if wanted in keys else keys[0])
+        else:
+            self.select()
+            self.notice.configure(text=tr('tourney.empty_list'))
+        if casual:
+            self.create.pack(fill='x', before=self.join, pady=(0, 6))
+            self.start.pack(fill='x', before=self.connect, pady=(0, 6))
+        else:
+            self.create.pack_forget()
+            self.start.pack_forget()
+
+    def create_casual(self):
+        if self.managing:
+            return
+        if not self.app.backend.session:
+            return self.notice.configure(text=tr('tourney.login'))
+        title = tr('tourney.casual_create')
+        dialog = tk.Toplevel(self, bg=PANEL, padx=20, pady=16)
+        dialog.title(title)
+        dialog.transient(self.winfo_toplevel())
+
+        def field(label, widget, **options):
+            tk.Label(dialog, text=tr(label), bg=PANEL, fg=TEXT).pack(anchor='w', pady=(6, 3))
+            control = widget(dialog, **options)
+            control.pack(fill='x')
+            return control
+
+        name = field('koth.event', ttk.Entry, width=40)
+        formats = {tr('tourney.format_' + key): key for key in TOURNAMENT_FORMATS}
+        format_box = field('tourney.format', ttk.Combobox, values=tuple(formats), state='readonly')
+        format_box.current(0)
+        capacity = field('koth.casual_capacity', ttk.Spinbox, from_=2, to=32)
+        capacity.set('8')
+        game = field('koth.game', ttk.Combobox, values=('UN5', 'UN6'), state='readonly')
+        game.set('UN6')
+        state = field('koth.match_state', ttk.Combobox, state='readonly')
+        labels = {}
+
+        def update_states(_event=None):
+            labels.clear()
+            for key, (supported_game, variant) in KOTH_STATES.items():
+                if supported_game == game.get().lower():
+                    labels[tr('zt.state_' + ('standard' if variant == 'original' else variant))] = key
+            state.configure(values=tuple(labels))
+            state.current(0)
+
+        game.bind('<<ComboboxSelected>>', update_states)
+        update_states()
+        tk.Label(dialog, text=tr('tourney.casual_prizes'), bg=PANEL, fg=MUTED).pack(anchor='w', pady=(8, 0))
+
+        def submit():
+            title_value = name.get().strip()
+            try:
+                slots = int(capacity.get())
+                if not 1 <= len(title_value) <= 150 or not 2 <= slots <= 32:
+                    raise ValueError
+            except ValueError:
+                return messagebox.showerror(title, tr('tourney.casual_invalid'), parent=dialog)
+            body = {'name': title_value, 'format': formats[format_box.get()],
+                    'max_participants': slots, 'match_state': labels[state.get()]}
+            dialog.destroy()
+            self.manage_casual(body)
+
+        PillButton(dialog, text=title, command=submit).pack(fill='x', pady=(12, 0))
+        dialog.grab_set()
+        name.focus_set()
+
+    def start_casual(self):
+        event = self.selected()
+        if event and event.get('can_start') and event['enrolled'] >= 2:
+            self.manage_casual(event_id=event['id'])
+
+    def manage_casual(self, body=None, *, event_id=None):
+        session, url = self.app.backend.session, self.url
+        if not session or self.managing:
+            return
+        self.managing = True
+        self.create.configure(state='disabled')
+        self.start.configure(state='disabled')
+
+        def finished(result, error):
+            self.managing = False
+            self.create.configure(state='normal')
+            if url != self.url or session != self.app.backend.session:
+                return
+            if error:
                 self.select()
-                self.notice.configure(text=tr('tourney.empty_list'))
-        self.run(lambda: scheduled_tournaments(url, all_statuses=True), loaded)
+                self.notice.configure(text=error)
+            else:
+                self.refresh(preferred=str(result['id']))
+
+        self.run(lambda: manage_casual_tournament(url, session, body, event_id=event_id), finished)
 
     def select(self, _event=None):
         self.bracket_request += 1
@@ -173,6 +280,8 @@ class TournamentPanel(RoundFrame):
         self.sync_connect()
         self.bracket.delete(*self.bracket.get_children())
         self.web.configure(state='normal' if event else 'disabled')
+        can_start = event and event.get('can_start') and event['enrolled'] >= 2 and not self.managing
+        self.start.configure(state='normal' if can_start else 'disabled')
         enabled = event and event.get('status', 'draft') == 'draft' and not self.joining
         self.join.configure(state='normal' if enabled else 'disabled')
         if not event:

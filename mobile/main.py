@@ -558,7 +558,7 @@ class MobileApp(App):
 
     def connect_tournament(self, source, event, game):
         from host import prepare_files
-        from koth_client import assigned_fixture
+        from koth_client import KOTH_STATES, assigned_fixture
         if platform != 'android':
             self.say('El servicio host se inicia desde la APK Android.')
             return
@@ -586,7 +586,11 @@ class MobileApp(App):
         def prepare():
             fixture = assigned_fixture(url, session, event['id'])
             if fixture:
-                prepare_files(self.user_data_dir, game)
+                match = KOTH_STATES.get(fixture.get('match_state'))
+                if match:
+                    prepare_files(self.user_data_dir, match[0], variant=match[1])
+                else:
+                    prepare_files(self.user_data_dir, game)
             return fixture
 
         def show(fixture):
@@ -600,7 +604,8 @@ class MobileApp(App):
                 self.say('Ya hay una partida activa. Deténla antes de crear otra.')
                 return
             role = fixture['role']
-            config = {'directory': self.user_data_dir, 'game': game, 'pine_slot': slot,
+            match = KOTH_STATES.get(fixture.get('match_state'))
+            config = {'directory': self.user_data_dir, 'game': match[0] if match else game, 'pine_slot': slot,
                       'address': address, 'transport': 'direct', 'fixture': {
                           'event_id': fixture['event_id'], 'fixture_id': fixture['fixture_id']},
                       'url': url, 'role': 'host' if role == 'p1' else 'guest',
@@ -677,8 +682,11 @@ class MobileApp(App):
             if self.auth_timer is None:
                 self.login()
             return
+        from koth_client import KOTH_STATES
+
         session = self.account.session
-        content = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(4))
+        content = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(4), size_hint_y=None)
+        content.bind(minimum_height=content.setter('height'))
         fields = []
         for label, default in [('Nombre del evento', ''), ('Puntos para ganar (1–1000)', '5'),
                                ('Cupo de jugadores (2–100)', '8')]:
@@ -686,8 +694,29 @@ class MobileApp(App):
             field = TextInput(text=default, multiline=False, input_filter='int' if default else None)
             content.add_widget(field)
             fields.append(field)
+        self.label_in(content, 'Juego', 14, 26)
+        game = Spinner(text=self.koth_game.text.upper(), values=('UN5', 'UN6'), size_hint_y=None, height=dp(44))
+        content.add_widget(game)
+        self.label_in(content, 'Estado de partida', 14, 26)
+        state = Spinner(size_hint_y=None, height=dp(44))
+        content.add_widget(state)
+        variants = {'standard': 'Netplay', 'original': 'Netplay',
+                    'transformed': 'Personajes transformados', 'audio20': 'Volumen al 20 %'}
+        labels = {}
+
+        def update_states(*_):
+            labels.clear()
+            labels.update((tr(variants[variant]), key) for key, (supported_game, variant) in KOTH_STATES.items()
+                          if supported_game == game.text.lower())
+            state.values = tuple(labels)
+            state.text = state.values[0]
+
+        game.bind(text=update_states)
+        update_states()
         error_label = self.label_in(content, '', 14, 44)
-        popup = Popup(content=content, size_hint=(0.92, 0.85))
+        scroll = ScrollView(do_scroll_x=False)
+        scroll.add_widget(content)
+        popup = Popup(content=scroll, size_hint=(0.92, 0.85))
         self.set_text(popup, 'Crear evento casual', property_name='title')
 
         def submit():
@@ -703,7 +732,8 @@ class MobileApp(App):
                 self.set_text(error_label, 'Revisa el nombre, la meta y el cupo.')
                 return
             popup.dismiss()
-            self.manage_casual(source, session, {'name': name, 'target_points': points, 'max_participants': capacity})
+            self.manage_casual(source, session, {'name': name, 'target_points': points, 'max_participants': capacity,
+                                                 'match_state': labels[state.text]})
 
         self.button(content, 'Crear evento casual', submit)
         self.button(content, 'Cancelar', popup.dismiss)
@@ -758,7 +788,7 @@ class MobileApp(App):
         if self.koth_join.disabled:
             return
         from appdata import DATA_DIR
-        from koth_client import MembershipStore, enroll
+        from koth_client import KOTH_STATES, MembershipStore, enroll
         try:
             url = https_url(self.koth_events_url)
             configured_address = self.inputs['zt_address'].text.strip()
@@ -807,6 +837,9 @@ class MobileApp(App):
                 values['deducted'] = result['points_deducted']
             self.say(message, **values)
             if platform == 'android':
+                match = KOTH_STATES.get(result['event'].get('match_state'))
+                if match:
+                    config.update(game=match[0], variant=match[1])
                 self.launch_mobile_service(dict(config, koth_ticket=result['ticket']), return_to_game=False)
 
         self.run_job(lambda: enroll(url, event, name, store, netplay_session=session, address=address), show)

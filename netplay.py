@@ -84,9 +84,11 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import sys
+import tempfile
 import threading
 import time
 
@@ -235,24 +237,6 @@ def auto_delay(sock, server_addr, samples=3):
 
 
 # ---- loading the match state into PCSX2 ------------------------------------------------------------------------
-def _wait_stable(path, timeout=10.0):
-    """PCSX2 writes states in the background: wait until the file stops changing."""
-    end, last, still = time.time() + timeout, None, 0.0
-    while time.time() < end:
-        try:
-            st = os.stat(path)
-        except OSError:
-            return False
-        sig = (st.st_size, st.st_mtime_ns)
-        if sig == last:
-            if time.time() - still >= 0.6:
-                return True
-        else:
-            last, still = sig, time.time()
-        time.sleep(0.1)
-    return False
-
-
 def pine_load_state(pine, state_slot):
     """PINE MsgLoadState (pine.py: Pine.load_state). Raises PineError when PCSX2 refuses."""
     pine.load_state(state_slot)
@@ -278,29 +262,36 @@ def load_match_state(args):
         print(f'cannot reach the game: {error}')
         return False
     try:
-        print(f'asking PCSX2 to save slot {slot} once, to learn which file that slot uses ...')
-        t0 = time.time()
         try:
-            pine.save_state(slot)
-        except Exception as error:                     # noqa: BLE001 - depends on the PCSX2 build
-            print(f'failed: PCSX2 could not save slot {slot} ({error}). Is the game running?')
+            serial, crc = pine.game_id().strip(), pine.game_crc()
+        except (PineError, OSError) as error:
+            print(f'failed: could not identify the game in PCSX2 ({error}).')
             return False
-        target = None
-        for _ in range(80):                            # up to ~8 s for the file to show up
-            target = newest_state(sdir, t0 - 1)
-            if target:
-                break
-            time.sleep(0.1)
-        if target is None:
-            print(f'failed: no new .p2s appeared in {sdir} after saving slot {slot}. Is this the folder set in '
-                  f'PCSX2 (Settings > Folders)?')
+        if not re.fullmatch(r'[a-zA-Z0-9_-]+', serial) or not re.fullmatch(r'[0-9A-F]{8}', crc):
+            print('failed: PCSX2 did not report a serial and CRC. Is the game running?')
             return False
-        _wait_stable(target)
+        temporary = None
         try:
-            shutil.copyfile(state, target)
+            if crc == '688C83D6':
+                slot = {netlink.UN6_ORIGINAL_STATE_TAG: 9, netlink.UN6_PORTAL_STATE_TAG: 8,
+                        netlink.UN6_AUDIO20_STATE_TAG: 7}.get(state_tag(state), slot)
+            target = os.path.join(sdir, f'{serial} ({crc}).{slot:02d}.p2s')
+            if os.path.abspath(state) != os.path.abspath(target):
+                with tempfile.NamedTemporaryFile(dir=sdir, suffix='.part', delete=False) as output:
+                    temporary = output.name
+                    with open(state, 'rb') as source:
+                        shutil.copyfileobj(source, output)
+                os.replace(temporary, target)
+                temporary = None
         except OSError as error:
-            print(f'failed: could not write {target}: {error}')
+            print(f'failed: could not install the state in {sdir}: {error}')
             return False
+        finally:
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
         print(f'loading {os.path.basename(state)} into PCSX2 (slot {slot}) ...')
         try:
             pine_load_state(pine, slot)
@@ -779,7 +770,7 @@ def online_open(args, core, is_host, tag, nick):
                 temporary = path.with_suffix('.tmp')
                 temporary.write_text(json.dumps({'room_id': room['id'], 'delay': args.delay}), encoding='utf-8')
                 temporary.replace(path)
-            print(f"the server accepted your match state ({tag}): it is the server's default.")
+            print(f"the server accepted your match state ({tag}).")
             poller = netlink.RoomPoller(api, room['id'], room['token'])
             poller.host_ip = pub[0]
             relay = (server_addr, bytes.fromhex(room['token']))
@@ -806,7 +797,13 @@ def online_open(args, core, is_host, tag, nick):
               f"state tag {tag}) ...")
         return node, None
     except (netlink.ServerError, OSError, AccountError) as error:
-        print(f'failed: {error}')
+        if (is_host and room is None and isinstance(error, netlink.ServerError)
+                and tag in (netlink.UN6_PORTAL_STATE_TAG, netlink.UN6_AUDIO20_STATE_TAG)
+                and "match state is not the server's default" in str(error)):
+            print(f'failed: el servidor de salas públicas aún no admite esta variante de UN6 ({tag}). '
+                  'Puedes usarla en ZeroTier.')
+        else:
+            print(f'failed: {error}')
         if is_host and room is not None and api is not None:
             try:
                 api.close_room(room['id'], room['token'])
@@ -1036,7 +1033,13 @@ def play_connected(args, is_host, server_mode, pine, core):
     apply_config(args, core, tag)
     server = None
     sym_server = None
-    if is_host and args.state and not getattr(args, 'no_share_state', False) and not server_mode:
+    discovery_game = getattr(args, 'announce_zerotier', None)
+    if is_host and args.state and discovery_game and not server_mode:
+        try:
+            server = statesync.StateServer(args.state, args.port, bind=args.bind_address, metadata_only=True)
+        except OSError as error:
+            print(f'ZeroTier: no se pudo anunciar el estado para conexiones por IP ({error}).', flush=True)
+    elif is_host and args.state and not getattr(args, 'no_share_state', False) and not server_mode:
         try:
             server = statesync.StateServer(args.state, args.port)
             print(f'sharing the match state on TCP {args.port}: guests can download it when theirs differs.')
@@ -1089,7 +1092,6 @@ def play_connected(args, is_host, server_mode, pine, core):
         print('note: --watch-log works best with --watch 10 (or 9); with a RAM address every change is printed.')
     announcer = None
     if is_host and rooms is not None and not getattr(args, 'no_announce', False):
-        discovery_game = getattr(args, 'announce_zerotier', None)
         announcer = rooms.RoomAnnouncer(nick, args.port, args.delay, tag,
                                        bind_ip=args.bind_address if discovery_game else None, game=discovery_game)
         if announcer.routes:
@@ -1186,7 +1188,11 @@ def play_connected(args, is_host, server_mode, pine, core):
                     lost_said = True
                     print('warning: the server forgot this room (restart?): new guests cannot join it.')
             if announcer is not None:
-                announcer.tick('playing' if node.started else 'waiting')
+                if discovery_game and node.started:
+                    names, pings = node.info()
+                    announcer.tick('playing', guest=names[1], ping=pings[1] if pings[1] != 0xFFFFFFFF else None)
+                else:
+                    announcer.tick('playing' if node.started else 'waiting')
             if time.time() - info_at >= 0.5:                # nicks + ping for the on-screen display (Online.c)
                 info_at = time.time()
                 flow.report()

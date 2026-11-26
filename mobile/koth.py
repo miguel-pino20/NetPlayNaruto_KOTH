@@ -75,7 +75,8 @@ def play_round(config, snapshot, state, symbols, stop):
 def run_koth(config, report):
     parent_stop = Path(config['stop_file'])
     report('preparing', tr('KOTH · Descargando los archivos de la partida. Vuelve a ARMSX2.'))
-    state, symbols = prepare_files(config['directory'], config['game'])
+    state_options = {'variant': config['variant']} if config.get('variant') else {}
+    state, symbols = prepare_files(config['directory'], config['game'], **state_options)
     body = {'address': config['address'], 'port': 47400, 'game': config['game'], 'delay': 3,
             'state_tag': file_tag(state), 'symbols_tag': file_tag(symbols), 'available': False,
             'transport': 'zerotier', 'spectators_enabled': True}

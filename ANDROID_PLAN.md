@@ -2,6 +2,8 @@
 
 Fecha: 2026-11-14.
 
+El avance vigente y los próximos bloques se mantienen en el [plan de adaptación](docs/PLAN-ANDROID-NETPLAY.md).
+
 ## Estado y autorización
 
 Este documento conserva las indicaciones del usuario para retomar el trabajo en el futuro.

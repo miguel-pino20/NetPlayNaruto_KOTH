@@ -559,6 +559,8 @@ class FixtureResults:
                 reply = api_call(self.url, 'POST', '/api/netplay/result/', body, token=self.ticket,
                                  extra_headers={'Idempotency-Key': body['idempotency_key']},
                                  timeout=5, follow_redirects=False)
+                if reply.get('status') == 'pending' and reply.get('session') == self.session:
+                    continue
                 series = reply['series']
                 if reply.get('status') != 'recorded' or reply.get('session') != self.session:
                     raise ValueError('respuesta sin confirmación del cruce')

@@ -38,6 +38,12 @@ def apply_style(root):
     st.configure(".", background=BG, foreground=TEXT, font=("Segoe UI", 10))
     st.configure("TEntry", fieldbackground=PANEL_2, foreground=TEXT, insertcolor=TEXT, bordercolor=BORDER,
                  lightcolor=BORDER, darkcolor=BORDER, padding=6)
+    st.configure("TSpinbox", fieldbackground=PANEL_2, background=PANEL_2, foreground=TEXT,
+                 insertcolor=TEXT, arrowcolor=TEXT, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
+                 selectbackground=ACCENT, selectforeground=ON_ACCENT, padding=6)
+    st.map("TSpinbox", fieldbackground=[("disabled", PANEL), ("!disabled", PANEL_2)],
+           foreground=[("disabled", MUTED), ("!disabled", TEXT)],
+           background=[("active", BORDER), ("!disabled", PANEL_2)])
     st.configure('TCombobox', fieldbackground=PANEL_2, background=PANEL_2, foreground=TEXT,
                  arrowcolor=TEXT, insertcolor=TEXT, bordercolor=BORDER, padding=6)
     st.map('TCombobox', fieldbackground=[('disabled', PANEL), ('readonly', PANEL_2), ('!disabled', PANEL_2)],

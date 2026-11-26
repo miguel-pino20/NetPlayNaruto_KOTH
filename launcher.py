@@ -26,7 +26,7 @@ import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, font as tkfont, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 from urllib.error import HTTPError
 from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 
@@ -40,9 +40,9 @@ except ImportError:                                       # sem Pillow: a lista 
 import i18n
 import launcher_core as core
 from rooms import RoomListener, uses_interface
-from discord_auth import UA, NoRedirect, ssl_context
+from discord_auth import UA, NoRedirect, api_call, ssl_context
 from i18n import has, tr
-from koth_client import DEFAULT_URL, game_downloads
+from koth_client import DEFAULT_URL, KOTH_STATES, event_for_ticket, game_downloads
 from launcher_account import DiscordDialog, FightHistory, ProfileDialog
 from launcher_core import SERVER_ADDR
 from launcher_koth import KothPanel
@@ -396,7 +396,7 @@ class Launcher(tk.Tk):
         right.pack(side="left", fill="both", expand=True, padx=(0, 22), pady=(12, 0))
         self._rooms_panel(right)                          # as salas ocupam o resto: e a informacao principal
         self.koth_panel = KothPanel(right, self, self.koth_box)
-        self.tournaments = TournamentPanel(right, self, self.play_actions)
+        self.tournaments = TournamentPanel(right, self, self.play_actions, self.tournament_box)
         self._build_background(head, body, session_view, left, right, sidebar_mascot=sidebar_mascot)
 
         foot = tk.Frame(self, bg=BG, padx=22, pady=8)
@@ -971,7 +971,30 @@ class Launcher(tk.Tk):
         if self.dialog is not None and self.dialog.winfo_exists():
             self.dialog.lift()
             return
+        if self.backend.account:
+            self.load_store_balance()
         self.dialog = (ProfileDialog if self.backend.account else DiscordDialog)(self)
+
+    def load_store_balance(self):
+        session = self.backend.session
+        if not self.backend.account or not session:
+            return
+        request = self._balance_request = object()
+
+        def work():
+            return api_call(DEFAULT_URL, "GET", "/api/netplay/store/backgrounds/",
+                            extra_headers={"X-Netplay-Session": session}, follow_redirects=False)["balance"]
+
+        def finished(balance, error):
+            if error is None and self._balance_request is request:
+                self.set_store_balance(balance, session)
+
+        self._window_task(self.acct_sub, work, finished)
+
+    def set_store_balance(self, points, session):
+        if self.backend.account and session == self.backend.session:
+            self._balance_request = None
+            self.acct_sub.configure(text=f'{tr("acct.profile")}  ·  {tr("acct.store_points", points=points)}')
 
     def _refresh_account(self):
         acc, png = self.backend.account, self.backend.avatar_png
@@ -980,7 +1003,9 @@ class Launcher(tk.Tk):
         else:
             self.history_nav.pack_forget()
         self.acct_name.configure(text=acc["nick"] if acc else tr("acct.guest"))
+        self._balance_request = None
         self.acct_sub.configure(text=tr("acct.profile") if acc else tr("acct.login"))
+        self.load_store_balance()
         self.acct_av.set(png if acc else None, acc["nick"][:1] if acc else "?")
         self._nick_hint()
         self._sync_admin()
@@ -1040,7 +1065,30 @@ class Launcher(tk.Tk):
         self.casual_box.pack(fill='x')
         Segmented(self.casual_box, [('netplay', 'Netplay'), ('zerotier', 'ZeroTier')], self.casual_transport,
                   self._change_transport).pack(fill='x', pady=(8, 0))
+        game_row = tk.Frame(self.casual_box, bg=PANEL)
+        game_row.pack(fill="x", pady=(8, 0))
+        tk.Label(game_row, text=tr("koth.game"), bg=PANEL, fg=TEXT).pack(side="left")
+        pvp_game = self.v["pvp_game"]
+        self.pvp_game_picker = ttk.Combobox(game_row, textvariable=pvp_game, values=("UN5", "UN6"),
+                                           state="readonly", width=8)
+        self.pvp_game_picker.pack(side="right")
+        if pvp_game.get() not in ("UN5", "UN6"):
+            pvp_game.set(core.DEFAULTS["pvp_game"])
+        self.pvp_game_picker.bind("<<ComboboxSelected>>", self._sync_pvp_state_picker)
         self._note(self.casual_box, tr("note.delay"))
+        self.zt_states = tk.Frame(self.casual_box, bg=PANEL)
+        tk.Label(self.zt_states, text=tr("zt.state_title"), bg=PANEL, fg=TEXT).pack(side="left")
+        self.zt_state_picker = ttk.Menubutton(self.zt_states)
+        self.zt_state_picker.pack(side="right")
+        state_menu = tk.Menu(self.zt_state_picker, tearoff=False)
+        self.zt_state_picker.configure(menu=state_menu)
+        selection = self.v["zerotier_state"]
+        self.zt_state_picker.configure(text=tr("zt.state_" + selection.get()) if selection.get() in
+                                       ("standard", "transformed", "audio20") else tr("zt.state_standard"))
+        for key in ("standard", "transformed", "audio20"):
+            label = tr("zt.state_" + key)
+            state_menu.add_radiobutton(label=label, value=key, variable=selection,
+                                       command=lambda label=label: self.zt_state_picker.configure(text=label))
 
         self.mode_box = tk.Frame(inner, bg=PANEL)
         self.mode_box.pack(fill="x")
@@ -1053,8 +1101,10 @@ class Launcher(tk.Tk):
                                   justify='left', anchor='w', font=('Segoe UI', 10, 'bold'))
         self.koth_hint.pack(fill='x', pady=(8, 0))
         self._note(self.koth_box, tr('koth.join_hint'))
+        self.tournament_box = tk.Frame(self.mode_box, bg=PANEL)
 
-        tk.Frame(inner, bg=BORDER, height=1).pack(fill="x", pady=(14, 12))   # separador
+        self.match_divider = tk.Frame(inner, bg=BORDER, height=1)
+        self.match_divider.pack(fill="x", pady=(14, 12))
 
         self.play_actions = tk.Frame(inner, bg=PANEL)
         self.play_actions.pack(fill="x")
@@ -1115,6 +1165,12 @@ class Launcher(tk.Tk):
         top = tk.Frame(inner, bg=PANEL)
         top.pack(fill="x", pady=(0, 8))
         tk.Label(top, text=tr("rooms.title"), bg=PANEL, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(side="left")
+        self.zt_room_actions = tk.Frame(top, bg=PANEL)
+        self.zt_ip_button = PillButton(self.zt_room_actions, text=tr("rooms.zt_by_ip"), style="Small.TButton",
+                                       command=self._join_zerotier_ip)
+        self.zt_ip_button.pack(side="right")
+        PillButton(self.zt_room_actions, text=tr("koth.refresh"), style="Small.TButton",
+                   command=self._refresh_zerotier_rooms).pack(side="right", padx=(0, 6))
         self.rooms_status = tk.Label(top, text="", bg=PANEL, fg=DIM, font=("Segoe UI", 9), anchor="e",
                                      justify="right")
         self.rooms_status.pack(side="right")
@@ -1223,7 +1279,7 @@ class Launcher(tk.Tk):
         casual = mode in ('host', 'guest')
         self.section.set('casual' if casual else mode)
         if casual:
-            self.casual_box.pack(fill='x', before=self.mode_box)
+            self.casual_box.pack(fill='x', before=self.match_divider)
         else:
             self.casual_box.pack_forget()
         direct = casual and self.casual_transport.get() == 'zerotier'
@@ -1235,6 +1291,14 @@ class Launcher(tk.Tk):
             self.koth_box.pack(fill='x')
         else:
             self.koth_box.pack_forget()
+        if mode == 'tournaments':
+            self.tournament_box.pack(fill='x')
+        else:
+            self.tournament_box.pack_forget()
+        if direct:
+            self.mode_box.pack_forget()
+        else:
+            self.mode_box.pack(fill='x', before=self.match_divider)
         for button in (self.start_btn, self.hill_btn):
             button.pack_forget()
         self._show_stop()
@@ -1255,8 +1319,19 @@ class Launcher(tk.Tk):
             panel.refresh()
         self.start_btn.configure(text=tr('koth.join' if mode == 'koth' else 'nav.zt_host' if direct else 'nav.net_host'))
         self.rooms_hint.configure(text=tr('rooms.zt_hint' if direct else 'rooms.join_hint'))
-        if not direct:
+        if direct:
+            self.zt_room_actions.pack(side="right", before=self.rooms_status, padx=(10, 0))
+        else:
+            self.zt_room_actions.pack_forget()
             self._close_zerotier_rooms()
+        self._sync_pvp_state_picker()
+
+    def _sync_pvp_state_picker(self, _event=None):
+        if (self.section.get() == "casual" and self.casual_transport.get() == "zerotier"
+                and self.v["pvp_game"].get() == "UN6"):
+            self.zt_states.pack(fill="x", pady=(8, 0))
+        else:
+            self.zt_states.pack_forget()
 
     def _show_stop(self):
         if self.section.get() == 'tournaments' and not self.backend.running:
@@ -1465,6 +1540,8 @@ class Launcher(tk.Tk):
     def _local_rooms(self, address):
         if not address:
             return [], None
+        if self.zerotier_rooms is not None and self.zerotier_rooms.zerotier_address != address:
+            self._close_zerotier_rooms()
         if self.zerotier_rooms is None:
             self.zerotier_rooms = RoomListener(zerotier_address=address)
         rooms = self.zerotier_rooms.poll()
@@ -1480,8 +1557,27 @@ class Launcher(tk.Tk):
             self.zerotier_rooms.close()
             self.zerotier_rooms = None
 
+    def _refresh_zerotier_rooms(self):
+        if self.zerotier_rooms is not None and self.zerotier_rooms.error:
+            self._close_zerotier_rooms()
+        self._rooms_refresh()
+
+    def _join_zerotier_ip(self):
+        local_address = self._saved_zerotier_address()
+        if not local_address:
+            return
+        prefix = local_address.rsplit(".", 1)[0] + "."
+        previous = self.v["zerotier_host"].get()
+        remembered = previous[len(prefix):] if previous.startswith(prefix) else previous
+        address = simpledialog.askstring(tr("rooms.zt_by_ip"), tr("rooms.zt_host_ip", prefix=prefix),
+                                         parent=self, initialvalue=remembered)
+        if address is not None:
+            address = address.strip()
+            self.start("guest", host_ip=prefix + address if address and "." not in address else address)
+
     def pick_room(self):
         busy = self.backend.running or self._after_sync or self._after_allow or self._koth_pending
+        self.zt_ip_button.configure(state="disabled" if busy else "normal")
         self.join_btn.configure(state="normal" if not busy and self._picked_room() else "disabled")
 
     def _picked_room(self):
@@ -1540,14 +1636,18 @@ class Launcher(tk.Tk):
         for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn, self.hill_btn):
             b.configure(state=state)
         self.join_btn.configure(state="normal" if not running and self._picked_room() else "disabled")
+        self.zt_ip_button.configure(state=state)
+        self.pvp_game_picker.configure(state="disabled" if running else "readonly")
+        self.zt_state_picker.configure(state=state)
         # PREPARE: so o dono (o servidor decide quem e o dono; o launcher so esconde o botao)
         self.prepare_btn.configure(state="normal" if (not running and self.backend.is_admin()) else "disabled")
         self.stop_btn.configure(state="normal" if running and not self._koth_pending else "disabled")
 
     # ================================================================ acoes
-    def _spawn(self, args, label, allow_missing_symbols=False, session_env=None):
+    def _spawn(self, args, label, allow_missing_symbols=False, session_env=None, *, cfg=None):
         try:
-            self.backend.spawn(self.cfg(), args, allow_missing_symbols, session_env=session_env)
+            self.backend.spawn(cfg if cfg is not None else self.cfg(), args, allow_missing_symbols,
+                               session_env=session_env)
         except RuntimeError as exc:
             return messagebox.showwarning(tr("dlg.busy"), str(exc))
         except ValueError as exc:
@@ -1711,15 +1811,21 @@ class Launcher(tk.Tk):
         address = self._saved_zerotier_address()
         if not address or not self._ensure_state_dir() or not self._pick_game():
             return
+        match = KOTH_STATES.get(fixture.get('match_state'))
+        if match and match[0] != self.game:
+            return messagebox.showerror(tr('zt.title'),
+                                        tr('dlg.game_mismatch', room=match[0].upper(), mine=self.game.upper()))
         role = 'host' if fixture['role'] == 'p1' else 'guest'
         title = tr('bracket.match_role', p1=fixture['p1']['name'], p2=fixture['p2']['name'],
                    role=fixture['role'].upper())
         cfg = {**self.cfg(), 'transport': 'zerotier', 'zerotier_address': address,
                'fixture': fixture, 'game': self.game, 'hill_url': self.tournaments.url,
                'round_robin': round_robin}
+        if match:
+            cfg['zerotier_state'] = match[1]
         self._start_direct(cfg, role, title, fixture_login=self.backend.session)
 
-    def _start_direct(self, cfg, role, title, *, fixture_login=None):
+    def _start_direct(self, cfg, role, title, *, fixture_login=None, announced_tag=None):
         def launch():
             if cfg.get('fixture') and self.backend.session != fixture_login:
                 self._log(tr('bracket.login'), 'error')
@@ -1732,9 +1838,14 @@ class Launcher(tk.Tk):
                 return messagebox.showerror(tr('zt.title'), str(error))
             session = fixture_login if cfg.get('fixture') else self.backend.session
             env_key = 'UN5_FIXTURE_LOGIN' if cfg.get('fixture') else 'UN5_SCOREBOARD_SESSION'
-            self._spawn(args, title, session_env={env_key: session} if session else None)
+            spawn_cfg = {**cfg, 'zerotier_host': self.v['zerotier_host'].get()}
+            self._spawn(args, title, session_env={env_key: session} if session else None, cfg=spawn_cfg)
 
-        self._sync_for_match(launch)
+        if cfg.get('fixture'):
+            sync = (lambda: self.backend.sync_zerotier_state(cfg, 'host')) if cfg['fixture'].get('match_state') else None
+            self._sync_for_match(launch, sync=sync)
+        else:
+            self._sync_for_match(launch, sync=lambda: self.backend.sync_zerotier_state(cfg, role, announced_tag))
 
     def watch_hill(self):
         event = self.koth_panel.selected_event()
@@ -1750,6 +1861,10 @@ class Launcher(tk.Tk):
         address = self._saved_zerotier_address()
         if not address or not self._ensure_state_dir() or not self._pick_game():
             return
+        expected = KOTH_STATES.get((event or {}).get('match_state'))
+        if expected and expected[0] != self.game:
+            return messagebox.showerror(tr('hill.title'),
+                                        tr('dlg.game_mismatch', room=expected[0].upper(), mine=self.game.upper()))
         ticket = self.v['hill_ticket'].get().strip()
         if observe:
             return self._join_hill(DEFAULT_URL, address, ticket, event, observe=True)
@@ -1825,9 +1940,26 @@ class Launcher(tk.Tk):
 
             threading.Thread(target=enroll, daemon=True).start()
         else:
-            self._begin_hill(url, address, ticket, personal_code=True)
+            self._koth_pending = True
+            self._set_buttons(True)
+            self.stop_btn.configure(state='disabled')
+
+            def resolved(match_event, error):
+                if error:
+                    self._koth_pending = False
+                    self._set_buttons(False)
+                    return messagebox.showerror(tr('hill.title'), error)
+                self._begin_hill(url, address, ticket, match_event, personal_code=True)
+
+            self._window_task(self, lambda: event_for_ticket(url, ticket), resolved)
 
     def _begin_hill(self, url, address, ticket, event=None, *, observe=False, personal_code=False):
+        match = KOTH_STATES.get((event or {}).get('match_state'))
+        if match and match[0] != self.game:
+            self._koth_pending = False
+            self._set_buttons(False)
+            return messagebox.showerror(tr('hill.title'),
+                                        tr('dlg.game_mismatch', room=match[0].upper(), mine=self.game.upper()))
         self.koth_live_ticket = '' if observe else ticket
         self.koth_observing = observe
         if not observe:
@@ -1845,12 +1977,16 @@ class Launcher(tk.Tk):
         self.stop_btn.configure(state='disabled')
         self.koth_panel.display(event, reason=tr('koth.loading'))
 
+        cfg = self.cfg()
+        if match:
+            cfg['zerotier_state'] = match[1]
+
         def launch():
-            cfg = self.cfg()
+            match_cfg = cfg if match else self.cfg()
             args = ['hill', '--api-url', url, '--address', address, '--game', self.game,
                     '--delay', core.MATCH_DELAY, '--auto-delay', '--transport', 'zerotier',
-                    '--state', cfg['state_file'], '--state-dir', cfg['state_dir'], '--load-slot', cfg['load_slot'],
-                    '--nick', cfg.get('nick', '')]
+                    '--state', match_cfg['state_file'], '--state-dir', match_cfg['state_dir'], '--load-slot', match_cfg['load_slot'],
+                    '--nick', match_cfg.get('nick', '')]
             if personal_code:
                 args.append('--personal-code')
             if observe:
@@ -1859,13 +1995,16 @@ class Launcher(tk.Tk):
                 args.append('--no-spectators')
             self._koth_pending = False
             self._spawn(args, tr('hill.title'), session_env={'UN5_HILL_TICKET': ticket,
-                        'UN5_NETPLAY_SESSION': '' if observe else self.backend.session})
+                        'UN5_NETPLAY_SESSION': '' if observe else self.backend.session}, cfg=match_cfg)
             self.koth_panel.display(event)
 
         self._after_sync = launch
         self._log('\n▶ '+tr('run.checking'), 'info')
         self._set_status('LOADING', BLUE)
-        self.backend.sync_default(self.game)
+        if match:
+            self.backend.sync_zerotier_state(cfg, 'host')
+        else:
+            self.backend.sync_default(self.game)
 
     def prepare(self):
         if not self.backend.is_admin():
@@ -1887,10 +2026,13 @@ class Launcher(tk.Tk):
         if args:
             self._spawn(args, tr("run.load"))
 
-    def start(self, role="host"):
+    def start(self, role="host", *, host_ip=None):
         if self._koth_pending or self.backend.running or self._after_sync or self._after_allow:
             return
         section = self.section.get()
+        direct = self.casual_transport.get() == 'zerotier'
+        if host_ip is not None and (section != 'casual' or not direct or role != 'guest'):
+            return
         if section == 'tournaments':
             return
         if section == 'koth':
@@ -1899,39 +2041,50 @@ class Launcher(tk.Tk):
                 return messagebox.showinfo(tr('hill.title'), tr('koth.pick'))
             return self.hill(event)
 
-        direct = self.casual_transport.get() == 'zerotier'
         address = self.v["zerotier_address"].get().strip()
         if direct and not address:
             return messagebox.showinfo(tr('zt.settings'), tr('rooms.zt_no_address'))
-        room = self._picked_room() if role == "guest" else None
-        if role == "guest" and room is None:
+        room = self._picked_room() if role == "guest" and host_ip is None else None
+        if role == "guest" and room is None and host_ip is None:
             return messagebox.showinfo(tr("dlg.rooms"), tr("dlg.pick_room"))
+        if direct:
+            direct_settings = {'transport': 'zerotier', 'zerotier_address': address,
+                               'zerotier_host': room['ip'] if room else host_ip or '',
+                               'announce_zerotier': True, 'game': self.game}
+            try:
+                core.zerotier_args(direct_settings, role)
+            except ValueError as error:
+                return messagebox.showerror(tr('zt.settings'), str(error), parent=self)
+            if host_ip is not None and host_ip != self.v["zerotier_host"].get():
+                self.v["zerotier_host"].set(host_ip)
+                core.save_config({**self.raw(), "ignore_desync": False})
         if not self._ensure_state_dir() or not self._pick_game():
             return
-        if room and room.get("game") and room["game"] != self.game:
+        room_game = room.get("game") if room else None
+        expected_game = room_game if room_game in ("un5", "un6") else self.v["pvp_game"].get().lower()
+        if expected_game != self.game:
+            key = "dlg.game_mismatch" if room_game in ("un5", "un6") else "dlg.pvp_game_mismatch"
             return messagebox.showerror(tr("dlg.game_title"),
-                                        tr("dlg.game_mismatch", room=room["game"].upper(), mine=self.game.upper()))
+                                        tr(key, room=expected_game.upper(), mine=self.game.upper()))
 
         self.v["mode"].set(role)
         if direct:
-            cfg = {**self.cfg(), 'transport': 'zerotier', 'zerotier_address': address,
-                   'zerotier_host': room['ip'] if room else '', 'announce_zerotier': True, 'game': self.game}
-            try:
-                core.zerotier_args(cfg, role)
-            except ValueError as error:
-                return messagebox.showerror(tr('zt.settings'), str(error))
-            return self._start_direct(cfg, role, tr('zt.title'))
+            cfg = {**self.cfg(), **direct_settings, 'game': self.game}
+            return self._start_direct(cfg, role, tr('zt.title'), announced_tag=room.get('tag') if room else None)
 
         self.v["room_id"].set(room["id"] if room else "")
-        self._sync_for_match(lambda: self._launch(role), relay=True)
+        self._sync_for_match(lambda: self._launch(role), sync=lambda: self.backend.sync_default(self.game, relay=True))
 
-    def _sync_for_match(self, launch, *, relay=False):
+    def _sync_for_match(self, launch, *, sync=None):
         self._after_sync = launch
         self._log("\n▶ " + tr("run.checking"), "info")
         self._set_status("LOADING", BLUE)
         self._set_buttons(True)
         self.stop_btn.configure(state="disabled")
-        self.backend.sync_default(self.game, relay=relay)
+        if sync is None:
+            self.backend.sync_default(self.game)
+        else:
+            sync()
 
     def _launch(self, role):
         if role == "guest":                               # the server decides first (same IP / same account)
@@ -1945,10 +2098,12 @@ class Launcher(tk.Tk):
         self._launch_now(role)
 
     def _launch_now(self, role):
-        args = self._args(role, self.cfg()["state_file"])
-        if not args:
+        cfg = self.cfg()
+        try:
+            args = core.make_args(cfg, role, cfg["state_file"])
+        except ValueError as error:
             self._set_status("READY", MUTED)
-            return
+            return messagebox.showerror(tr("dlg.cannot_continue"), str(error))
         label = tr("run.host") if role == "host" else tr("run.guest")
         if role == "host" and self.v["ignore_desync"].get():
             label += tr("run.ignore_on")
@@ -1956,7 +2111,7 @@ class Launcher(tk.Tk):
         # nao e usado aqui para nao ligar presenca/allow do netplay casual.
         session = getattr(self.backend, 'session', '') or ''
         self._spawn(args, label, allow_missing_symbols=(role == "guest"),
-                    session_env={'UN5_SCOREBOARD_SESSION': session} if session else None)
+                    session_env={'UN5_SCOREBOARD_SESSION': session} if session else None, cfg=cfg)
 
     def solo(self):
         if not self._pick_game():

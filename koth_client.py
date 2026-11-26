@@ -13,6 +13,14 @@ LEGACY_HOST = 'narultimateonline.sytes.net'
 LEGACY_HOSTS = (LEGACY_HOST, 'narutimateonline.sytes.net')
 
 
+KOTH_STATES = {
+    'un5': ('un5', 'standard'),
+    'un6': ('un6', 'original'),
+    'un6-transformed': ('un6', 'transformed'),
+    'un6-audio20': ('un6', 'audio20'),
+}
+
+
 def site_url(url):
     """Migrate former public hosts; preserve custom ports, paths and servers."""
     url = validate_url(url)
@@ -115,9 +123,14 @@ TOURNAMENT_FORMATS = {'round_robin': 'Round Robin', 'single_elimination': 'Singl
                       'double_elimination': 'Double Elimination'}
 
 
-def scheduled_tournaments(url, *, all_statuses=False):
+def scheduled_tournaments(url, *, all_statuses=False, session=None):
     path = '/api/netplay/tournaments/' + ('?scope=all' if all_statuses else '')
-    result = api_call(site_url(url), 'GET', path, timeout=8)
+    url = site_url(url)
+    if session and urlsplit(url).scheme == 'https':
+        result = api_call(url, 'GET', path, timeout=8, extra_headers={'X-Netplay-Session': session},
+                          follow_redirects=False)
+    else:
+        result = api_call(url, 'GET', path, timeout=8)
     if not isinstance(result, dict) or not isinstance(result.get('events'), list):
         raise AccountError('El servidor no devolvió la lista de torneos.')
     return [event for event in result['events'] if event.get('format') in TOURNAMENT_FORMATS]
@@ -217,6 +230,15 @@ def join_tournament(url, session, event_id):
     return result['participant_id']
 
 
+def manage_casual_tournament(url, session, body=None, *, event_id=None):
+    url = site_url(url)
+    if urlsplit(url).scheme != 'https' or not session:
+        raise AccountError('La gestión del torneo requiere HTTPS y una sesión de Discord.')
+    action = 'casual/' if event_id is None else f'{int(event_id)}/start/'
+    return api_call(url, 'POST', '/api/netplay/tournaments/' + action, body or {}, timeout=12,
+                    extra_headers={'X-Netplay-Session': session}, follow_redirects=False)
+
+
 def _management_request(url, session, method, path, body=None):
     url = site_url(url)
     if urlsplit(url).scheme != 'https':
@@ -242,6 +264,16 @@ def management_command(url, session, body, event=None):
 
 def watch_ticket(url, session, event_id):
     return _management_request(url, session, 'POST', f'{int(event_id)}/watch/')
+
+
+def event_for_ticket(url, ticket):
+    try:
+        return api_call(site_url(url), 'GET', '/api/netplay/events/current/', token=ticket, timeout=5,
+                        follow_redirects=False)
+    except AccountError as error:
+        if error.code != 404:
+            raise
+        return None
 
 
 def enroll(url, event, name, store, fallback_ticket='', netplay_session='', *, address=''):

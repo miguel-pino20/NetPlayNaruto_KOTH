@@ -3,6 +3,10 @@
 Versión 0.1.8A (compartida con Windows y Linux). Reutiliza el protocolo y el núcleo Python de PC. No incluye D.O.N,
 Digimon, BIOS, juegos, estados empaquetados ni credenciales.
 
+Para continuar la adaptación, consulta el [plan y la lista de avance](../docs/PLAN-ANDROID-NETPLAY.md)
+y la [guía de referencias por bloque](../docs/REFERENCIAS-ANDROID-NETPLAY.md).
+Para practicar la interfaz y el menú, empieza por la [guía básica de Kivy](../docs/GUIA-KIVY-INTERFAZ-ANDROID.md).
+
 ## Descargar un estado para pasarlo manualmente a ARMSX2
 
 En **Conexión**, seleccionar UN5 o UN6 bajo **Estado compartido para ARMSX2** y

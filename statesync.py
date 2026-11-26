@@ -11,11 +11,13 @@ The guest checks the sha256 of what it received against the tag, writes to '<des
 """
 import hashlib
 import os
+import re
 import socket
 import struct
 import threading
 
 MAGIC = b'UN5S'
+QUERY = b'UN5Q'
 HEADER = struct.Struct('<4sB16sQ')
 NO_TAG = b'-' * 16
 CHUNK = 1 << 16
@@ -48,10 +50,11 @@ def _recv_exact(sock, n):
 class StateServer:
     """Serves one file to any guest that asks. Raises OSError from the constructor when the port cannot be bound."""
 
-    def __init__(self, path, port, bind='0.0.0.0'):
+    def __init__(self, path, port, bind='0.0.0.0', *, metadata_only=False):
         self.path, self.port = path, port
         self.tag = file_tag(path)
         self.size = os.path.getsize(path)
+        self.metadata_only = metadata_only
         self.served = 0
         self._stop = threading.Event()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -80,7 +83,10 @@ class StateServer:
         try:
             conn.settimeout(15)
             req = _recv_exact(conn, 20)
-            if req[:4] != MAGIC:
+            if req[:4] == QUERY:
+                conn.sendall(HEADER.pack(MAGIC, 0, self.tag.encode('ascii'), 0))
+                return
+            if self.metadata_only or req[:4] != MAGIC:
                 return
             same = req[4:20] == self.tag.encode('ascii')
             conn.sendall(HEADER.pack(MAGIC, 0 if same else 1, self.tag.encode('ascii'), 0 if same else self.size))
@@ -110,6 +116,19 @@ class StateServer:
             self.sock.close()
         except OSError:
             pass
+
+
+def advertised_tag(host, port):
+    """Read the selected state fingerprint without requesting a file."""
+    try:
+        with socket.create_connection((host, port), timeout=3) as sock:
+            sock.sendall(QUERY + NO_TAG)
+            magic, status, tag, size = HEADER.unpack(_recv_exact(sock, HEADER.size))
+            if magic != MAGIC or status != 0 or size or not re.fullmatch(rb'[0-9a-f]{16}', tag):
+                raise StateError('invalid state announcement')
+            return tag.decode('ascii')
+    except OSError as error:
+        raise StateError(str(error)) from None
 
 
 def fetch(host, port, dest, have_tag=None, say=print):

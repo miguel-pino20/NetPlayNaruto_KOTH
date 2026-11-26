@@ -47,6 +47,9 @@ def parse_networks(payload):
                 continue
             seen.add((identity, address))
             choice = {'name': name, 'address': address, 'id': identity}
+            _ip, _separator, prefix = value.partition('/')
+            if prefix.isdecimal() and len(prefix) <= 2 and 0 <= int(prefix) <= 32:
+                choice['prefix'] = int(prefix)
             if isinstance(network.get('portDeviceName'), str) and network['portDeviceName']:
                 choice['interface'] = network['portDeviceName']
             result.append(choice)
@@ -71,7 +74,11 @@ def parse_interfaces(payload):
             if address is None or (name, address) in seen:
                 continue
             seen.add((name, address))
-            result.append({'name': f'ZeroTier ({name})', 'address': address, 'id': ''})
+            choice = {'name': f'ZeroTier ({name})', 'address': address, 'id': ''}
+            prefix = info.get('prefixlen')
+            if type(prefix) is int and 0 <= prefix <= 32:
+                choice['prefix'] = prefix
+            result.append(choice)
     return sorted(result, key=lambda item: (item['name'], item['address']))
 
 
@@ -169,6 +176,7 @@ $ErrorActionPreference = 'Stop'
     ForEach-Object { [PSCustomObject]@{
         name = $ztAdapter.Name
         address = $_.IPAddress
+        prefix = $_.PrefixLength
     }}
 }) | ConvertTo-Json -Compress
 """
@@ -188,8 +196,12 @@ def parse_windows_interfaces(payload):
             continue
         seen.add((item['name'], address))
         identity = re.search(r'\[([0-9a-fA-F]{16})\]', item['name'])
-        choices.append({'name': item['name'], 'address': address,
-                        'id': identity[1].lower() if identity else '', 'interface': item['name']})
+        choice = {'name': item['name'], 'address': address,
+                  'id': identity[1].lower() if identity else '', 'interface': item['name']}
+        prefix = item.get('prefix')
+        if type(prefix) is int and 0 <= prefix <= 32:
+            choice['prefix'] = prefix
+        choices.append(choice)
     return sorted(choices, key=lambda item: (item['name'].casefold(), item['address']))
 
 

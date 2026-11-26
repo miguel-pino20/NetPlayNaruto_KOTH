@@ -35,14 +35,19 @@ def paths(directory, game):
     return root / 'match.p2s', root / 'symbols.json'
 
 
-def prepare_files(directory, game, *, relay=False):
+def prepare_files(directory, game, *, relay=False, variant=None):
     from discord_auth import api_call, ssl_context
-    from netlink import default_file
+    from netlink import UN6_PORTAL_SYMBOLS_TAG, default_file, un6_state_catalog
     state, symbols = paths(directory, game)
     query = '?game=un6' if game == 'un6' else ''
-    info = api_call(SERVER, 'GET', '/default' + query)
+    selected = un6_state_catalog(SERVER).get(variant) if game == 'un6' else None
+    info = None if selected else api_call(SERVER, 'GET', '/default' + query)
     for kind, destination in (('state', state), ('symbols', symbols)):
-        url, expected = default_file(SERVER, game, kind, info, relay=relay)
+        if selected:
+            url, expected = selected if kind == 'state' else (
+                f'{SERVER}/blob/{UN6_PORTAL_SYMBOLS_TAG}', UN6_PORTAL_SYMBOLS_TAG)
+        else:
+            url, expected = default_file(SERVER, game, kind, info, relay=relay)
         if not isinstance(expected, str) or len(expected) != 16 or any(c not in '0123456789abcdef' for c in expected):
             raise ValueError(tr('El servidor no publicó un identificador válido para {kind}', kind=kind))
         if destination.exists() and file_tag(destination) == expected:
@@ -134,13 +139,14 @@ def ensure_controllers(client):
 def wait_for_match(config, report):
     from core_link import PineCore, resolve_base
     from pine import Pine, PineError
-    from netlink import UN6_ORIGINAL_STATE_TAG, UN6_PORTAL_STATE_TAG
+    from netlink import UN6_AUDIO20_STATE_TAG, UN6_ORIGINAL_STATE_TAG, UN6_PORTAL_STATE_TAG
     state, symbols = paths(config['directory'], config['game'])
     expected_un6 = file_tag(state) if config['game'] == 'un6' else None
     # ARMSX2 loads the file installed by the player, which can differ from the download.
     awakening_instruction = {
         UN6_ORIGINAL_STATE_TAG: 0x0C07FA84,
         UN6_PORTAL_STATE_TAG: 0x24020001,
+        UN6_AUDIO20_STATE_TAG: 0x24020001,
     }.get(expected_un6)
     deadline = time.monotonic() + 90
     loaded, configured, last, last_report = False, False, '', 0.0

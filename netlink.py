@@ -22,15 +22,29 @@ UN6_PORTAL_STATE_URL = 'https://narutimateonline.servegame.com/descargas/un6/'
 UN6_PORTAL_STATE_TAG = '391a68957bb8a006'
 UN6_ORIGINAL_STATE_TAG = '613a17e2973ea6a8'
 UN6_PORTAL_SYMBOLS_TAG = 'e785298325987dad'
+UN6_AUDIO20_STATE_URL = UN6_PORTAL_STATE_URL + 'audio-20/'
+UN6_AUDIO20_STATE_TAG = 'd554ec9e312b8686'
+
+
+def un6_state_catalog(api_url):
+    return {
+        'original': (f'{api_url}/blob/{UN6_ORIGINAL_STATE_TAG}', UN6_ORIGINAL_STATE_TAG),
+        'transformed': (UN6_PORTAL_STATE_URL, UN6_PORTAL_STATE_TAG),
+        'audio20': (UN6_AUDIO20_STATE_URL, UN6_AUDIO20_STATE_TAG),
+    }
 
 
 def default_file(api_url, game, kind, metadata, *, relay=False):
-    """Pair the verified portal patch with its symbols and respect the relay's advertised tag."""
+    """Resolve the shared UN6 state while respecting the relay's advertised tag."""
     query = '?game=un6' if game == 'un6' else ''
     tag = metadata.get(kind)
-    if (game == 'un6' and kind == 'state' and metadata.get('symbols') == UN6_PORTAL_SYMBOLS_TAG
-            and (tag == UN6_PORTAL_STATE_TAG or (not relay and tag == UN6_ORIGINAL_STATE_TAG))):
-        return UN6_PORTAL_STATE_URL, UN6_PORTAL_STATE_TAG
+    if game == 'un6' and kind == 'state' and metadata.get('symbols') == UN6_PORTAL_SYMBOLS_TAG:
+        if tag == UN6_AUDIO20_STATE_TAG or (
+            not relay and tag in (UN6_ORIGINAL_STATE_TAG, UN6_PORTAL_STATE_TAG)
+        ):
+            return UN6_AUDIO20_STATE_URL, UN6_AUDIO20_STATE_TAG
+        if tag == UN6_PORTAL_STATE_TAG:
+            return UN6_PORTAL_STATE_URL, UN6_PORTAL_STATE_TAG
     return f'{api_url}/default/{kind}{query}', tag
 
 
