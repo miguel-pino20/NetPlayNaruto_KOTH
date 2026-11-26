@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 from uuid import uuid4
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from appdata import write_json
 from discord_auth import AccountError, api_call
@@ -23,6 +23,23 @@ def site_url(url):
             authority += f':{parts.port}'
         return urlunsplit(parts._replace(netloc=authority))
     return url
+
+
+def game_downloads(url):
+    server = site_url(url.strip() or DEFAULT_URL)
+    games = api_call(server, 'GET', '/api/netplay/games/', timeout=5)['games']
+    downloads = {}
+    for entry in games:
+        links = {}
+        for key in ('rom_url', 'bios_url'):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                target = urljoin(server.rstrip('/') + '/', value.strip())
+                parts = urlsplit(target)
+                if parts.scheme in ('http', 'https') and parts.hostname:
+                    links[key] = target
+        downloads[entry['game']] = links
+    return downloads
 
 
 class MembershipStore:
@@ -70,6 +87,11 @@ class MembershipStore:
         data[key]['ticket'] = ticket
         write_json(self.path, data, private=True)
 
+    def stored_ticket(self, url, event_id):
+        key = f'{site_url(url)}/events/{int(event_id)}'
+        member = self._read().get(key)
+        return member.get('ticket', '') if isinstance(member, dict) else ''
+
 
 def list_events(url):
     data = api_call(site_url(url), 'GET', '/api/netplay/events/', timeout=4)
@@ -80,6 +102,13 @@ def list_events(url):
 
 def get_event(url, event_id):
     return api_call(site_url(url), 'GET', f'/api/netplay/events/{int(event_id)}/', timeout=4)
+
+
+def leave_casual(url, event_id, session, ticket=''):
+    return api_call(site_url(url), 'POST', f'/api/netplay/events/{int(event_id)}/leave/', {},
+                    token=ticket if not session else '',
+                    extra_headers={'X-Netplay-Session': session} if session else None,
+                    follow_redirects=False)
 
 
 TOURNAMENT_FORMATS = {'round_robin': 'Round Robin', 'single_elimination': 'Single Elimination',

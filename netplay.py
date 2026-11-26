@@ -1089,9 +1089,11 @@ def play_connected(args, is_host, server_mode, pine, core):
         print('note: --watch-log works best with --watch 10 (or 9); with a RAM address every change is printed.')
     announcer = None
     if is_host and rooms is not None and not getattr(args, 'no_announce', False):
-        announcer = rooms.RoomAnnouncer(nick, args.port, args.delay, tag)
+        discovery_game = getattr(args, 'announce_zerotier', None)
+        announcer = rooms.RoomAnnouncer(nick, args.port, args.delay, tag,
+                                       bind_ip=args.bind_address if discovery_game else None, game=discovery_game)
         if announcer.routes:
-            print(f"room announced on {', '.join(announcer.ips)} (UDP {rooms.DISCOVERY_PORT}): others see it in the room list")
+            print(f"room announced on {', '.join(announcer.ips)} (UDP {announcer.dest_port}): others see it in the room list")
         else:
             print('room not announced: no usable network interface')
             announcer = None
@@ -1398,6 +1400,7 @@ def main(argv=None, *, prepare_fixture=None):
             q.add_argument('--port', type=int, default=47400, help='UDP port to listen on')
             q.add_argument('--no-announce', action='store_true',
                            help='do not show this room in the room list of other players')
+            q.add_argument('--announce-zerotier', choices=('un5', 'un6'), help=argparse.SUPPRESS)
             q.add_argument('--ignore-desync', action='store_true',
                            help='debug: print hash mismatches but keep the match running')
         else:

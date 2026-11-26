@@ -57,22 +57,19 @@ Consulta [las instrucciones de AppImage](appimage/README.md) para distribuirlo y
 
 ## Partida de dos jugadores por ZeroTier
 
-Pulsa **ZeroTier · 2 players**. Ambos PCs deben estar autorizados en la misma
-red ZeroTier y tener PCSX2 abierto con el juego y PINE habilitado.
+Ambos equipos deben estar autorizados en la misma red ZeroTier y tener PCSX2
+abierto con el juego y PINE habilitado.
 
-1. P1 elige **HOST**, selecciona su red (`Nombre — IPv4`) y pulsa **START ZEROTIER**.
-2. P1 comparte la IPv4 seleccionada con P2; el host escucha en UDP 47400.
-3. P2 elige **GUEST**, selecciona su propia red e introduce la IPv4 de P1 en
-   **Host's ZeroTier IPv4**. Después pulsa **START ZEROTIER**.
+1. En ambos equipos, abre **Mi cuenta → Configurar ZeroTier**, selecciona la red y pulsa **Guardar red**.
+2. En **Jugar → PvP**, selecciona **ZeroTier**. Un jugador pulsa **Crear sala ZeroTier**.
+3. El otro selecciona la sala en **Salas** y pulsa **Unirse a la sala**.
 
-El launcher comprueba y descarga el estado y los símbolos del servidor habitual
-antes de iniciar. La pelea conecta directamente por ZeroTier con delay automático:
-no necesita un torneo, código KOTH ni sala del servidor principal. Permite UDP
-47400 en el firewall del host. La conexión se enlaza a la IP local seleccionada.
-Estas partidas no aparecen en la lista de salas online. **STOP** termina la sesión.
+La conexión usa UDP 47400 para la partida y UDP multicast 47403 para descubrir
+salas en la red seleccionada. El launcher comprueba y descarga el estado y los
+símbolos antes de iniciar. **Detener** termina la sesión.
 
-En el launcher de escritorio, **Casual** reúne los roles P1 y P2 y las dos conexiones,
-Netplay y ZeroTier. **KOTH** incluye el acceso por código personal. En **Tournaments**
+En **Jugar → PvP**, la pestaña **Netplay** muestra las salas del servidor en línea.
+**Rey de la Colina** incluye el acceso por código personal. En **Torneos**
 puedes consultar los torneos oficiales, inscribirte con Discord y revisar los cruces
 por ronda. Las llaves se generan cuando el organizador inicia el torneo. Usa
 **Refresh** para consultar resultados nuevos o **Tournament page** para abrir la vista pública.
@@ -260,14 +257,14 @@ User data (preferences, Discord session, and match state) is stored in `%APPDATA
 **Host**
 
 1. Log in with Discord (top right).
-2. Choose **HOST · P1** and click **START HOST**.
+2. Open **Play → PvP**, select **Netplay** and click **Host on Netplay**.
 3. The launcher downloads the match state from the server, loads it into PCSX2 (frozen at frame 0), and opens your room.
 
 **Guest**
 
 1. Log in with Discord.
 2. Click an open room in the **ROOMS** list.
-3. Click **CONNECT AS GUEST**.
+3. Click **Join room**.
 
 ### Notes
 
@@ -319,14 +316,14 @@ Os dados do usuário (preferências, sessão do Discord e estado da partida) fic
 **Host**
 
 1. Faça login com o Discord (canto superior direito).
-2. Escolha **HOST · P1** e clique em **START HOST**.
+2. Abra **Jogar → PvP**, selecione **Netplay** e clique em **Hospedar no Netplay**.
 3. O launcher baixa o estado da partida do servidor, carrega-o no PCSX2 (congelado no frame 0) e abre sua sala.
 
 **Guest**
 
 1. Faça login com o Discord.
 2. Clique em uma sala aberta na lista **ROOMS**.
-3. Clique em **CONNECT AS GUEST**.
+3. Clique em **Entrar na sala**.
 
 ### Observações
 

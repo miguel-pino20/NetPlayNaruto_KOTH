@@ -14,35 +14,64 @@ execucao vem de i18n.detect(). Trocar o idioma reconstroi a janela na hora (o hi
 from __future__ import annotations
 
 import io
+import json
+import math
 import os
 import queue
 import re
 import shutil
+import tempfile
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
+from urllib.error import HTTPError
+from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 
 from release_info import VERSION
 
 try:
-    from PIL import Image, ImageDraw, ImageTk
+    from PIL import Image, ImageDraw, ImageOps, ImageTk
 except ImportError:                                       # sem Pillow: a lista de salas fica sem avatares
     Image = None
 
 import i18n
 import launcher_core as core
+from rooms import RoomListener, uses_interface
+from discord_auth import UA, NoRedirect, ssl_context
 from i18n import has, tr
-from launcher_account import DiscordDialog, ProfileDialog
+from koth_client import DEFAULT_URL, game_downloads
+from launcher_account import DiscordDialog, FightHistory, ProfileDialog
 from launcher_core import SERVER_ADDR
 from launcher_koth import KothPanel
 from launcher_tournaments import TournamentPanel
 from launcher_theme import (ACCENT, BG, BLUE, BORDER, COLORS, DIM, GREEN, MUTED, ON_ACCENT, PANEL, RED, TEXT, WARN,
-                            AvatarView, PillButton, RoundEntry, RoundFrame, Segmented, Switch, apply_style)
+                            AvatarView, PillButton, RoundFrame, Segmented, Switch, apply_style)
 
 ROW_AV = 30                                               # lado do avatar (px) na lista de salas
 GUEST_PAD = " " * 11                                      # recuo do nome do guest (espaco do avatar)
+
+MAX_BIOS_SIZE = 8 * 1024 * 1024
+
+
+def save_bios(url, destination):
+    request = Request(url, headers={"User-Agent": UA})
+    with urlopen(request, timeout=15, context=ssl_context()) as response:
+        data = response.read(MAX_BIOS_SIZE + 1)
+        if not data or len(data) > MAX_BIOS_SIZE or response.headers.get_content_type() in (
+                "text/html", "application/xhtml+xml", "application/json"):
+            raise ValueError(tr("games.bios_invalid"))
+
+    with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as output:
+        temporary = Path(output.name)
+        try:
+            output.write(data)
+            output.close()
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def make_avatar(png):
@@ -83,22 +112,32 @@ class Launcher(tk.Tk):
         self.minsize(min(980, width), min(540, height))
         self.configure(bg=BG)
         cfg = core.load_config()
+        cfg["hill_url"] = DEFAULT_URL
         cfg["ignore_desync"] = False                      # debug: sempre OFF ao abrir
-        cfg["lang"] = cfg.get("lang") if cfg.get("lang") in i18n.LANGS else i18n.detect()
-        i18n.set_lang(cfg["lang"])
+        cfg["lang"] = cfg.get("lang") if cfg.get("lang") in i18n.LANGS else i18n.AUTO_LANG
+        i18n.set_lang(i18n.detect() if cfg["lang"] == i18n.AUTO_LANG else cfg["lang"])
         self.v = {k: (tk.BooleanVar(value=val) if isinstance(val, bool) else tk.StringVar(value=val))
                   for k, val in cfg.items()}
 
         mode = self.v['mode'].get()
         self.section = tk.StringVar(value=mode if mode in ('koth', 'tournaments') else 'casual')
-        self.casual_role = tk.StringVar(value='guest' if mode == 'guest' else 'host')
+        self.casual_transport = tk.StringVar(value='netplay')
+        self.koth_category = tk.StringVar(value='casual')
+        self.zerotier_rooms = None
+        self.play_view_open = False
+        self.background_revision = 0
+        self._background_download_lock = threading.Lock()
         self.backend = core.Backend()                     # carrega a sessao do Discord salva no AppData
         self.dialog = None
+        self.console_window = None
+        self.games_window = None
         self.game = "un5"                                 # jogo detectado pelo CRC (ver _pick_game)
         self._after_sync = None                           # o que fazer quando o download do save padrao terminar
         self._after_allow = None
         self._koth_pending = False
         self.koth_live_event = None
+        self.koth_live_ticket = ''
+        self.koth_observing = False
         self.koth_live_state = {}
         self.rooms_data: dict = {}
         self.guest_imgs: dict = {}                        # id da sala -> avatar do guest (ou None)
@@ -134,15 +173,162 @@ class Launcher(tk.Tk):
 
     # ================================================================ idioma
     def _change_lang(self):
-        code = self.v["lang"].get()
-        if code not in i18n.LANGS or code == i18n.get_lang():
+        preference = self.v["lang"].get()
+        code = i18n.detect() if preference == i18n.AUTO_LANG else preference
+        if code not in i18n.LANGS:
+            return
+        core.save_config({**self.raw(), "ignore_desync": False})
+        if code == i18n.get_lang():
             return
         i18n.set_lang(code)
+
+        def rebuild_account():
+            reopen = self.dialog is not None
+            self._rebuild()
+            if reopen:
+                self.open_account()
+
+        self.after_idle(rebuild_account)
+
+    def _change_background(self):
         core.save_config({**self.raw(), "ignore_desync": False})
-        self.after_idle(self._rebuild)                    # nao destroi o widget dentro do proprio clique
+        self._redraw_background()
+        self._sync_rooms_preview()
+
+    def _fetch_store_image(self, item_id, session, action, maximum, category="backgrounds", *, version=None):
+        url = f"{DEFAULT_URL}/api/netplay/store/{category}/{item_id}/{action}/"
+        headers = {"User-Agent": UA, "X-Netplay-Session": session}
+        if version:
+            headers["If-Match"] = f'"{version}"'
+        request = Request(url, headers=headers)
+        opener = build_opener(NoRedirect(), HTTPSHandler(context=ssl_context()))
+        try:
+            with opener.open(request, timeout=15) as response:
+                data = response.read(maximum + 1)
+        except HTTPError as error:
+            if error.code == 412:
+                raise ValueError(tr("store.image_changed")) from None
+            raise
+        if len(data) > maximum:
+            raise ValueError(tr("store.invalid_image"))
+        with Image.open(io.BytesIO(data)) as source:
+            if source.format not in ("PNG", "JPEG", "WEBP") or max(source.size) > 4096:
+                raise ValueError(tr("store.invalid_image"))
+            return ImageOps.exif_transpose(source).convert("RGBA")
+
+    def store_thumbnail(self, item, session, category):
+        item_id = int(item["id"])
+        version = item.get("image_version") or ""
+        cache = None
+        if re.fullmatch(r"[0-9a-f]{64}", version):
+            cache = core.DATA_DIR / "store_previews" / category / f"{item_id}-{version}.png"
+            try:
+                with Image.open(cache) as source:
+                    return source.convert("RGBA")
+            except OSError:
+                pass
+
+        source_path = None
+        if not item["price"] or item["owned"]:
+            if category == "characters":
+                candidate = self._character_folder(item_id, version) / "idle.png"
+                if candidate.is_file():
+                    source_path = candidate
+            else:
+                source_path = self._cached_background(item)
+        if source_path is not None:
+            with Image.open(source_path) as source:
+                image = source.convert("RGBA")
+        else:
+            image = self._fetch_store_image(item_id, session, "preview", 1024 * 1024, category)
+        image.thumbnail((240, 135), Image.Resampling.LANCZOS)
+        if cache is not None:
+            try:
+                self._save_store_png(image, cache)
+            except OSError:
+                pass
+        return image
+
+    @staticmethod
+    def _cached_background(item):
+        path = core.DATA_DIR / "backgrounds" / f"{int(item['id'])}.png"
+        if not path.is_file():
+            return None
+        version = item.get("image_version")
+        if version:
+            try:
+                saved = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            if saved != {"version": version}:
+                return None
+        return path
+
+    def download_background(self, item, session):
+        item_id = int(item["id"])
+        with self._background_download_lock:
+            cached = self._cached_background(item)
+            if cached is not None:
+                return cached
+            image = self._fetch_store_image(item_id, session, "download", 12 * 1024 * 1024)
+            path = core.DATA_DIR / "backgrounds" / f"{item_id}.png"
+            self._save_store_png(image, path)
+            core.write_json(path.with_suffix(".json"), {"version": item.get("image_version")}, private=True)
+            return path
+
+    @staticmethod
+    def _save_store_png(image, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
+            temporary = Path(output.name)
+            try:
+                image.save(output, format="PNG")
+                output.close()
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def select_background(self, item_id):
+        self.background_revision += 1
+        self.v["background_id"].set(str(item_id))
+        self.v["show_background"].set(True)
+        self._change_background()
+
+    @staticmethod
+    def _character_folder(item_id, version):
+        if not re.fullmatch(r"[0-9]+", str(item_id)) or not re.fullmatch(r"[0-9a-f]{64}", version):
+            raise ValueError(tr("store.invalid_image"))
+        return core.DATA_DIR / "characters" / f"{item_id}-{version}"
+
+    def download_character(self, item, session):
+        folder = self._character_folder(item["id"], item["image_version"])
+        assets = {"download": folder / "idle.png"}
+        if item.get("has_poses"):
+            assets["poses"] = folder / "poses.png"
+        with self._background_download_lock:
+            for action, path in assets.items():
+                if path.is_file():
+                    continue
+                image = self._fetch_store_image(item["id"], session, action, 12 * 1024 * 1024, "characters",
+                                                version=item["image_version"])
+                if not image.getbbox():
+                    raise ValueError(tr("store.invalid_image"))
+                self._save_store_png(image, path)
+
+    def select_character(self, item=None):
+        self.v["character_id"].set(str(item["id"]) if item else "")
+        self.v["character_version"].set(item["image_version"] if item else "")
+        for canvas in (self.home_mascot, self.sidebar_mascot):
+            if canvas is not None:
+                canvas.reload_character()
+        core.save_config({**self.raw(), "ignore_desync": False})
 
     def _rebuild(self):
         """Reconstroi a janela inteira no idioma atual. O console e o status sao restaurados."""
+        reopen_games = self.games_window is not None and self.games_window.winfo_exists()
+        reopen_console = self.console_window is not None
+        if reopen_console:
+            self._close_console()
         if self.dialog is not None and self.dialog.winfo_exists():
             self.dialog.destroy()
         self.dialog = None
@@ -153,10 +339,11 @@ class Launcher(tk.Tk):
         self._sync_mode()
         self._refresh_account()
         self._set_buttons(self.backend.running or self._koth_pending)
-        self._set_status(self.status_key, self.status_color)
-        for text, tag in self._history:
-            self._write(text, tag)
         self._log(tr("log.lang"), "info")
+        if reopen_console:
+            self.open_console()
+        if reopen_games:
+            self.open_games()
         self._relayout()
         self.after(80, self._relayout)
         self.after(300, self._relayout)
@@ -184,54 +371,582 @@ class Launcher(tk.Tk):
             pass
 
     def _build(self):
-        self._header()
+        head = self._header()
 
-        body = tk.Frame(self, bg=BG, padx=22)
+        body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True)
+        self.history_view = None
+        self._navigation(body)
 
-        left = tk.Frame(body, bg=BG, width=360)
-        left.pack(side="left", fill="y", padx=(0, 18))
+        # Keep the existing session widgets available to callbacks while redesigning the main view.
+        session_view = self.session_view = tk.Frame(body, bg=BG)
+        if self.play_view_open:
+            session_view.pack(fill="both", expand=True)
+        left = tk.Frame(session_view, bg=BG, width=360)
+        left.pack(side="left", fill="y", padx=(22, 18), pady=(12, 0))
         left.pack_propagate(False)
         self._card_main(left)
+        sidebar_mascot = self.sidebar_mascot = self._build_mascot(left)
+        if sidebar_mascot is not None:
+            sidebar_mascot.pack(fill="both", expand=True)
+        self.home_mascot = self._build_mascot(body)
+        self._show_home_mascot()
 
-        right = tk.Frame(body, bg=BG)
-        right.pack(side="left", fill="both", expand=True)
-        self.left_column, self.right_column = left, right
-        self.console_host = tk.Frame(body, bg=BG)
-        self.console_host.pack(in_=right, side='bottom', fill='x')
-        self._console(self.console_host)
+        right = tk.Frame(session_view, bg=BG)
+        right.pack(side="left", fill="both", expand=True, padx=(0, 22), pady=(12, 0))
         self._rooms_panel(right)                          # as salas ocupam o resto: e a informacao principal
-        self.koth_panel = KothPanel(right, self)
-        self.tournaments = TournamentPanel(right, self)
+        self.koth_panel = KothPanel(right, self, self.koth_box)
+        self.tournaments = TournamentPanel(right, self, self.play_actions)
+        self._build_background(head, body, session_view, left, right, sidebar_mascot=sidebar_mascot)
 
         foot = tk.Frame(self, bg=BG, padx=22, pady=8)
         foot.pack(fill="x")
         tk.Label(foot, text=tr("footer"), bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(side="left")
 
+    def _build_mascot(self, parent):
+        if Image is None:
+            return
+        default_idle = Path(__file__).with_name("assets") / "naruto_mascot.png"
+        default_poses = default_idle.with_name("naruto_mascot_poses.png")
+        poses = {}
+        canvas = tk.Canvas(parent, bg=BG, width=1, height=1, bd=0, highlightthickness=0)
+        canvas.create_image(0, 0, anchor="nw", tags="backdrop")
+        clone = canvas.create_image(0, 0, anchor="s", state="hidden")
+        mascot = canvas.create_image(0, 0, anchor="s")
+        current_size = None
+        images = {}
+
+        def resize(width, height):
+            nonlocal current_size
+            size = (min(200, width - 20), min(270, height - 20))
+            if min(size) < 48 or not poses:
+                canvas.itemconfigure(mascot, state="hidden")
+                return
+            if size != current_size:
+                for name, pose in poses.items():
+                    frame = pose.copy()
+                    limit = tuple(int(edge * 0.78) for edge in size) if name == "charge" and canvas.builtin_character else size
+                    frame.thumbnail(limit, Image.Resampling.LANCZOS)
+                    images[name] = ImageTk.PhotoImage(frame, master=canvas)
+                    if name == "charge" and canvas.builtin_character:
+                        images["assist"] = ImageTk.PhotoImage(ImageOps.mirror(frame), master=canvas)
+                canvas.mascot_image = images["idle"]
+                canvas.itemconfigure(mascot, image=images["idle"])
+                canvas.itemconfigure(clone, image=images["idle"])
+                current_size = size
+            canvas.coords(mascot, width // 2, (height + images["idle"].height()) // 2)
+            canvas.itemconfigure(mascot, state="normal")
+
+        restart = self._animate_mascot(canvas, mascot, clone, images)
+
+        def crop_pose(image, builtin):
+            if builtin:
+                bounds = image.getbbox()
+            else:
+                # Ignore faint pixels in transparent margins when sizing downloaded poses.
+                alpha = image.getchannel("A").point(lambda value: 255 if value >= 32 else 0)
+                bounds = alpha.getbbox()
+                if bounds:
+                    x0, y0, x1, y1 = bounds
+                    bounds = (max(0, x0 - 2), max(0, y0 - 2),
+                              min(image.width, x1 + 2), min(image.height, y1 + 2))
+            return image.crop(bounds) if bounds else None
+
+        def reload_character():
+            nonlocal current_size
+            item_id = self.v["character_id"].get()
+            version = self.v["character_version"].get()
+            paths = [(default_idle, default_poses, True)]
+            if item_id:
+                try:
+                    folder = self._character_folder(item_id, version)
+                    paths.insert(0, (folder / "idle.png", folder / "poses.png", False))
+                except ValueError:
+                    pass
+            poses.clear()
+            for idle_path, sheet_path, builtin in paths:
+                try:
+                    with Image.open(idle_path) as source:
+                        idle = crop_pose(source.convert("RGBA"), builtin)
+                except OSError:
+                    continue
+                if idle is None:
+                    continue
+                poses["idle"] = idle
+                canvas.builtin_character = builtin
+                try:
+                    with Image.open(sheet_path) as source:
+                        sheet = source.convert("RGBA")
+                        width, height = sheet.width // 2, sheet.height // 2
+                        for index, name in enumerate(("charge", "release", "sign", "land")):
+                            x, y = index % 2 * width, index // 2 * height
+                            pose = crop_pose(sheet.crop((x, y, x + width, y + height)), builtin)
+                            if pose is not None:
+                                poses[name] = pose
+                except OSError:
+                    pass
+                break
+            restart()
+            images.clear()
+            current_size = None
+            resize(canvas.winfo_width(), canvas.winfo_height())
+
+        canvas.reload_character = reload_character
+        canvas.bind("<Configure>", lambda event: resize(event.width, event.height))
+        reload_character()
+        return canvas
+
+    @staticmethod
+    def _animate_mascot(canvas, mascot, clone, images):
+        # Pose changes are defined in seconds from the start of each attack.
+        attacks = (
+            ("rasengan", ((0.0, "sign"), (0.20, "charge"), (0.84, "release"), (1.26, "land"))),
+            ("clone", ((0.0, "sign"), (0.60, "land"), (1.02, "idle"))),
+        )
+        next_attack = 0
+        timer = None
+        started = 0.0
+        playing = False
+
+        def clear():
+            canvas.delete("mascot-effect")
+            canvas.itemconfigure(clone, state="hidden")
+            if images:
+                canvas.itemconfigure(mascot, image=images["idle"])
+                canvas.coords(mascot, canvas.winfo_width() // 2,
+                              (canvas.winfo_height() + images["idle"].height()) // 2)
+
+        def begin():
+            nonlocal started, playing
+            started = time.monotonic()
+            playing = True
+            tick()
+
+        def tick():
+            nonlocal timer, next_attack, playing
+            timer = None
+            if not canvas.winfo_ismapped():
+                return
+            elapsed = time.monotonic() - started
+            if elapsed >= 1.55 or not images or canvas.itemcget(mascot, "state") == "hidden":
+                playing = False
+                clear()
+                next_attack = (next_attack + 1) % len(attacks)
+                timer = canvas.after(14000, begin)
+                return
+            builtin = canvas.builtin_character and {"assist", "release", "sign", "land"} <= images.keys()
+            if builtin:
+                effect, timeline = attacks[next_attack]
+                pose = next(name for at, name in reversed(timeline) if elapsed >= at)
+            else:
+                effect = "gesture"
+                pose = ("charge", "release", "sign", "land", "idle")[min(4, int(elapsed / 0.29))]
+            frame = images.get(pose, images["idle"])
+            x = canvas.winfo_width() // 2
+            feet = (canvas.winfo_height() + images["idle"].height()) // 2
+            canvas.delete("mascot-effect")
+            canvas.itemconfigure(mascot, image=frame)
+            if effect == "rasengan" and pose in ("charge", "release"):
+                if pose == "charge":
+                    spread = min(1, (elapsed - 0.20) / 0.20)
+                    separation = frame.width() * 0.64 * spread
+                    x += separation / 2
+                    canvas.coords(clone, x - separation, feet)
+                    canvas.itemconfigure(clone, image=images["assist"], state="normal")
+                else:
+                    canvas.itemconfigure(clone, state="hidden")
+                    x -= int(22 * math.sin(math.pi * (elapsed - 0.84) / 0.42))
+                cx = x - frame.width() * (0.31 if pose == "charge" else 0.29)
+                cy = feet - frame.height() * (0.36 if pose == "charge" else 0.56)
+                radius = max(4, min(frame.height() * 0.15, (elapsed - 0.20) * 55))
+                bounds = (cx - radius, cy - radius, cx + radius, cy + radius)
+                canvas.create_oval(*bounds, fill="#2485e8", outline="#9fefff", width=2, tags="mascot-effect")
+                for offset in (0, 140):
+                    canvas.create_arc(*bounds, start=(elapsed * 720 + offset) % 360, extent=95,
+                                      style="arc", outline="#e9fbff", width=3, tags="mascot-effect")
+            elif effect == "clone" and elapsed >= 0.48:
+                progress = min(1, (elapsed - 0.48) / 0.28, (1.55 - elapsed) / 0.26)
+                offset = min(canvas.winfo_width() * 0.18, images["idle"].width() * 0.74) * progress
+                x -= int(offset / 2)
+                canvas.coords(clone, x + offset * 1.5, feet - 5)
+                canvas.itemconfigure(clone, image=images["idle"], state="normal")
+            if effect == "gesture" and len(images) == 1:
+                feet -= int(12 * math.sin(math.pi * min(1, elapsed / 1.16)))
+            canvas.coords(mascot, x, feet)
+            timer = canvas.after(33, tick)
+
+        def show(_event):
+            nonlocal timer
+            if timer is None:
+                timer = canvas.after(6500, begin)
+
+        def hide(_event):
+            nonlocal timer, playing
+            playing = False
+            if timer is not None:
+                canvas.after_cancel(timer)
+                timer = None
+            if canvas.winfo_exists():
+                clear()
+
+        def activate(_event):
+            if playing or not images:
+                return
+            if timer is not None:
+                canvas.after_cancel(timer)
+            begin()
+
+        canvas.tag_bind(mascot, "<Button-1>", activate)
+        canvas.tag_bind(mascot, "<Enter>", lambda _event: canvas.configure(cursor="hand2"))
+        canvas.tag_bind(mascot, "<Leave>", lambda _event: canvas.configure(cursor=""))
+        canvas.bind("<Map>", show, add="+")
+        canvas.bind("<Unmap>", hide, add="+")
+        canvas.bind("<Destroy>", hide, add="+")
+
+        def restart():
+            nonlocal next_attack
+            hide(None)
+            next_attack = 0
+            if canvas.winfo_ismapped():
+                show(None)
+
+        return restart
+
+    def _show_home_mascot(self):
+        if self.home_mascot is not None:
+            if self.play_view_open or self.history_view is not None:
+                self.home_mascot.place_forget()
+            else:
+                self.home_mascot.place(x=92, rely=1, y=-32, anchor="sw", width=220, height=290)
+
+    def _navigation(self, parent):
+        bar = tk.Frame(parent, bg=PANEL, padx=22, pady=4)
+        bar.pack(fill="x")
+        menus = (
+            ("nav.play", (("menu.pvp", lambda: self._open_play("casual")),
+                          ("hill.title", lambda: self._open_play("koth")),
+                          ("nav.tournaments", lambda: self._open_play("tournaments")))),
+            ("menu.games", (("games.catalog", self.open_games),)),
+            ("menu.help", tuple((f"help.{topic}", lambda topic=topic: self._show_guide(
+                f"help.{topic}", f"help.{topic}_body"))
+                for topic in ("setup", "host", "join", "create_koth", "create_tournament"))),
+        )
+        for title, entries in menus:
+            button = tk.Menubutton(bar, text=tr(title), bg=PANEL, fg=TEXT, activebackground=ACCENT,
+                                   activeforeground=ON_ACCENT, padx=12, pady=5, takefocus=True)
+            button.pack(side="left")
+            menu = tk.Menu(button, tearoff=False, bg=PANEL, fg=TEXT, activebackground=ACCENT,
+                           activeforeground=ON_ACCENT)
+            for label, command in entries:
+                menu.add_command(label=tr(label), command=command)
+            if title == "menu.help":
+                self.help_nav = button
+                menu.add_separator()
+                menu.add_command(label=tr("menu.logs"), command=self.open_console)
+            button.configure(menu=menu)
+            button.bind("<Return>", lambda _event, b=button, m=menu: m.tk_popup(
+                b.winfo_rootx(), b.winfo_rooty() + b.winfo_height()))
+
+        self.history_nav = tk.Button(bar, text=tr("history.title"), command=self._open_history,
+                                     bg=PANEL, fg=TEXT, activebackground=ACCENT, activeforeground=ON_ACCENT,
+                                     padx=12, pady=5, relief="flat", borderwidth=0, takefocus=True)
+        self.close_play_btn = PillButton(bar, text="× " + tr("nav.close_view"), style="Small.TButton",
+                                        command=self._close_play)
+        if self.play_view_open:
+            self.close_play_btn.pack(side="right")
+
+    def _open_history(self):
+        if not self.backend.account or not self.backend.session:
+            return
+        if self.history_view is None:
+            self.play_view_open = False
+            self.session_view.pack_forget()
+            self.history_view = FightHistory(self.session_view.master, self)
+            self.history_view.pack(fill="both", expand=True, padx=22, pady=12)
+            self.close_play_btn.pack(side="right")
+            self._show_home_mascot()
+
+    def _destroy_history(self):
+        if self.history_view is not None:
+            self.history_view.destroy()
+            self.history_view = None
+
+    def _open_play(self, section):
+        self._destroy_history()
+        self.play_view_open = True
+        self._show_home_mascot()
+        self.section.set(section)
+        self._select_section()
+        self.session_view.pack(fill="both", expand=True)
+        self.close_play_btn.pack(side="right")
+        if self.section.get() == "casual":
+            self._rooms_refresh()
+
+    def _close_play(self):
+        self._destroy_history()
+        self.play_view_open = False
+        self.session_view.pack_forget()
+        self.close_play_btn.pack_forget()
+        self._show_home_mascot()
+
+    def _show_guide(self, title, content):
+        messagebox.showinfo(tr(title), tr(content), parent=self)
+
+    def open_games(self):
+        if self.games_window is not None and self.games_window.winfo_exists():
+            self.games_window.deiconify()
+            self.games_window.lift()
+            return
+        window = self.games_window = tk.Toplevel(self, bg=BG)
+        window.title(tr("games.catalog"))
+        window.minsize(600, 300)
+        content = tk.Frame(window, bg=BG, padx=18, pady=16)
+        content.pack(fill="both", expand=True)
+        buttons = {}
+        for crc, game in core.GAMES.items():
+            card = RoundFrame(content, radius=14, padx=14, pady=10)
+            card.pack(fill="x", pady=(0, 8))
+            inner = card.inner
+            self._label(inner, tr(f"menu.{game}"))
+            self._note(inner, tr("games.details", crc=crc), wrap=530)
+            actions = tk.Frame(inner, bg=PANEL)
+            actions.pack(fill="x", pady=(8, 0))
+            rom = PillButton(actions, text=tr("games.download"), style="Small.TButton", state="disabled")
+            bios = PillButton(actions, text=tr("games.bios_link"), style="Small.TButton", state="disabled")
+            rom.pack(side="left", padx=(0, 8))
+            bios.pack(side="left")
+            buttons[game] = rom, bios
+
+        catalog_status = tk.StringVar(window, value=tr("games.loading_links"))
+        tk.Label(content, textvariable=catalog_status, bg=BG, fg=DIM, anchor="w", justify="left",
+                 wraplength=550).pack(fill="x", pady=(0, 8))
+
+        def apply_links(links, error):
+            if error is not None:
+                catalog_status.set(tr("games.links_failed"))
+                return
+            pending = False
+            for game, (rom, bios) in buttons.items():
+                urls = links.get(game, {})
+                rom_url, bios_url = urls.get("rom_url"), urls.get("bios_url")
+                if rom_url:
+                    rom.configure(state="normal", command=lambda url=rom_url: webbrowser.open(url))
+                if bios_url:
+                    bios.configure(state="normal", command=lambda g=game, url=bios_url, b=bios:
+                                   self._download_bios(window, g, url, b, catalog_status))
+                pending |= not (rom_url and bios_url)
+            catalog_status.set(tr("games.pending_links") if pending else "")
+
+        self._window_task(window, lambda: game_downloads(DEFAULT_URL), apply_links)
+
+        status = tk.StringVar(window, value=tr("games.open_pcsx2"))
+        validate = PillButton(content, text=tr("games.validate"), style="Small.TButton",
+                              command=lambda: self._validate_catalog(window, validate, status))
+        validate.pack(anchor="w", pady=(4, 0))
+        tk.Label(content, textvariable=status, bg=BG, fg=TEXT, anchor="w", justify="left",
+                 wraplength=550).pack(fill="x", pady=(8, 0))
+
+    def _download_bios(self, window, game, url, button, status):
+        filename = filedialog.asksaveasfilename(parent=window, title=tr("games.bios_save"),
+                                               initialfile=f"{game.upper()}-BIOS.bin", defaultextension=".bin",
+                                               filetypes=[("BIOS", "*.bin"), ("*", "*")])
+        if not filename:
+            return
+        button.configure(state="disabled")
+        status.set(tr("games.bios_downloading", game=game.upper()))
+
+        def finished(_value, error):
+            button.configure(state="normal")
+            if error is not None:
+                status.set(tr("games.bios_failed", error=error))
+            else:
+                status.set(tr("games.bios_saved", path=filename))
+
+        self._window_task(window, lambda: save_bios(url, Path(filename)), finished)
+
+    def _validate_catalog(self, window, button, status):
+        if self.backend.running or self._koth_pending:
+            status.set(tr("err.busy"))
+            return
+
+        status.set(tr("run.testing_pine"))
+        button.configure(state="disabled")
+        def finished(value, error):
+            game, crc = value if error is None else (None, None)
+            if error is not None:
+                message = tr("dlg.game_pine", exc=error)
+            elif game is None:
+                message = tr("log.game_unknown", crc=crc or "?")
+            else:
+                message = tr("games.valid", game=tr(f"menu.{game}"), crc=crc)
+            status.set(message)
+            button.configure(state="normal")
+
+        self._window_task(window, lambda: core.detect_game(core.FIXED["pine_slot"]), finished)
+
+    def _window_task(self, window, work, done):
+        result = queue.SimpleQueue()
+
+        def run():
+            try:
+                result.put((work(), None))
+            except Exception as exc:
+                result.put((None, str(exc)))
+
+        def poll():
+            if not window.winfo_exists():
+                return
+            try:
+                value, error = result.get_nowait()
+            except queue.Empty:
+                self.after(80, poll)
+                return
+            done(value, error)
+
+        threading.Thread(target=run, daemon=True).start()
+        self.after(80, poll)
+
+    def _build_background(self, head, body, *columns, sidebar_mascot=None):
+        self._redraw_background = lambda: None
+        previews = ((self.rooms_preview, self.rooms_tree), (self.koth_panel.list_background, self.koth_panel.tree))
+        if Image is None:
+            return
+        backdrop_canvases = [canvas for canvas in (self.brand, self.home_mascot, sidebar_mascot)
+                            if canvas is not None]
+        default_path = Path(__file__).with_name("assets") / "background" / "background1.png"
+        artwork = None
+        loaded_id = None
+        layers = []
+        for frame in (head, body, *columns):
+            layer = tk.Label(frame, bd=0, highlightthickness=0, bg=BG)
+            layer.place(x=0, y=0, relwidth=1, relheight=1, bordermode="outside")
+            layer.lower()
+            layers.append((frame, layer))
+
+        pending = None
+
+        def redraw():
+            nonlocal pending, artwork, loaded_id
+            pending = None
+            body_top = body.winfo_y() - head.winfo_y()
+            width, height = body.winfo_width(), body_top + body.winfo_height()
+            if not self.v["show_background"].get():
+                for _frame, layer in layers:
+                    layer.configure(image="")
+                    layer.background_image = None
+                for canvas in backdrop_canvases:
+                    canvas.itemconfigure("backdrop", image="")
+                    canvas.background_image = None
+                for preview, _tree in previews:
+                    preview.artwork = None
+                    preview.place_forget()
+                return
+            if min(width, height) <= 1:
+                return
+            selected_id = self.v["background_id"].get()
+            source_key = selected_id, self.background_revision
+            if source_key != loaded_id:
+                loaded_id, artwork = source_key, None
+                candidates = [default_path]
+                if selected_id.isascii() and selected_id.isdecimal():
+                    candidates.insert(0, core.DATA_DIR / "backgrounds" / f"{selected_id}.png")
+                for path in candidates:
+                    try:
+                        with Image.open(path) as source:
+                            background = Image.new("RGBA", source.size, BG)
+                            background.alpha_composite(source.convert("RGBA"))
+                    except OSError:
+                        continue
+                    if path == default_path:
+                        background = background.crop((0, 28, background.width, background.height))
+                    background = background.convert("RGB")
+                    artwork = Image.blend(background, Image.new("RGB", background.size, BG), 0.22)
+                    break
+            if artwork is None:
+                return
+            resample = getattr(Image, "Resampling", Image).LANCZOS
+            fitted = ImageOps.fit(artwork, (width, height), method=resample)
+            def crop(frame):
+                x = frame.winfo_rootx() - head.winfo_rootx()
+                y = frame.winfo_rooty() - head.winfo_rooty()
+                return fitted.crop((x, y, x + frame.winfo_width(), y + frame.winfo_height()))
+
+            for frame, layer in layers:
+                if frame.winfo_ismapped():
+                    layer.background_image = ImageTk.PhotoImage(crop(frame), master=body)
+                    layer.configure(image=layer.background_image)
+
+            for canvas in backdrop_canvases:
+                if canvas.winfo_ismapped():
+                    canvas.background_image = ImageTk.PhotoImage(crop(canvas), master=body)
+                    canvas.itemconfigure("backdrop", image=canvas.background_image)
+            for preview, tree in previews:
+                wrap = preview.master
+                if wrap.winfo_ismapped() and min(wrap.winfo_width(), wrap.winfo_height()) > 1:
+                    image = crop(wrap)
+                    preview.artwork = Image.blend(image, Image.new("RGB", image.size, PANEL), 0.22)
+                    preview.bounds = None
+                    self._sync_tree_preview(preview, tree)
+
+        def schedule(_event=None):
+            nonlocal pending
+            if pending is not None:
+                body.after_cancel(pending)
+            pending = body.after(40, redraw)
+
+        def cancel(_event):
+            if pending is not None:
+                body.after_cancel(pending)
+
+        for frame, _layer in layers:
+            frame.bind("<Configure>", schedule, add="+")
+            frame.bind("<Map>", schedule, add="+")
+        for preview, _tree in previews:
+            for event in ("<Configure>", "<Map>"):
+                preview.master.bind(event, schedule, add="+")
+        for canvas in backdrop_canvases:
+            canvas.bind("<Configure>", schedule, add="+")
+            canvas.bind("<Map>", schedule, add="+")
+        body.bind("<Destroy>", cancel, add="+")
+        self._redraw_background = schedule
+        schedule()
+
     def _header(self):
         head = tk.Frame(self, bg=BG, padx=22, pady=14)
         head.pack(fill="x")
-        if hasattr(self, '_app_icon'):
-            self._brand_icon = self._app_icon.subsample(8, 8)
-            tk.Label(head, image=self._brand_icon, bg=BG).pack(side="left", padx=(0, 13))
+        title_font = tkfont.Font(font=("Segoe UI", 21, "bold"))
+        subtitle_font = tkfont.Font(font=("Segoe UI", 8, "bold"))
+        subtitle = tr("subtitle")
+        self._brand_logo = None
+        if Image is not None:
+            logo_path = Path(__file__).with_name("assets") / "logo_naruto.png"
+            try:
+                with Image.open(logo_path) as source:
+                    logo = source.convert("RGBA")
+                logo = logo.crop(logo.getbbox())
+                logo.thumbnail((80, 64), getattr(Image, "Resampling", Image).LANCZOS)
+                self._brand_logo = ImageTk.PhotoImage(logo, master=head)
+            except OSError:
+                pass
+        if self._brand_logo is None and hasattr(self, "_app_icon"):
+            self._brand_logo = self._app_icon.subsample(8, 8)
+        title_x = self._brand_logo.width() + 16 if self._brand_logo else 18
+        width = title_x + max(title_font.measure("UN5 NETPLAY"), subtitle_font.measure(subtitle)) + 4
+        self.brand = tk.Canvas(head, width=width, height=64, bg=BG, bd=0, highlightthickness=0)
+        self.brand.pack(side="left")
+        self.brand.create_image(0, 0, anchor="nw", tags="backdrop")
+        if self._brand_logo:
+            self.brand.create_image(0, 32, image=self._brand_logo, anchor="w")
         else:
-            tk.Frame(head, bg=ACCENT, width=5, height=44).pack(side="left", padx=(0, 13))
-        box = tk.Frame(head, bg=BG)
-        box.pack(side="left")
-        tk.Label(box, text="UN5 NETPLAY", bg=BG, fg=TEXT, font=("Segoe UI", 21, "bold")).pack(anchor="w")
-        tk.Label(box, text=tr("subtitle"), bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w")
-
+            self.brand.create_rectangle(0, 10, 5, 54, fill=ACCENT, outline="")
+        for text, y, font, color in (
+            ("UN5 NETPLAY", 22, title_font, TEXT), (subtitle, 49, subtitle_font, TEXT),
+        ):
+            self.brand.create_text(title_x + 1, y + 1, text=text, anchor="w", font=font, fill=BG)
+            self.brand.create_text(title_x, y, text=text, anchor="w", font=font, fill=color)
+        self.brand.fonts = title_font, subtitle_font
         self._account_strip(head)
-        self._lang_switch(head)
-
-    def _lang_switch(self, parent):
-        box = tk.Frame(parent, bg=BG)
-        box.pack(side="right", padx=(0, 18))
-        tk.Label(box, text=tr("lang.label"), bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w",
-                                                                                                pady=(0, 3))
-        seg = Segmented(box, [(code, code.upper()) for code in i18n.LANGS], self.v["lang"], self._change_lang)
-        seg.configure(width=110, height=Segmented.HEIGHT)
-        seg.pack()
+        return head
 
     # ---- faixa da conta (cabecalho)
     def _account_strip(self, parent):
@@ -260,6 +975,10 @@ class Launcher(tk.Tk):
 
     def _refresh_account(self):
         acc, png = self.backend.account, self.backend.avatar_png
+        if acc and self.backend.session:
+            self.history_nav.pack(side="left", after=self.help_nav)
+        else:
+            self.history_nav.pack_forget()
         self.acct_name.configure(text=acc["nick"] if acc else tr("acct.guest"))
         self.acct_sub.configure(text=tr("acct.profile") if acc else tr("acct.login"))
         self.acct_av.set(png if acc else None, acc["nick"][:1] if acc else "?")
@@ -268,6 +987,10 @@ class Launcher(tk.Tk):
         self._set_buttons(self.backend.running)           # PREPARE so existe para o dono
 
     def _on_acct(self, op, ok, err):
+        if self.history_view is not None and (
+            not self.backend.account or self.history_view.session != self.backend.session
+        ):
+            self._close_play()
         self._refresh_account()
         if op == "restore":
             if ok:
@@ -313,26 +1036,19 @@ class Launcher(tk.Tk):
                                  justify="left", wraplength=300)
         self.nick_sub.pack(anchor="w", pady=(2, 0))
 
-        self._label(inner, tr("nav.play"))
-        Segmented(inner, [('casual', tr('nav.casual')), ('koth', 'KOTH'), ('tournaments', tr('nav.tournaments'))],
-                  self.section, self._select_section).pack(fill='x')
         self.casual_box = tk.Frame(inner, bg=PANEL)
         self.casual_box.pack(fill='x')
-        self._label(self.casual_box, tr('your_role'))
-        Segmented(self.casual_box, [('host', 'Host · P1'), ('guest', 'Guest · P2')], self.casual_role,
-                  self._select_section).pack(fill='x')
+        Segmented(self.casual_box, [('netplay', 'Netplay'), ('zerotier', 'ZeroTier')], self.casual_transport,
+                  self._change_transport).pack(fill='x', pady=(8, 0))
         self._note(self.casual_box, tr("note.delay"))
 
-        self.mode_box = tk.Frame(inner, bg=PANEL)         # host_box / guest_box alternam aqui dentro
+        self.mode_box = tk.Frame(inner, bg=PANEL)
         self.mode_box.pack(fill="x")
         self.host_box = tk.Frame(self.mode_box, bg=PANEL)
-        Switch(self.host_box, tr("ignore_desync"), self.v["ignore_desync"]).pack(anchor="w", pady=(9, 0))
         self._note(self.host_box, tr("note.host"))
-        self.guest_box = tk.Frame(self.mode_box, bg=PANEL)
-        self._label(self.guest_box, tr("room.label"))
-        RoundEntry(self.guest_box, textvariable=self.v["room_id"], state="readonly").pack(fill="x")
-        self._note(self.guest_box, tr("note.guest"))
         self.koth_box = tk.Frame(self.mode_box, bg=PANEL)
+        Segmented(self.koth_box, [('casual', tr('nav.casual')), ('official', tr('koth.official'))],
+                  self.koth_category, lambda: self.koth_panel.render_events()).pack(fill='x', pady=(8, 0))
         self.koth_hint = tk.Label(self.koth_box, text=tr('koth.pick'), bg=PANEL, fg=TEXT, wraplength=300,
                                   justify='left', anchor='w', font=('Segoe UI', 10, 'bold'))
         self.koth_hint.pack(fill='x', pady=(8, 0))
@@ -349,9 +1065,6 @@ class Launcher(tk.Tk):
         self.stop_btn.pack(fill="x")
         self.hill_btn = PillButton(self.play_actions, text=tr("koth.manual"), command=self.hill)
         self.hill_btn.pack(fill="x", pady=(6, 0))
-
-        self.zerotier_btn = PillButton(self.play_actions, text=tr('zt.button'), command=self.zerotier)
-        self.zerotier_btn.pack(fill='x', pady=(6, 0))
 
         # PREPARAR PARTIDA e Ferramentas: so para o dono (ver _sync_admin)
         self.admin_box = tk.Frame(inner, bg=PANEL)
@@ -423,20 +1136,36 @@ class Launcher(tk.Tk):
             self.rooms_tree.column(key, width=width, minwidth=minw, anchor="w", stretch=False)
         sb.pack(side="right", fill="y")
         self.rooms_tree.pack(side="left", fill="both", expand=True)
+        self.rooms_preview = self._tree_preview(self.rooms_tree)
         self.rooms_tree.bind("<<TreeviewSelect>>", lambda _e: self.pick_room())
         for ev in ("<<TreeviewSelect>>", "<Configure>", "<B1-Motion>", "<ButtonRelease-1>"):
             self.rooms_tree.bind(ev, lambda _e: self.after_idle(self._place_guest_avs), add="+")
 
-        tk.Label(inner, text=tr("rooms.hint"), bg=PANEL, fg=DIM, font=("Segoe UI", 8), anchor="w",
-                 justify="left", wraplength=640).pack(fill="x", pady=(8, 0))
+        footer = tk.Frame(inner, bg=PANEL)
+        footer.pack(fill="x", pady=(8, 0))
+        self.rooms_hint = tk.Label(footer, bg=PANEL, fg=DIM, font=("Segoe UI", 8),
+                                   anchor="w", justify="left", wraplength=380)
+        self.rooms_hint.pack(side="left", fill="x", expand=True)
+        self.join_btn = PillButton(footer, text=tr("rooms.join"), style="Small.TButton",
+                                   command=lambda: self.start("guest"), state="disabled")
+        self.join_btn.pack(side="right")
 
-    def _console(self, parent):
-        panel = RoundFrame(parent, radius=18, padx=14, pady=10)
-        panel.pack(fill="x")
+    def open_console(self):
+        if self.console_window is not None:
+            self.console_window.deiconify()
+            self.console_window.lift()
+            return
+        window = self.console_window = tk.Toplevel(self, bg=BG)
+        window.title(tr("menu.logs"))
+        window.geometry("720x360")
+        window.minsize(460, 200)
+        window.protocol("WM_DELETE_WINDOW", self._close_console)
+
+        panel = RoundFrame(window, radius=18, padx=14, pady=10)
+        panel.pack(fill="both", expand=True, padx=10, pady=10)
         inner = panel.inner
         top = tk.Frame(inner, bg=PANEL)
         top.pack(fill="x", pady=(0, 6))
-        tk.Label(top, text=tr("console"), bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         PillButton(top, text=tr("btn.clear"), style="Small.TButton", command=self.clear).pack(side="right")
         PillButton(top, text=tr("btn.copy"), style="Small.TButton", command=self.copy_console).pack(side="right",
                                                                                                    padx=(0, 6))
@@ -445,7 +1174,7 @@ class Launcher(tk.Tk):
         self.console_status = tk.Label(inner, anchor='w', bg=PANEL, font=('Segoe UI', 9, 'bold'))
         self.console_status.pack(fill='x', pady=(0, 4))
         box = RoundFrame(inner, fill="#070a10", border=BORDER, radius=12, padx=6, pady=6, bg=PANEL)
-        box.pack(fill="x")
+        box.pack(fill="both", expand=True)
         wrap = box.inner
         sb = ttk.Scrollbar(wrap, orient="vertical")
         self.console = tk.Text(wrap, bg="#070a10", fg="#c8d6ea", insertbackground=TEXT, selectbackground="#2a4a72",
@@ -453,10 +1182,17 @@ class Launcher(tk.Tk):
                                state="disabled", yscrollcommand=sb.set, highlightthickness=0, bd=0)
         sb.configure(command=self.console.yview)
         sb.pack(side="right", fill="y")
-        self.console.pack(side="left", fill="x", expand=True)
+        self.console.pack(side="left", fill="both", expand=True)
         for tag, color in (("error", "#ff8497"), ("success", "#62e2ac"), ("info", "#80b9ff"), ("warn", WARN),
                            ("dim", DIM)):
             self.console.tag_configure(tag, foreground=color)
+        self._set_status(self.status_key, self.status_color)
+        for text, tag in self._history:
+            self._write(text, tag)
+
+    def _close_console(self):
+        self.console_window.destroy()
+        self.console_window = self.console = self.console_status = None
 
     # ================================================================ dicas
     def _nick_hint(self):
@@ -471,9 +1207,14 @@ class Launcher(tk.Tk):
 
     def _select_section(self):
         section = self.section.get()
-        mode = self.casual_role.get() if section == 'casual' else section
+        mode = 'host' if section == 'casual' else section
         self.v['mode'].set(mode)
         self._sync_mode()
+
+    def _change_transport(self):
+        self.rooms_tree.selection_remove(*self.rooms_tree.selection())
+        self._sync_mode()
+        self._rooms_refresh()
 
     def _sync_mode(self):
         if self._koth_pending or (self.backend.running and self.backend.session_role == 'hill'):
@@ -482,22 +1223,29 @@ class Launcher(tk.Tk):
         casual = mode in ('host', 'guest')
         self.section.set('casual' if casual else mode)
         if casual:
-            self.casual_role.set(mode)
             self.casual_box.pack(fill='x', before=self.mode_box)
         else:
             self.casual_box.pack_forget()
-        for role, box in (('host', self.host_box), ('guest', self.guest_box), ('koth', self.koth_box)):
-            box.pack(fill='x') if mode == role else box.pack_forget()
-        for button in (self.start_btn, self.hill_btn, self.zerotier_btn):
+        direct = casual and self.casual_transport.get() == 'zerotier'
+        if casual and not direct:
+            self.host_box.pack(fill='x')
+        else:
+            self.host_box.pack_forget()
+        if mode == 'koth':
+            self.koth_box.pack(fill='x')
+        else:
+            self.koth_box.pack_forget()
+        for button in (self.start_btn, self.hill_btn):
             button.pack_forget()
         self._show_stop()
         if mode != 'tournaments':
             self.start_btn.pack(fill='x', before=self.stop_btn, pady=(0, 6))
-        if casual:
-            self.zerotier_btn.configure(text=tr('nav.zt_host' if mode == 'host' else 'nav.zt_guest'))
-            self.zerotier_btn.pack(fill='x', pady=(6, 0))
-        elif mode == 'koth':
+        if mode == 'koth':
             self.hill_btn.pack(fill='x', pady=(6, 0))
+        if mode == 'tournaments':
+            self.tournaments.actions.pack(fill='x')
+        else:
+            self.tournaments.actions.pack_forget()
         panel = self.rooms_panel if casual else self.koth_panel if mode == 'koth' else self.tournaments
         for other in (self.rooms_panel, self.koth_panel, self.tournaments):
             if other != panel:
@@ -505,16 +1253,10 @@ class Launcher(tk.Tk):
         panel.pack(side='top', fill='both', expand=True, pady=(0, 13))
         if not casual:
             panel.refresh()
-        tournament = mode == 'tournaments'
-        column = self.left_column if tournament else self.right_column
-        if self.console_host.pack_info()['in'] != column:
-            self.console_host.pack_forget()
-            if tournament:
-                self.console_host.pack(in_=column, side='top', fill='x', pady=(8, 0))
-            else:
-                self.console_host.pack(in_=column, side='bottom', fill='x', before=panel)
-        self.console.configure(height=6 if tournament else 7 if casual else 5)
-        self.start_btn.configure(text=tr('koth.join') if mode == 'koth' else tr('nav.net_guest') if mode == 'guest' else tr('nav.net_host'))
+        self.start_btn.configure(text=tr('koth.join' if mode == 'koth' else 'nav.zt_host' if direct else 'nav.net_host'))
+        self.rooms_hint.configure(text=tr('rooms.zt_hint' if direct else 'rooms.join_hint'))
+        if not direct:
+            self._close_zerotier_rooms()
 
     def _show_stop(self):
         if self.section.get() == 'tournaments' and not self.backend.running:
@@ -603,6 +1345,7 @@ class Launcher(tk.Tk):
     def _rooms_scrolled(self, sb, lo, hi):
         sb.set(lo, hi)
         self.after_idle(self._place_guest_avs)
+        self.after_idle(self._sync_rooms_preview)
 
     def _place_guest_avs(self):
         """O Treeview so mostra imagem na coluna #0: o avatar do guest e um Label colocado sobre a celula GUEST
@@ -639,14 +1382,61 @@ class Launcher(tk.Tk):
         finally:
             self.after(500, self._rooms_tick)
 
+    def _sync_rooms_preview(self):
+        self._sync_tree_preview(self.rooms_preview, self.rooms_tree)
+
+    @staticmethod
+    def _tree_preview(tree):
+        preview = tk.Label(tree.master, bg=PANEL, bd=0, highlightthickness=0)
+        preview.artwork = None
+        preview.bind("<MouseWheel>", lambda event: tree.event_generate(
+            "<MouseWheel>", delta=event.delta, state=event.state))
+        for button in (4, 5):
+            sequence = f"<Button-{button}>"
+            preview.bind(sequence, lambda _event, seq=sequence: tree.event_generate(seq))
+        return preview
+
+    def _sync_tree_preview(self, preview, tree):
+        if not self.v["show_background"].get() or preview.artwork is None:
+            preview.place_forget()
+            return
+        artwork = preview.artwork
+        rows = tree.get_children()
+        if rows:
+            last = tree.bbox(rows[-1])
+            if not last or last[1] + last[3] >= tree.winfo_height():
+                preview.place_forget()
+                return
+            x = tree.winfo_x()
+            top = tree.winfo_y() + last[1] + last[3]
+            right = min(artwork.width, x + tree.winfo_width())
+            bottom = min(artwork.height, tree.winfo_y() + tree.winfo_height())
+        else:
+            x, top, right, bottom = 0, 0, artwork.width, artwork.height
+        if right <= x or bottom <= top:
+            preview.place_forget()
+            return
+        bounds = (x, top, right, bottom)
+        if preview.bounds != bounds:
+            preview.background_image = ImageTk.PhotoImage(artwork.crop(bounds), master=preview)
+            preview.configure(image=preview.background_image)
+            preview.bounds = bounds
+        preview.place(x=x, y=top, width=right - x, height=bottom - top)
+        preview.lift()
+
     def _rooms_refresh(self):
         if self.v['mode'].get() == 'koth':
             self.koth_panel.tick()
             return
         if self.section.get() == 'tournaments':
             return
-        self.backend.poll_rooms()
-        found, error = self.backend.online_rooms, self.backend.online_error
+        direct = self.casual_transport.get() == 'zerotier'
+        if direct:
+            address = self.v['zerotier_address'].get().strip()
+            found, error = self._local_rooms(address)
+        else:
+            self.backend.poll_rooms()
+            found, error = self.backend.online_rooms, self.backend.online_error
         self.rooms_data = {r["id"]: r for r in found}
         ids = [r["id"] for r in found]
         tree = self.rooms_tree
@@ -667,29 +1457,43 @@ class Launcher(tk.Tk):
         elif found:
             text = tr("rooms.count", n=len(found))
         else:
-            text = tr("rooms.none")
+            text = tr("rooms.zt_no_address" if direct and not address else "rooms.zt_none" if direct else "rooms.none")
         self.rooms_status.configure(text=text, fg=RED if error else DIM)
+        self._sync_rooms_preview()
+        self.pick_room()
+
+    def _local_rooms(self, address):
+        if not address:
+            return [], None
+        if self.zerotier_rooms is None:
+            self.zerotier_rooms = RoomListener(zerotier_address=address)
+        rooms = self.zerotier_rooms.poll()
+        return [
+            {**room, 'id': f"zt:{room['ip']}:{room['port']}", 'is_local': room['ip'] == address}
+            for room in rooms
+            if room.get('game') and room['port'] == int(core.HOST_PORT)
+            and (self.backend.running if room['ip'] == address else uses_interface(room['ip'], address))
+        ], self.zerotier_rooms.error
+
+    def _close_zerotier_rooms(self):
+        if self.zerotier_rooms is not None:
+            self.zerotier_rooms.close()
+            self.zerotier_rooms = None
 
     def pick_room(self):
-        """One click on a room: fills the room id and switches to guest. Nothing else to confirm."""
-        if self.backend.running or self.section.get() != 'casual':
-            return
-        selected = self.rooms_tree.selection()
-        room = self.rooms_data.get(selected[0]) if selected else None
-        if room is None:
-            return
-        self.v["mode"].set("guest")
-        self._sync_mode()
-        self.v["room_id"].set(room["id"])
+        busy = self.backend.running or self._after_sync or self._after_allow or self._koth_pending
+        self.join_btn.configure(state="normal" if not busy and self._picked_room() else "disabled")
 
     def _picked_room(self):
-        """The waiting room currently selected in the list, or None."""
+        """The open room the player can join, or None."""
         selected = self.rooms_tree.selection()
         room = self.rooms_data.get(selected[0]) if selected else None
-        return room if room and room["status"] == "waiting" else None
+        return room if room and room["status"] == "waiting" and not room.get("is_local") else None
 
     # ================================================================ console / status
     def _write(self, text, tag=None):
+        if self.console_window is None:
+            return
         self.console.configure(state="normal")
         self.console.insert("end", text.rstrip() + "\n", tag or ())
         self.console.see("end")
@@ -703,6 +1507,8 @@ class Launcher(tk.Tk):
 
     def clear(self):
         self._history.clear()
+        if self.console_window is None:
+            return
         self.console.configure(state="normal")
         self.console.delete("1.0", "end")
         self.console.configure(state="disabled")
@@ -712,7 +1518,8 @@ class Launcher(tk.Tk):
         self.clipboard_append(text)
 
     def copy_console(self):
-        self._clip(self.console.get("1.0", "end"))
+        if self.console_window is not None:
+            self._clip(self.console.get("1.0", "end"))
 
     def copy_command(self):
         self._clip(self.backend.last_cmd or tr("log.nothing_run"))
@@ -722,15 +1529,17 @@ class Launcher(tk.Tk):
         color = COLORS.get(color, color)                  # aceita nome do backend ou hex
         self.status_key, self.status_color = text, color
         key = "st." + text
-        self.console_status.configure(text=tr(key), fg=color)
+        if self.console_window is not None:
+            self.console_status.configure(text=tr(key), fg=color)
 
     def _set_buttons(self, running):
         self._show_stop()
         self.tournaments.sync_connect()
         running = running or self._koth_pending
         state = "disabled" if running else "normal"
-        for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn, self.hill_btn, self.zerotier_btn):
+        for b in (self.load_btn, self.start_btn, self.solo_btn, self.pine_btn, self.release_btn, self.hill_btn):
             b.configure(state=state)
+        self.join_btn.configure(state="normal" if not running and self._picked_room() else "disabled")
         # PREPARE: so o dono (o servidor decide quem e o dono; o launcher so esconde o botao)
         self.prepare_btn.configure(state="normal" if (not running and self.backend.is_admin()) else "disabled")
         self.stop_btn.configure(state="normal" if running and not self._koth_pending else "disabled")
@@ -864,84 +1673,68 @@ class Launcher(tk.Tk):
         scan_job[0] = dialog.after(0, refresh_networks)
         return lambda: address_for(selected_network.get())
 
-    def zerotier(self, *, fixture=None, round_robin=False):
+    def configure_zerotier(self):
+        parent = self.dialog or self
+        dialog = tk.Toplevel(parent, bg=PANEL, padx=20, pady=16)
+        dialog.title(tr('zt.settings'))
+        dialog.transient(parent)
+        get_address = self._zerotier_picker(dialog, self.v['zerotier_address'].get())
+
+        def save():
+            address = get_address()
+            if address != '0.0.0.0':
+                try:
+                    core.zerotier_args({'zerotier_address': address}, 'host')
+                except ValueError as error:
+                    return messagebox.showerror(tr('zt.settings'), str(error), parent=dialog)
+            self.v['zerotier_address'].set('' if address == '0.0.0.0' else address)
+            core.save_config({**self.raw(), 'ignore_desync': False})
+            self._close_zerotier_rooms()
+            self._rooms_refresh()
+            dialog.destroy()
+
+        PillButton(dialog, text=tr('zt.save'), command=save).pack(fill='x', pady=(12, 0))
+        dialog.grab_set()
+
+    def _saved_zerotier_address(self):
+        address = self.v['zerotier_address'].get().strip()
+        try:
+            core.zerotier_args({'zerotier_address': address}, 'host')
+        except ValueError:
+            messagebox.showinfo(tr('zt.settings'), tr('rooms.zt_no_address'), parent=self)
+            return None
+        return address
+
+    def zerotier(self, *, fixture, round_robin=False):
         if self.backend.running or self._koth_pending or self._after_sync or self._after_allow:
             return
-        if not self._ensure_state_dir() or not self._pick_game():
+        address = self._saved_zerotier_address()
+        if not address or not self._ensure_state_dir() or not self._pick_game():
             return
-        dialog = tk.Toplevel(self)
-        dialog.title(tr('zt.title'))
-        dialog.transient(self)
-        dialog.configure(bg=PANEL, padx=20, pady=16)
-        login = self.backend.session
-        if fixture:
-            role = tk.StringVar(value='host' if fixture['role'] == 'p1' else 'guest')
-            title = tr('bracket.match_role', p1=fixture['p1']['name'], p2=fixture['p2']['name'],
-                       role=fixture['role'].upper())
-            dialog.title(tr('bracket.connect'))
-            ttk.Label(dialog, text=title).pack(fill='x', pady=(0, 8))
-        else:
-            role = tk.StringVar(value=self.casual_role.get())
-            Segmented(dialog, [('host', 'HOST · P1'), ('guest', 'GUEST · P2')], role).pack(fill='x', pady=(0, 8))
-        local_address = tk.StringVar()
-        get_address = self._zerotier_picker(dialog, self.v['zerotier_address'].get(), local_address)
-        host = tk.StringVar(value=self.v['zerotier_host'].get())
-        if fixture:
-            tk.Label(dialog, text=tr('bracket.zt_wait'), bg=PANEL, fg=MUTED, wraplength=480).pack(pady=12)
-        else:
-            host_label = tk.Label(dialog, bg=PANEL, fg=TEXT)
-            host_label.pack(anchor='w', pady=(12, 3))
-            entry = ttk.Entry(dialog, textvariable=host, width=65)
-            entry.pack(fill='x')
-            def sync_role(*_):
-                joining = role.get() == 'guest'
-                host_label.configure(text=tr('zt.host_ip' if joining else 'zt.share_ip'))
-                entry.configure(textvariable=host if joining else local_address,
-                                state='normal' if joining else 'readonly')
-            role.trace_add('write', sync_role)
-            sync_role()
-            tk.Label(dialog, text=tr('zt.note'), bg=PANEL, fg=MUTED, wraplength=480,
-                     justify='left').pack(pady=12)
-        def begin():
-            cfg = {**self.cfg(), 'transport': 'zerotier', 'zerotier_address': get_address(),
-                   'zerotier_host': host.get().strip(), 'zerotier_role': role.get()}
-            if fixture:
-                cfg.update(fixture=fixture, game=self.game, hill_url=self.tournaments.url, round_robin=round_robin)
-            # Validate before starting the asynchronous state download.
+        role = 'host' if fixture['role'] == 'p1' else 'guest'
+        title = tr('bracket.match_role', p1=fixture['p1']['name'], p2=fixture['p2']['name'],
+                   role=fixture['role'].upper())
+        cfg = {**self.cfg(), 'transport': 'zerotier', 'zerotier_address': address,
+               'fixture': fixture, 'game': self.game, 'hill_url': self.tournaments.url,
+               'round_robin': round_robin}
+        self._start_direct(cfg, role, title, fixture_login=self.backend.session)
+
+    def _start_direct(self, cfg, role, title, *, fixture_login=None):
+        def launch():
+            if cfg.get('fixture') and self.backend.session != fixture_login:
+                self._log(tr('bracket.login'), 'error')
+                self._set_status('READY', MUTED)
+                return
             try:
-                core.zerotier_args(cfg, role.get())
+                args = core.make_args(cfg, role, cfg['state_file'])
             except ValueError as error:
-                return messagebox.showerror(tr('zt.title'), str(error), parent=dialog)
-            for key in (('zerotier_address',) if fixture else ('zerotier_address', 'zerotier_host', 'zerotier_role')):
-                self.v[key].set(cfg[key])
-            core.save_config(self.raw())
-            dialog.destroy()
-            def launch():
-                try:
-                    args = core.make_args(cfg, cfg['zerotier_role'], cfg['state_file'])
-                except ValueError as error:
-                    self._set_buttons(False)
-                    self._set_status('READY', MUTED)
-                    return messagebox.showerror(tr('zt.title'), str(error))
-                if not fixture and cfg['zerotier_role'] == 'host':
-                    self._log(tr('zt.share', ip=cfg['zerotier_address'], port=core.HOST_PORT), 'info')
-                if fixture:
-                    if self.backend.session != login:
-                        self._log(tr('bracket.login'), 'error')
-                        self._set_status('READY', MUTED)
-                        return
-                    self._spawn(args, title, session_env={'UN5_FIXTURE_LOGIN': login})
-                    return
-                session = self.backend.session
-                self._spawn(args, tr('zt.title'), session_env={'UN5_SCOREBOARD_SESSION': session} if session else None)
-            self._after_sync = launch
-            self._log('\n▶ ' + tr('run.checking'), 'info')
-            self._set_status('LOADING', BLUE)
-            self._set_buttons(True)
-            self.stop_btn.configure(state='disabled')
-            self.backend.sync_default(self.game)
-        ttk.Button(dialog, text=tr('zt.start'), command=begin).pack(fill='x')
-        dialog.grab_set()
+                self._set_status('READY', MUTED)
+                return messagebox.showerror(tr('zt.title'), str(error))
+            session = fixture_login if cfg.get('fixture') else self.backend.session
+            env_key = 'UN5_FIXTURE_LOGIN' if cfg.get('fixture') else 'UN5_SCOREBOARD_SESSION'
+            self._spawn(args, title, session_env={env_key: session} if session else None)
+
+        self._sync_for_match(launch)
 
     def watch_hill(self):
         event = self.koth_panel.selected_event()
@@ -952,97 +1745,91 @@ class Launcher(tk.Tk):
         return self.hill(event, observe=True)
 
     def hill(self, event=None, *, observe=False):
-        if self.backend.running or self._koth_pending or not self._ensure_state_dir() or not self._pick_game():
+        if self.backend.running or self._koth_pending or self._after_sync or self._after_allow or self.koth_panel.leave_busy:
             return
-        from koth_client import site_url
-        import ipaddress
+        address = self._saved_zerotier_address()
+        if not address or not self._ensure_state_dir() or not self._pick_game():
+            return
+        ticket = self.v['hill_ticket'].get().strip()
+        if observe:
+            return self._join_hill(DEFAULT_URL, address, ticket, event, observe=True)
 
-        dialog = tk.Toplevel(self)
-        dialog.title(tr("hill.title"))
+        dialog = tk.Toplevel(self, bg=PANEL, padx=20, pady=16)
+        dialog.title(tr('hill.title'))
         dialog.transient(self)
-        dialog.configure(bg=PANEL, padx=20, pady=16)
-        values = {}
-        fields = [
-            ("url", tr("hill.url"), self.v["hill_url"].get()),
-        ]
+
+        def field(label, initial, *, secret=False):
+            tk.Label(dialog, text=tr(label), bg=PANEL, fg=TEXT).pack(anchor='w', pady=(8, 3))
+            value = tk.StringVar(master=dialog, value=initial)
+            ttk.Entry(dialog, textvariable=value, width=65, show='*' if secret else '').pack(fill='x')
+            return value
+
         if event:
             tk.Label(dialog, text=event['name'], bg=PANEL, fg=ACCENT,
                      font=('Segoe UI', 12, 'bold')).pack(anchor='w')
-            if not observe:
-                fields.append(('name', tr('koth.player_name'), self.v['hill_player_name'].get() or self.cfg().get('nick', '')))
-            entry = 'koth.watch_note' if observe else 'koth.linked_entry' if self.backend.session else 'koth.guest_entry'
+            entry = 'koth.linked_entry' if self.backend.session else 'koth.guest_entry'
             tk.Label(dialog, text=tr(entry), bg=PANEL, fg=MUTED,
                      wraplength=480, justify='left').pack(anchor='w', pady=(6, 0))
+            name_field = field('koth.player_name', self.v['hill_player_name'].get() or self.cfg().get('nick', ''))
         else:
-            fields.append(('ticket', tr('hill.ticket'), self.v['hill_ticket'].get()))
-        for key, label, initial in fields:
-            tk.Label(dialog, text=label, bg=PANEL, fg=TEXT).pack(anchor="w", pady=(8, 3))
-            values[key] = tk.StringVar(value=initial)
-            ttk.Entry(dialog, textvariable=values[key], width=65, show="*" if key == "ticket" else "",
-                      state='readonly' if event and key == 'url' else 'normal').pack(fill="x")
-        get_address = self._zerotier_picker(dialog, self.v['hill_address'].get())
-        if not observe:
-            Switch(dialog, tr('hill.spectators'), self.v['hill_spectators']).pack(anchor='w', pady=(10, 0))
-        tk.Label(dialog, text=tr("hill.note" if event else "hill.code_note"), bg=PANEL, fg=MUTED, wraplength=480, justify="left").pack(pady=12)
+            ticket_field = field('hill.ticket', ticket, secret=True)
 
-        if event and self.backend.session and not observe:
+        Switch(dialog, tr('hill.spectators'), self.v['hill_spectators']).pack(anchor='w', pady=(10, 0))
+        if event and self.backend.session:
             tk.Label(dialog, text=tr('koth.address_rule'), bg=PANEL, fg=MUTED,
                      wraplength=480, justify='left').pack(anchor='w', pady=(0, 8))
 
         def connect():
             try:
-                url = site_url(values["url"].get().strip())
-                selected_ip = ipaddress.IPv4Address(get_address())
-                if selected_ip.is_unspecified or selected_ip.is_loopback or selected_ip.is_multicast:
-                    raise ValueError(tr('hill.zt.required'))
-                address = str(selected_ip)
-                ticket = values['ticket'].get().strip() if 'ticket' in values else self.v['hill_ticket'].get().strip()
-                name = values['name'].get().strip() if 'name' in values else ''
-                if event and not observe and not name:
+                code = ticket if event else ticket_field.get().strip()
+                name = name_field.get().strip() if event else ''
+                if event and not name:
                     raise ValueError(tr('koth.player_name'))
-                if not event and not ticket:
-                    raise ValueError(tr("hill.ticket"))
+                if not event and not code:
+                    raise ValueError(tr('hill.ticket'))
             except ValueError as error:
-                messagebox.showerror(tr("hill.title"), str(error), parent=dialog)
-                return
-            self.v["hill_url"].set(url)
-            self.v["hill_address"].set(address)
+                return messagebox.showerror(tr('hill.title'), str(error), parent=dialog)
             if name:
                 self.v['hill_player_name'].set(name)
-            core.save_config({**self.raw(), "ignore_desync": False})
             dialog.destroy()
-            netplay_session = self.backend.session
-            if event:
-                self._koth_pending = True
-                self.koth_live_event = event
-                self.v['mode'].set('koth')
-                self._sync_mode()
-                self._set_buttons(True)
-                self.stop_btn.configure(state='disabled')
-                self.koth_panel.display(event, reason=tr('koth.loading' if observe else 'koth.registering'))
+            self._join_hill(DEFAULT_URL, address, code, event, name=name)
 
-                def enroll():
-                    from koth_client import MembershipStore, enroll as enroll_event, watch_ticket
-                    kind = 'koth_watch' if observe else 'koth_enroll'
-                    try:
-                        if observe:
-                            result = watch_ticket(url, netplay_session, event['id'])
-                        else:
-                            result = enroll_event(url, event, name, MembershipStore(core.DATA_DIR/'koth-memberships.json'), ticket,
-                                                  netplay_session=netplay_session, address=address if netplay_session else '')
-                        self.backend.q.put((kind, url, address, result, ''))
-                    except Exception as error:
-                        self.backend.q.put((kind, url, address, None, str(error)))
-
-                threading.Thread(target=enroll, daemon=True).start()
-            else:
-                self._begin_hill(url, address, ticket, personal_code=True)
-
-        connect_button = ttk.Button(dialog, text=tr("hill.connect"), command=connect)
-        connect_button.pack(fill="x")
+        ttk.Button(dialog, text=tr('hill.connect'), command=connect).pack(fill='x', pady=(8, 0))
         dialog.grab_set()
 
+    def _join_hill(self, url, address, ticket, event, *, name='', observe=False):
+        self.v['hill_url'].set(url)
+        core.save_config({**self.raw(), 'ignore_desync': False})
+        netplay_session = self.backend.session
+        if event:
+            self._koth_pending = True
+            self.koth_live_event = event
+            self.v['mode'].set('koth')
+            self._sync_mode()
+            self._set_buttons(True)
+            self.stop_btn.configure(state='disabled')
+            self.koth_panel.display(event, reason=tr('koth.loading' if observe else 'koth.registering'))
+
+            def enroll():
+                from koth_client import MembershipStore, enroll as enroll_event, watch_ticket
+                kind = 'koth_watch' if observe else 'koth_enroll'
+                try:
+                    if observe:
+                        result = watch_ticket(url, netplay_session, event['id'])
+                    else:
+                        result = enroll_event(url, event, name, MembershipStore(core.DATA_DIR/'koth-memberships.json'), ticket,
+                                              netplay_session=netplay_session, address=address if netplay_session else '')
+                    self.backend.q.put((kind, url, address, result, ''))
+                except Exception as error:
+                    self.backend.q.put((kind, url, address, None, str(error)))
+
+            threading.Thread(target=enroll, daemon=True).start()
+        else:
+            self._begin_hill(url, address, ticket, personal_code=True)
+
     def _begin_hill(self, url, address, ticket, event=None, *, observe=False, personal_code=False):
+        self.koth_live_ticket = '' if observe else ticket
+        self.koth_observing = observe
         if not observe:
             self.v['hill_ticket'].set(ticket)
         self.v['hill_url'].set(url)
@@ -1100,36 +1887,51 @@ class Launcher(tk.Tk):
         if args:
             self._spawn(args, tr("run.load"))
 
-    def start(self):
-        if self._koth_pending or self.backend.running or self.section.get() == 'tournaments':
+    def start(self, role="host"):
+        if self._koth_pending or self.backend.running or self._after_sync or self._after_allow:
             return
-        if self.v['mode'].get() == 'koth':
+        section = self.section.get()
+        if section == 'tournaments':
+            return
+        if section == 'koth':
             event = self.koth_panel.selected_event()
             if event is None:
                 return messagebox.showinfo(tr('hill.title'), tr('koth.pick'))
             return self.hill(event)
-        if not self._ensure_state_dir():
+
+        direct = self.casual_transport.get() == 'zerotier'
+        address = self.v["zerotier_address"].get().strip()
+        if direct and not address:
+            return messagebox.showinfo(tr('zt.settings'), tr('rooms.zt_no_address'))
+        room = self._picked_room() if role == "guest" else None
+        if role == "guest" and room is None:
+            return messagebox.showinfo(tr("dlg.rooms"), tr("dlg.pick_room"))
+        if not self._ensure_state_dir() or not self._pick_game():
             return
-        role = self.v["mode"].get()
-        if not self._pick_game():
-            return
-        if role == "guest":
-            room = self._picked_room()
-            if room is None:
-                return messagebox.showinfo(tr("dlg.rooms"), tr("dlg.pick_room"))
-            self.v["room_id"].set(room["id"])
-        if role == "guest":                               # a sala tem que ser do mesmo jogo que esta no PCSX2
-            rg = (self.rooms_data.get(self.v["room_id"].get()) or {}).get("game")
-            if rg and rg != self.game:
-                return messagebox.showerror(tr("dlg.game_title"),
-                                            tr("dlg.game_mismatch", room=rg.upper(), mine=self.game.upper()))
-        # primeiro baixa o save state padrao do servidor (se o local for diferente); depois sobe a sessao
-        self._after_sync = lambda: self._launch(role)
+        if room and room.get("game") and room["game"] != self.game:
+            return messagebox.showerror(tr("dlg.game_title"),
+                                        tr("dlg.game_mismatch", room=room["game"].upper(), mine=self.game.upper()))
+
+        self.v["mode"].set(role)
+        if direct:
+            cfg = {**self.cfg(), 'transport': 'zerotier', 'zerotier_address': address,
+                   'zerotier_host': room['ip'] if room else '', 'announce_zerotier': True, 'game': self.game}
+            try:
+                core.zerotier_args(cfg, role)
+            except ValueError as error:
+                return messagebox.showerror(tr('zt.settings'), str(error))
+            return self._start_direct(cfg, role, tr('zt.title'))
+
+        self.v["room_id"].set(room["id"] if room else "")
+        self._sync_for_match(lambda: self._launch(role), relay=True)
+
+    def _sync_for_match(self, launch, *, relay=False):
+        self._after_sync = launch
         self._log("\n▶ " + tr("run.checking"), "info")
         self._set_status("LOADING", BLUE)
         self._set_buttons(True)
         self.stop_btn.configure(state="disabled")
-        self.backend.sync_default(self.game, relay=True)
+        self.backend.sync_default(self.game, relay=relay)
 
     def _launch(self, role):
         if role == "guest":                               # the server decides first (same IP / same account)
@@ -1317,6 +2119,8 @@ class Launcher(tk.Tk):
         self._log(tr("log.finished", code=code), "success" if code in (0, None) else "error")
         self.backend.on_exit()
         self._koth_pending = False
+        self.koth_live_ticket = ''
+        self.koth_observing = False
         self.koth_panel.display(self.koth_live_event)
         self._set_buttons(False)
         if code not in (0, None) and self.status_key != "DESYNC":
@@ -1326,6 +2130,7 @@ class Launcher(tk.Tk):
 
     def destroy(self):
         core.save_config({**self.raw(), "ignore_desync": False})   # o switch de debug nunca e salvo como ON
+        self._close_zerotier_rooms()
         self.backend.shutdown()
         super().destroy()
 

@@ -87,6 +87,10 @@ def main():
         shutil.copy2(ROOT / f"{module}.py", project / f"{module}.py")
     for name in ("2 - PCSX2 Flatpak.sh", "symbols_un6.json", "chars_un6.json", "README.md", "UPDATES.md"):
         shutil.copy2(ROOT / name, project / name)
+    for asset in map(Path, ("assets/background/background1.png", "assets/logo_naruto.png",
+                            "assets/naruto_mascot.png", "assets/naruto_mascot_poses.png")):
+        (project / asset.parent).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / asset, project / asset)
     shutil.copy2(ROOT / "appimage/appimage_start.py", project / "appimage_start.py")
     (project / "appimage").mkdir()
     shutil.copy2(ROOT / "appimage/README.md", project / "appimage/README.md")

@@ -24,6 +24,8 @@ import sys
 import time
 
 DISCOVERY_PORT = 47401
+ZEROTIER_DISCOVERY_PORT = 47403
+ZEROTIER_GROUP = '239.255.47.43'
 MAGIC = b'UN5R1'                    # 'UN5 Room', protocol version 1
 MAX_PACKET = 512
 ANNOUNCE_EVERY = 2.0                # seconds between two announcements of the same room
@@ -40,8 +42,10 @@ def clean_nick(value, limit=15):
 
 
 # ---- packets ----------------------------------------------------------------------------------------------------------
-def encode_room(nick, port, delay, tag, status='waiting'):
+def encode_room(nick, port, delay, tag, status='waiting', game=None):
     body = {'n': clean_nick(nick) or 'Player', 'p': int(port), 'd': int(delay), 't': str(tag), 's': status}
+    if game is not None:
+        body['g'] = game
     return MAGIC + json.dumps(body, separators=(',', ':')).encode('ascii')
 
 
@@ -67,8 +71,21 @@ def parse_room(data, addr):
     if (not isinstance(nick, str) or not isinstance(tag, str) or not _TAG_RE.match(tag) or status not in STATUSES
             or port is None or delay is None or not isinstance(addr, tuple) or not isinstance(addr[0], str)):
         return None
-    return {'nick': clean_nick(nick) or 'Player', 'ip': addr[0], 'port': port, 'delay': delay, 'tag': tag,
+    room = {'nick': clean_nick(nick) or 'Player', 'ip': addr[0], 'port': port, 'delay': delay, 'tag': tag,
             'status': status}
+    if body.get('g') in ('un5', 'un6'):
+        room['game'] = body['g']
+    return room
+
+
+def uses_interface(peer, local_address):
+    """Ask the OS which interface a direct connection would use, without sending data."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect((peer, ZEROTIER_DISCOVERY_PORT))
+            return probe.getsockname()[0] == local_address
+    except OSError:
+        return False
 
 
 # ---- addresses --------------------------------------------------------------------------------------------------------
@@ -114,11 +131,19 @@ class RoomAnnouncer:
     raises. One socket per local interface, bound to that interface, so the broadcast leaves through the right
     network (Radmin included) instead of only the default one."""
 
-    def __init__(self, nick, port, delay, tag, interval=ANNOUNCE_EVERY, dest_port=DISCOVERY_PORT, targets=None):
+    def __init__(self, nick, port, delay, tag, interval=ANNOUNCE_EVERY, dest_port=DISCOVERY_PORT, targets=None,
+                 *, bind_ip=None, game=None):
         self.nick, self.port, self.delay, self.tag = clean_nick(nick) or 'Player', int(port), int(delay), str(tag)
         self.interval, self.dest_port = interval, dest_port
         self.routes, self.ips, self.sent, self._last = [], [], 0, None
-        if targets is not None:                                # tests: explicit destinations, any interface
+        self.game = game
+        if game and bind_ip:
+            self.dest_port = ZEROTIER_DISCOVERY_PORT
+            sock = self._socket(bind_ip, multicast=True)
+            if sock:
+                self.routes.append((sock, [ZEROTIER_GROUP]))
+                self.ips.append(bind_ip)
+        elif targets is not None:                              # tests: explicit destinations, any interface
             sock = self._socket(None)
             if sock:
                 self.routes.append((sock, list(targets)))
@@ -130,15 +155,22 @@ class RoomAnnouncer:
                     self.ips.append(ip)
 
     @staticmethod
-    def _socket(bind_ip):
+    def _socket(bind_ip, multicast=False):
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            if multicast:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(bind_ip))
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+            else:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             if bind_ip:
                 sock.bind((bind_ip, 0))
             sock.setblocking(False)
             return sock
         except OSError:
+            if sock is not None:
+                sock.close()
             return None
 
     def tick(self, status='waiting', now=None):
@@ -146,7 +178,7 @@ class RoomAnnouncer:
         if self._last is not None and now - self._last < self.interval:
             return False
         self._last = now
-        packet = encode_room(self.nick, self.port, self.delay, self.tag, status)
+        packet = encode_room(self.nick, self.port, self.delay, self.tag, status, self.game)
         for sock, targets in self.routes:
             for target in targets:
                 try:
@@ -169,15 +201,22 @@ class RoomAnnouncer:
 class RoomListener:
     """poll() (non-blocking, call it every few hundred ms) returns the rooms heard recently, sorted by nick."""
 
-    def __init__(self, port=DISCOVERY_PORT, bind='0.0.0.0', ttl=ROOM_TTL):
-        self.port, self.ttl, self.error, self.rooms, self.sock = port, ttl, None, {}, None
+    def __init__(self, port=DISCOVERY_PORT, bind='0.0.0.0', ttl=ROOM_TTL, *, zerotier_address=None):
+        self.port = ZEROTIER_DISCOVERY_PORT if zerotier_address else port
+        self.ttl, self.error, self.rooms, self.sock = ttl, None, {}, None
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)   # two launchers on one PC may both listen
-            sock.bind((bind, port))
+            sock.bind((bind, self.port))
+            if zerotier_address:
+                membership = socket.inet_aton(ZEROTIER_GROUP) + socket.inet_aton(zerotier_address)
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
             sock.setblocking(False)
             self.sock = sock
         except OSError as exc:
+            if sock is not None:
+                sock.close()
             self.error = str(exc)
 
     def poll(self, now=None):

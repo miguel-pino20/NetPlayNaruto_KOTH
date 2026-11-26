@@ -79,9 +79,10 @@ AVATAR_RETRY = 30.0                                    # s ate tentar baixar de 
 # O que o usuario realmente escolhe (e e salvo em %APPDATA%). state_dir so aparece se a pasta do PCSX2 nao for achada
 # sozinha. A sessao do Discord NAO fica aqui: tem arquivo proprio (session.json).
 # (chaves antigas salvas no json, como "nick", "delay" ou "session", sao ignoradas por load_config)
-DEFAULTS = dict(mode="host", control="p1", room_id="", ignore_desync=False, state_dir="", lang="",
+DEFAULTS = dict(mode="host", control="p1", room_id="", ignore_desync=False, state_dir="", lang="", show_background=True,
                 hill_url="", hill_address="", hill_ticket="", hill_event_id="", hill_player_name="", hill_spectators=True,
-                zerotier_address="", zerotier_host="", zerotier_role="host")
+                zerotier_address="", zerotier_host="", zerotier_role="host", background_id="",
+                character_id="", character_version="")
 
 # Valores fixos (antes eram campos na tela).
 FIXED = dict(pine_slot="28011", save_slot="1", load_slot="9", auto_copy=True, auto_load=True, fetch_state=True)
@@ -352,7 +353,10 @@ def zerotier_args(cfg, action):
         if action == 'guest':
             return args + ['--bind-port', GUEST_BIND_PORT]
     if action == 'host':
-        return args + ['--port', HOST_PORT, '--no-announce', '--no-share-state']
+        args += ['--port', HOST_PORT, '--no-share-state']
+        if cfg.get('announce_zerotier') and not cfg.get('fixture'):
+            return args + ['--announce-zerotier', cfg['game']]
+        return args + ['--no-announce']
     host = ipv4(cfg.get('zerotier_host', ''))
     if host == address:
         raise ValueError(tr('zt.same_ip'))

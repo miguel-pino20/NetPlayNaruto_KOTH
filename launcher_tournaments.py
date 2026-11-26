@@ -7,7 +7,7 @@ import webbrowser
 from i18n import tr
 from koth_client import (TOURNAMENT_FORMATS, assigned_fixture, join_tournament, scheduled_tournaments,
                          site_url, tournament_bracket)
-from launcher_theme import MUTED, PANEL, TEXT, RoundFrame
+from launcher_theme import MUTED, PANEL, TEXT, PillButton, RoundFrame
 
 
 def fixture_slot(row, slot):
@@ -22,7 +22,7 @@ def fixture_slot(row, slot):
 
 
 class TournamentPanel(RoundFrame):
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, actions_parent):
         super().__init__(parent, radius=20, padx=16, pady=14, grow=True)
         self.app = app
         self.pool = ThreadPoolExecutor(max_workers=2)
@@ -37,7 +37,7 @@ class TournamentPanel(RoundFrame):
         self.checking_fixture = False
         self.inner.columnconfigure(0, weight=1)
         self.inner.rowconfigure(1, weight=1)
-        self.inner.rowconfigure(5, weight=3)
+        self.inner.rowconfigure(4, weight=3)
         # The rooms view uses tall rows for avatars. Tournament rows only contain text.
         from tkinter import font
         line = font.nametofont('TkDefaultFont').metrics('linespace')
@@ -46,27 +46,25 @@ class TournamentPanel(RoundFrame):
         bar.grid(row=0, column=0, sticky='ew')
         tk.Label(bar, text=tr('nav.tournaments'), bg=PANEL, fg=TEXT,
                  font=('Segoe UI', 14, 'bold')).pack(side='left')
-        ttk.Button(bar, text=tr('koth.refresh'), command=self.refresh).pack(side='right')
         self.listing = self.table(('#0', 'format', 'date', 'players', 'status'),
                                   ('koth.event', 'tourney.format', 'tourney.date', 'koth.players', 'koth.state'), row=1)
         self.listing.bind('<<TreeviewSelect>>', self.select)
-        buttons = tk.Frame(self.inner, bg=PANEL)
-        buttons.grid(row=2, column=0, sticky='ew', pady=3)
-        self.join = ttk.Button(buttons, text=tr('tourney.join'), command=self.enroll, state='disabled')
-        self.join.pack(side='left')
-        self.web = ttk.Button(buttons, text=tr('bracket.public'), command=self.public_page, state='disabled')
-        self.web.pack(side='left', padx=8)
+        self.actions = tk.Frame(actions_parent, bg=PANEL)
+        PillButton(self.actions, text=tr('koth.refresh'), command=self.refresh).pack(fill='x', pady=(0, 6))
+        self.join = PillButton(self.actions, text=tr('tourney.join'), command=self.enroll, state='disabled')
+        self.join.pack(fill='x', pady=(0, 6))
+        self.connect = PillButton(self.actions, text=tr('bracket.connect'), command=self.connect_my_match,
+                                  state='disabled')
+        self.connect.pack(fill='x', pady=(0, 6))
+        self.web = PillButton(self.actions, text=tr('bracket.public'), command=self.public_page, state='disabled')
+        self.web.pack(fill='x')
         self.notice = tk.Label(self.inner, bg=PANEL, fg=MUTED, anchor='w', wraplength=650)
-        self.notice.grid(row=3, column=0, sticky='ew')
+        self.notice.grid(row=2, column=0, sticky='ew')
         self.inner.bind('<Configure>', lambda e: self.notice.configure(wraplength=max(1, e.width)), add='+')
         tk.Label(self.inner, text=tr('bracket.title'), bg=PANEL, fg=TEXT, anchor='w',
-                 font=('Segoe UI', 11, 'bold')).grid(row=4, column=0, sticky='ew', pady=(4, 2))
+                 font=('Segoe UI', 11, 'bold')).grid(row=3, column=0, sticky='ew', pady=(4, 2))
         self.bracket = self.table(('#0', 'p1', 'score', 'p2', 'status'),
-                                  ('bracket.round', 'bracket.p1', 'bracket.score', 'bracket.p2', 'koth.state'), row=5)
-
-        self.connect = ttk.Button(buttons, text=tr('bracket.connect'), command=self.connect_my_match,
-                                  state='disabled')
-        self.connect.pack(side='left')
+                                  ('bracket.round', 'bracket.p1', 'bracket.score', 'bracket.p2', 'koth.state'), row=4)
 
     def sync_connect(self):
         event = self.selected()

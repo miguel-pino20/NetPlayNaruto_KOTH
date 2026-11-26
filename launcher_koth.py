@@ -4,25 +4,26 @@ import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+from appdata import DATA_DIR
 from discord_auth import AccountError
 from i18n import tr
-from koth_client import DEFAULT_URL, get_event, list_events, management_access, management_command, site_url
-from launcher_theme import ACCENT, BORDER, DIM, GREEN, MUTED, PANEL, RED, TEXT, RoundFrame
+from koth_client import DEFAULT_URL, MembershipStore, get_event, leave_casual, list_events, management_access, management_command
+from launcher_theme import ACCENT, BORDER, DIM, GREEN, MUTED, PANEL, RED, TEXT, PillButton, RoundFrame
 
 
 class KothPanel(RoundFrame):
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, sidebar):
         super().__init__(parent, radius=20, padx=16, pady=14, grow=True)
         self.app, self.events = app, {}
         ttk.Style(self).configure('Koth.Treeview', rowheight=30)
         self.loaded_url, self.last_event = None, None
+        self.events_error = ''
         self.busy, self.next_poll = False, 0
         self.admin_busy = False
+        self.leave_busy = False
         self.admin_access = {}
         self.access_key = None
         self.next_access_poll = 0
-        if not app.v['hill_url'].get().strip():
-            app.v['hill_url'].set(DEFAULT_URL)
         inner = self.inner
         self.title = tk.Label(inner, text=tr('koth.events'), bg=PANEL, fg=TEXT,
                               font=('Segoe UI', 14, 'bold'), anchor='w')
@@ -30,16 +31,20 @@ class KothPanel(RoundFrame):
         self.status = tk.Label(inner, text='', bg=PANEL, fg=MUTED, anchor='w', wraplength=620,
                                justify='left', font=('Segoe UI', 9))
         self.status.pack(fill='x', pady=(2, 8))
-        self.admin_button = ttk.Button(inner, text=tr('koth.manage'), command=self._admin_menu)
-        self.admin_button.pack(anchor='w', pady=(0, 8))
+        actions = tk.Frame(sidebar, bg=PANEL)
+        actions.pack(fill='x', pady=(10, 0))
+        for column in range(2):
+            actions.columnconfigure(column, weight=1, uniform='actions')
+        self.admin_button = PillButton(actions, text=tr('koth.manage'), command=self._admin_menu, style='Small.TButton')
+        self.admin_button.grid(row=0, column=0, sticky='ew', padx=(0, 4))
+        self.leave_button = PillButton(actions, text=tr('koth.leave'), command=self._leave_event, style='Small.TButton')
+        self.leave_button.grid(row=0, column=1, sticky='ew', padx=(4, 0))
+        self.leave_button.grid_remove()
         self.admin_menu = tk.Menu(self.admin_button, tearoff=False)
-        server = tk.Frame(inner, bg=PANEL)
-        self.server_row = server
-        server.pack(fill='x', pady=(0, 10))
-        self.url_entry = ttk.Entry(server, textvariable=app.v['hill_url'])
-        self.url_entry.pack(side='left', fill='x', expand=True)
-        ttk.Button(server, text=tr('koth.refresh'), command=self.refresh).pack(side='right', padx=(8, 0))
-        ttk.Button(server, text=tr('koth.watch'), command=app.watch_hill).pack(side='right', padx=(8, 0))
+        self.watch_button = PillButton(actions, text=tr('koth.watch'), command=app.watch_hill, style='Small.TButton')
+        self.watch_button.grid(row=1, column=0, sticky='ew', padx=(0, 4), pady=(6, 0))
+        self.refresh_button = PillButton(actions, text=tr('koth.refresh'), command=self.refresh, style='Small.TButton')
+        self.refresh_button.grid(row=1, column=1, sticky='ew', padx=(4, 0), pady=(6, 0))
 
         self.events_frame = tk.Frame(inner, bg=PANEL)
         self.events_frame.pack(fill='both', expand=True)
@@ -55,6 +60,13 @@ class KothPanel(RoundFrame):
         scrollbar.configure(command=self.tree.yview)
         scrollbar.pack(side='right', fill='y')
         self.tree.pack(fill='both', expand=True)
+        self.list_background = app._tree_preview(self.tree)
+
+        def scrolled(first, last):
+            scrollbar.set(first, last)
+            app._sync_tree_preview(self.list_background, self.tree)
+
+        self.tree.configure(yscrollcommand=scrolled)
         self.tree.bind('<<TreeviewSelect>>', self._select)
         self.tree.bind('<Double-1>', lambda event: app.start() if not app.backend.running else None)
 
@@ -111,7 +123,7 @@ class KothPanel(RoundFrame):
         menu = self.admin_menu
         menu.delete(0, 'end')
         connected = self._connected()
-        if not connected:
+        if not connected and self.app.koth_category.get() == 'casual':
             menu.add_command(label=tr('koth.casual_new'), command=self._create_casual)
         event = self.app.koth_live_event if connected else self.selected_event()
         if self._can_manage(event) and event['status'] != 'finished':
@@ -126,6 +138,8 @@ class KothPanel(RoundFrame):
                           self.admin_button.winfo_rooty() + self.admin_button.winfo_height())
 
     def _create_casual(self):
+        if self._connected() or self.app.koth_category.get() != 'casual':
+            return
         title = tr('koth.casual_new')
         url = self.app.v['hill_url'].get().strip()
         name = simpledialog.askstring(title, tr('koth.event'), parent=self)
@@ -147,6 +161,57 @@ class KothPanel(RoundFrame):
         prompt = tr('koth.casual_' + action)
         if messagebox.askokcancel(event['name'], prompt, parent=self):
             self._submit_management(url, body, event)
+
+    def _leave_target(self):
+        app = self.app
+        connected = self._connected()
+        event = app.koth_live_event if connected else self.selected_event()
+        if (not event or not event.get('casual') or event['status'] == 'finished'
+                or app._koth_pending or (connected and app.koth_observing)):
+            return None
+        url = app.v['hill_url'].get().strip()
+        session = app.backend.session
+        ticket = app.koth_live_ticket if connected else ''
+        if not session and not ticket:
+            ticket = MembershipStore(DATA_DIR / 'koth-memberships.json').stored_ticket(url, event['id'])
+        return (event, url, session, ticket) if session or ticket else None
+
+    def _update_leave(self):
+        if self._leave_target():
+            self.leave_button.grid()
+            self.leave_button.configure(state='disabled' if self.leave_busy else 'normal')
+        else:
+            self.leave_button.grid_remove()
+
+    def _leave_event(self):
+        target = self._leave_target()
+        if self.leave_busy or target is None:
+            return
+        event, url, session, ticket = target
+        if not messagebox.askokcancel(event['name'], tr('koth.leave_confirm'), parent=self):
+            return
+        proc = self.app.backend.proc if self._connected() else None
+        self.leave_busy = True
+        self._update_leave()
+
+        def finished(result, error):
+            self.leave_busy = False
+            app = self.app
+            if error is None and proc is not None and app.backend.proc is proc:
+                app.koth_live_event = result
+                app.stop()
+            if not self.winfo_exists():
+                return
+            if error is not None:
+                messagebox.showerror(tr('koth.leave'), error, parent=self)
+            elif url == app.v['hill_url'].get().strip():
+                self.events[str(event['id'])] = result
+                self.render_events()
+                self.display(app.koth_live_event)
+                self.refresh()
+            self._update_leave()
+
+        self.app._window_task(self.app, lambda: leave_casual(url, event['id'], session, ticket), finished)
 
     def _submit_management(self, url, body, event=None):
         if self.admin_busy:
@@ -174,7 +239,9 @@ class KothPanel(RoundFrame):
         if error:
             messagebox.showerror(tr('koth.manage'), error, parent=self)
         elif event_id is None and url == self.app.v['hill_url'].get().strip() and not self._connected():
-            self.tree.selection_remove(self.tree.selection())
+            self.app.koth_category.set('casual')
+            self.render_events()
+            self.tree.selection_remove(*self.tree.selection())
             self.app.v['hill_event_id'].set(str(result['id']))
             self.next_access_poll = 0
         self.refresh()
@@ -188,7 +255,11 @@ class KothPanel(RoundFrame):
             names = ' vs '.join(players[slot]['name'] for slot in ('player1', 'player2') if players.get(slot))
             self.preview.configure(text=names or tr('koth.pick'))
         if not self._connected():
+            if not selected:
+                self.app.koth_hint.configure(text=tr('koth.pick'))
+                self.preview.configure(text=tr('koth.pick'))
             self._update_player_cards(selected)
+        self._update_leave()
 
     def _can_manage(self, event):
         if not event or self.access_key != (self.app.v['hill_url'].get().strip(), self.app.backend.session):
@@ -246,16 +317,7 @@ class KothPanel(RoundFrame):
     def tick(self):
         if self.busy or time.monotonic() < self.next_poll:
             return
-        url = self.app.v['hill_url'].get().strip()
-        if not url:
-            return
-        try:
-            corrected = site_url(url)
-            if corrected != url:
-                self.app.v['hill_url'].set(corrected)
-                url = corrected
-        except ValueError:
-            pass
+        url = DEFAULT_URL
         self._poll_management_access(url)
         self.busy, self.next_poll = True, time.monotonic()+3
         live = getattr(self.app, 'koth_live_event', None)
@@ -279,51 +341,60 @@ class KothPanel(RoundFrame):
         if url != self.app.v['hill_url'].get().strip():
             self.next_poll = 0
             return
+        self.events_error = error
         if error:
             self.status.configure(text=error, fg=RED)
             return
         self.events = {str(event['id']): event for event in events}
         self.loaded_url = url
-        wanted = self.app.v['hill_event_id'].get()
-        old_ids = set(self.tree.get_children())
-        for key in old_ids-self.events.keys():
-            self.tree.delete(key)
-        for index, (key, event) in enumerate(self.events.items()):
-            values = (tr('koth.'+event['status']), f"{len(event['queue'])}/{event['max_participants']}", event['target_points'])
-            name = tr('koth.casual_label', name=event['name']) if event.get('casual') else event['name']
-            if key in old_ids:
-                self.tree.item(key, text=name, values=values)
-            else:
-                self.tree.insert('', 'end', iid=key, text=name, values=values)
-            self.tree.move(key, '', index)
-        if wanted in self.events and not self.tree.selection():
-            self.tree.selection_set(wanted)
         if detail:
             self.app.koth_live_event = detail
         self.display(detail or getattr(self.app, 'koth_live_event', None))
+        self.render_events()
+
+    def render_events(self):
+        casual = self.app.koth_category.get() == 'casual'
+        events = {key: event for key, event in self.events.items() if bool(event.get('casual')) == casual}
+        wanted = self.app.v['hill_event_id'].get()
+        old_ids = set(self.tree.get_children())
+        for key in old_ids - events.keys():
+            self.tree.delete(key)
+        for index, (key, event) in enumerate(events.items()):
+            values = (tr('koth.'+event['status']), f"{len(event['queue'])}/{event['max_participants']}", event['target_points'])
+            if key in old_ids:
+                self.tree.item(key, text=event['name'], values=values)
+            else:
+                self.tree.insert('', 'end', iid=key, text=event['name'], values=values)
+            self.tree.move(key, '', index)
+        if wanted in events and not self.tree.selection():
+            self.tree.selection_set(wanted)
         if not self._connected():
-            self.status.configure(text=tr('koth.event_count', n=len(events)), fg=MUTED)
+            self.status.configure(text=self.events_error or tr('koth.event_count', n=len(events)),
+                                  fg=RED if self.events_error else MUTED)
         self._select()
+        self.app._sync_tree_preview(self.list_background, self.tree)
 
     def _connected(self):
         return (self.app.backend.running and self.app.backend.session_role == 'hill') or getattr(self.app, '_koth_pending', False)
 
     def display(self, event=None, role=None, reason=None):
         connected = self._connected()
+        self._update_leave()
         if connected and role is None and reason is None:
             state = getattr(self.app, 'koth_live_state', {})
             if event and (state.get('event') or {}).get('id') == event['id']:
                 role, reason = state.get('role'), state.get('reason')
-        self.url_entry.configure(state='readonly' if connected else 'normal')
         if connected:
-            self.server_row.pack_forget()
+            self.watch_button.grid_remove()
+            self.refresh_button.grid_remove()
             self.events_frame.pack_forget()
             self.preview.pack_forget()
             self.board.pack(fill='both', expand=True)
         else:
             self.board.pack_forget()
+            self.watch_button.grid()
+            self.refresh_button.grid()
             self.events_frame.pack(fill='both', expand=True)
-            self.server_row.pack(fill='x', pady=(0, 10), before=self.events_frame)
             self.preview.pack(fill='x', pady=(8, 0))
         self._update_player_cards(event if connected else self.selected_event())
         self.title.configure(text=event['name'] if connected and event else tr('koth.events'))
