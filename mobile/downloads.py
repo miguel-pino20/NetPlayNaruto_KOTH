@@ -93,20 +93,22 @@ def publish_state(source, filename):
     return shared, True
 
 
-def download_state(directory, game, *, variant=None):
+def download_state(directory, game, *, variant=None, expected_state_tag=None):
     if __package__:
-        from .host import prepare_files
+        from .host import UN6_STATE_SLOTS, prepare_files
     else:
-        from host import prepare_files
+        from host import UN6_STATE_SLOTS, prepare_files
+    options = {'expected_state_tag': expected_state_tag} if expected_state_tag is not None else {}
     if game == 'un6' and variant:
         from pathlib import Path
-        state, _ = prepare_files(Path(directory) / 'export', game, variant=variant)
+        state, _ = prepare_files(Path(directory) / 'export', game, variant=variant, **options)
         name = f'UN6-Netplay-{variant}.p2s'
     else:
-        state, _ = prepare_files(directory, game)
+        state, _ = prepare_files(directory, game, **options)
         name = game.upper() + '-Netplay.p2s'
     folder, changed = publish_state(state, name)
     message = tr('Estado guardado: {path}') if changed else tr('Estado existente verificado: {path}')
-    return tr(message, path=folder + '/' + name) + tr(
-        '\nCárgalo o cópialo en ARMSX2 por tu cuenta. Netplay usa el slot 1; '
-        'este botón no modifica el emulador.')
+    slot = 1 if game == 'un5' else UN6_STATE_SLOTS.get(variant)
+    instructions = tr('Instálalo en el slot {slot} de ARMSX2.', slot=slot) if slot else tr(
+        'Instálalo en el slot que corresponda a su variante en ARMSX2.')
+    return tr(message, path=folder + '/' + name) + '\n' + instructions + ' ' + tr('La descarga no modifica el emulador.')

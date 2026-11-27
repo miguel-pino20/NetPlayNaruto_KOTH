@@ -18,6 +18,7 @@ import threading
 
 MAGIC = b'UN5S'
 QUERY = b'UN5Q'
+ROOM_QUERY = b'UN5D'
 HEADER = struct.Struct('<4sB16sQ')
 NO_TAG = b'-' * 16
 CHUNK = 1 << 16
@@ -55,6 +56,7 @@ class StateServer:
         self.tag = file_tag(path)
         self.size = os.path.getsize(path)
         self.metadata_only = metadata_only
+        self.room_advertisement = None
         self.served = 0
         self._stop = threading.Event()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -83,6 +85,12 @@ class StateServer:
         try:
             conn.settimeout(15)
             req = _recv_exact(conn, 20)
+            if req[:4] == ROOM_QUERY:
+                advertisement = self.room_advertisement
+                if advertisement and req[4:] == advertisement[0]:
+                    payload = advertisement[1]
+                    conn.sendall(len(payload).to_bytes(2, 'big') + payload)
+                return
             if req[:4] == QUERY:
                 conn.sendall(HEADER.pack(MAGIC, 0, self.tag.encode('ascii'), 0))
                 return
@@ -129,6 +137,16 @@ def advertised_tag(host, port):
             return tag.decode('ascii')
     except OSError as error:
         raise StateError(str(error)) from None
+
+
+def advertised_room(host, port, local_address, session, maximum):
+    """Confirm a specific room through the selected VPN instead of trusting the rendezvous list."""
+    with socket.create_connection((host, port), timeout=1.2, source_address=(local_address, 0)) as sock:
+        sock.sendall(ROOM_QUERY + bytes.fromhex(session))
+        length = int.from_bytes(_recv_exact(sock, 2), 'big')
+        if not 0 < length <= maximum:
+            raise StateError('invalid room announcement')
+        return _recv_exact(sock, length)
 
 
 def fetch(host, port, dest, have_tag=None, say=print):

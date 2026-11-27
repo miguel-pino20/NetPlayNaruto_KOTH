@@ -3,8 +3,10 @@ import hashlib
 import os
 import sys
 import time
+from unicodedata import combining, normalize
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from weakref import WeakKeyDictionary
 
 os.environ.setdefault('KIVY_NO_ARGS', '1')
@@ -28,17 +30,21 @@ from release_info import VERSION
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.uix.togglebutton import ToggleButton
-from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
+from kivy.uix.screenmanager import NoTransition, Screen, ScreenManager
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.gridlayout import GridLayout
+from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.uix.spinner import Spinner
 from kivy.uix.switch import Switch
 from kivy.utils import platform
-from mobile_locale import LANGUAGES, set_language, tr
-from backend import configure_storage, https_url, validate_address, pine_diagnostics, load_preferences, make_account
+from mobile_locale import HELP_GUIDES, LANGUAGES, set_language, tr
+from backend import (active_events, appearance_store, cache_appearance, configure_storage, discover_zerotier_rooms, event_match, history_portraits,
+                     https_url, load_preferences, make_account, owned_appearance, pine_diagnostics,
+                     resolve_zerotier_host, validate_address, zerotier_prefix)
 
 
 class MobileApp(App):
     title = 'Naruto Netplay · ' + VERSION
-    # Elementos Directo / ZeroTier
     def build(self):
         configure_storage(self.user_data_dir)
         if platform == 'android':
@@ -59,10 +65,17 @@ class MobileApp(App):
         from appdata import DATA_DIR
         self.prefs_path = DATA_DIR / 'mobile.json'
         self.prefs = load_preferences(self.prefs_path)
+        from koth_client import DEFAULT_URL
+        saved_server = self.prefs.get('koth_url')
+        try:
+            self.koth_url = https_url(saved_server) if isinstance(saved_server, str) and saved_server.strip() else DEFAULT_URL
+        except ValueError:
+            self.koth_url = DEFAULT_URL
         self.language = set_language(self.prefs.get('language'))
         self.localized_widgets = WeakKeyDictionary()
         self.changing_language = False
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='mobile-api')
+        self.store_preview_worker = ThreadPoolExecutor(max_workers=3, thread_name_prefix='store-preview')
         self.busy = False
         self.closed = False
         self.auth_timer = None
@@ -73,15 +86,48 @@ class MobileApp(App):
         self.inputs = {}
         self.host_ip = None
         root = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
-        brand = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(10))
-        brand.add_widget(Image(source=str(Path(__file__).with_name('un5-netplay.png')),
-                               size_hint_x=None, width=dp(52)))
-        brand.add_widget(self.label('NARUTO NETPLAY', 52, 20))
+        shell = FloatLayout()
+        self.backdrop = Image(fit_mode='cover')
+        shell.add_widget(self.backdrop)
+        with root.canvas.before:
+            Color(.045, .067, .12, .79)
+            shade = Rectangle()
+        root.bind(pos=lambda _, value: setattr(shade, 'pos', value),
+                  size=lambda _, value: setattr(shade, 'size', value))
+        shell.add_widget(root)
+
+        brand = BoxLayout(size_hint_y=None, height=dp(78), spacing=dp(8))
+        brand.add_widget(self.label('NARUTO NETPLAY', 78, 19))
+        self.button(brand, 'ARMSX2', self.open_emulator).size_hint_x = .45
+        self.character_art = Image(fit_mode='contain', size_hint_x=.55)
+        brand.add_widget(self.character_art)
         root.add_widget(brand)
-        root.add_widget(self.label('Base Android · PINE / ZeroTier / KOTH', 26))
-        tabs = TabbedPanel(do_default_tab=False, tab_width=dp(88))
-        tabs.bind(width=lambda panel, width: setattr(panel, 'tab_width', min(dp(88), width / 6)))
-        self.connection = self.page(tabs, 'Conexión')
+        tabs = self.sections = ScreenManager(transition=NoTransition())
+        self.connection = self.page(tabs, 'settings')
+        self.label_in(self.connection, 'Ajustes', 24)
+        self.label_in(self.connection, 'Cuenta Discord', 20, 36)
+        self.account_label = self.label_in(self.connection, 'Sin sesión verificada', 17, 42)
+        self.login_button = self.button(self.connection, 'Iniciar sesión con Discord', self.login)
+        self.button(self.connection, 'Cancelar login', self.cancel_login)
+        self.button(self.connection, 'Cerrar sesión', self.logout)
+        self.button(self.connection, 'Abrir tienda de fondos y personajes', self.open_store)
+        saved_appearance = self.prefs.get('store_appearance')
+        self.store_appearance = saved_appearance if isinstance(saved_appearance, dict) else {}
+        self.collection_owner = None
+        self.collection_loaded = False
+        self.appearance_pickers = {}
+        self.collection_note = self.label_in(self.connection, 'Inicia sesión con Discord para ver tu colección.', 14, 44)
+        self.collection_button = self.button(self.connection, 'Actualizar colección de la tienda', self.refresh_collection)
+        self.collection_button.disabled = True
+        self.background_picker = self.appearance_picker(self.connection, 'Fondo', 'background', {
+            'Sin imagen': '', 'Naruto Uzumaki': 'naruto', 'Sasuke Uchiha': 'sasuke',
+            'Kakashi Hatake': 'kakashi', 'Shikamaru Nara': 'shikamaru',
+        }, 'sasuke')
+        self.character_picker = self.appearance_picker(self.connection, 'Personaje', 'character', {
+            'Sin personaje': '', 'Naruto Uzumaki': 'naruto', 'Sasuke Uchiha': 'sasuke',
+            'Kakashi Hatake': 'kakashi',
+        }, 'sasuke')
+        tabs.get_screen('settings').bind(on_enter=lambda *_: self.open_collection())
         self.available_release = None
         row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
         row.add_widget(self.label('Idioma', 48, 16))
@@ -104,15 +150,34 @@ class MobileApp(App):
         self.export_game = Spinner(text=self.prefs.get('game', 'un6'), values=('un5', 'un6'),
                                    size_hint_y=None, height=dp(48))
         self.connection.add_widget(self.export_game)
+        self.export_variants = {
+            'Original · Slot 1': 'original', 'Personajes transformados · Slot 2': 'transformed',
+            'Volumen al 20 % · Slot 3': 'audio20',
+        }
+        self.export_variant = Spinner(size_hint_y=None, height=dp(48))
+        self.connection.add_widget(self.export_variant)
+        self.export_game.bind(text=self.update_export_options)
+        self.update_export_options()
         self.button(self.connection, 'Descargar estado en Descargas', self.export_state)
         self.label_in(self.connection, 'Se guarda en Descargas/NarutoNetplay. '
                       'Debes pasarlo a ARMSX2 por tu cuenta.', 14, 80)
-        self.label_in(self.connection, 'Para ZeroTier, instala el estado actualizado en el slot 1 de ARMSX2.', 14, 60)
+        self.label_in(self.connection, 'UN6: Original en el slot 1, Personajes transformados en el slot 2 y Volumen al 20 % en el slot 3. UN5 usa el slot 1.', 14, 78)
         self.label_in(self.connection, 'ZeroTier')
         self.field(self.connection, 'zt_address', 'Tu IPv4 de ZeroTier', '')
         self.button(self.connection, 'Guardar configuración', self.save_connection)
-        self.label_in(self.connection, 'Conecta y autoriza la red desde ZeroTier.\nEl host experimental se inicia en la pestaña Host P1.', 14, 92)
-        host = self.page(tabs, 'Host P1')
+        self.label_in(self.connection, 'Conecta y autoriza la red desde ZeroTier.\nPuedes crear una sala desde Partida → Host P1.', 14, 80)
+        play = Screen(name='play')
+        tabs.add_widget(play)
+        play_layout = BoxLayout(orientation='vertical', spacing=dp(6))
+        play.add_widget(play_layout)
+        play_layout.add_widget(self.label('Partida en línea', 40, 24))
+        roles = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+        self.match_roles = ScreenManager(transition=NoTransition())
+        for key, label in (('host', 'Host P1'), ('guest', 'Cliente P2')):
+            self.nav_button(roles, self.match_roles, key, label)
+        play_layout.add_widget(roles)
+        play_layout.add_widget(self.match_roles)
+        host = self.page(self.match_roles, 'host')
         self.game = Spinner(text=self.prefs.get('game', 'un6'), values=('un5', 'un6'),
                             size_hint_y=None, height=dp(48))
         host.add_widget(self.game)
@@ -123,14 +188,14 @@ class MobileApp(App):
         self.overlay = Switch(active=bool(self.prefs.get('overlay', True)), size_hint_x=0.3)
         row.add_widget(self.overlay)
         host.add_widget(row)
-        self.button(host, 'Crear partida como jugador 1', self.start_host)
+        self.button(host, 'Crear partida como jugador 1', self.start_host).background_color = (.22, .39, .78, 1)
         self.button(host, 'Detener partida', self.stop_host)
         self.button(host, 'Volver a ARMSX2', self.open_emulator)
         self.host_status = self.label_in(host, 'Host detenido.', 14, 160)
-        self.label_in(host, 'El slot 1 de ARMSX2 debe contener el estado compartido preparado.\n'
+        self.label_in(host, 'Instala el estado compartido en el slot que indica Ayuda.\n'
                       'La app descarga una copia privada, pero no puede instalarla en ARMSX2 automáticamente.\n'
                       'Servidor UN5: la sala aparece en PC. Directo/ZeroTier: P2 conecta a tu IP, UDP 47400.', 14, 160)
-        client = self.page(tabs, 'Cliente P2')
+        client = self.page(self.match_roles, 'guest')
         self.client_game = Spinner(text=self.prefs.get('client_game', self.game.text), values=('un5', 'un6'),
                                    size_hint_y=None, height=dp(48))
         client.add_widget(self.client_game)
@@ -141,11 +206,16 @@ class MobileApp(App):
         client.add_widget(self.transport_container)
         self.direct_box = BoxLayout(orientation='vertical', spacing=dp(10), size_hint_y=None)
         self.direct_box.bind(minimum_height=self.direct_box.setter('height'))
-        self.label_in(self.direct_box, 'IPv4 del host P1 · puerto 47400', 14, 32)
+        self.button(self.direct_box, 'Buscar salas ZeroTier', self.refresh_zerotier_rooms)
+        self.zerotier_rooms_box = self.tournament_column(self.direct_box)
+        self.ip_label = self.label_in(self.direct_box, 'IPv4 del anfitrión', 14, 42)
         self.host_ip = TextInput(text=self.prefs.get('guest_host', ''),
                                  multiline=False, size_hint_y=None, height=dp(48))
-        self.set_text(self.host_ip, 'IP del host', property_name='hint_text')
+        self.inputs['zt_address'].bind(text=self.update_host_ip_hint)
+        self.update_host_ip_hint()
         self.direct_box.add_widget(self.host_ip)
+        self.button(self.direct_box, 'Conectar por IP', self.start_client).background_color = (.22, .39, .78, 1)
+        self.button(self.direct_box, 'Descargar estado del anfitrión', self.export_zerotier_guest_state)
         self.server_box = BoxLayout(orientation='vertical', spacing=dp(10), size_hint_y=None)
         self.server_box.bind(minimum_height=self.server_box.setter('height'))
         self.button(self.server_box, 'Actualizar salas UN5', self.refresh_rooms)
@@ -156,16 +226,19 @@ class MobileApp(App):
         self.server_box.add_widget(self.rooms_box)
         self.client_transport.bind(text=self.on_transport_change)
         self.on_transport_change(self.client_transport, self.client_transport.text)
-        self.button(client, 'Conectar como jugador 2', self.start_client)
+        self.button(self.server_box, 'Conectar como jugador 2', self.start_client)
         self.button(client, 'Desconectar', self.stop_host)
         self.button(client, 'Volver a ARMSX2', self.open_emulator)
         self.client_status = self.label_in(client, 'Sin conexión.', 14, 150)
         self.label_in(client, 'Usa tus controles locales del mando 1: netplay los asigna al jugador 2. '
                       'Ambos puertos virtuales se preparan como DualShock 2.', 14, 100)
-        client.bind(on_release=lambda *_: self.refresh_rooms() if self.transport_mode(self.client_transport) == 'server' and not self.busy else None)
+        self.match_roles.get_screen('guest').bind(on_enter=lambda *_: self.open_client_role())
 
-        koth = self.page(tabs, 'KOTH')
-        self.field(koth, 'koth_url', 'Servidor KOTH (HTTPS)', 'https://narutimateonline.servegame.com')
+        koth = self.page(tabs, 'koth')
+        self.koth_category = self.event_categories(koth, 'casual', self.render_koth_events)
+        self.koth_events = []
+        saved_koth_game = self.prefs.get('koth_game')
+        self.koth_default_game = saved_koth_game if saved_koth_game in ('un5', 'un6') else self.game.text
         self.button(koth, 'Actualizar eventos', self.list_events)
         self.koth_create = self.button(koth, 'Crear evento casual', self.create_casual)
         self.koth_owner_scope = None
@@ -177,9 +250,7 @@ class MobileApp(App):
         self.koth_events_box.bind(minimum_height=self.koth_events_box.setter('height'))
         self.label_in(self.koth_events_box, 'Pulsa Actualizar eventos para buscar eventos KOTH.', 14, 50)
         koth.add_widget(self.koth_events_box)
-        self.koth_game = Spinner(text=self.prefs.get('koth_game', self.game.text), values=('un5', 'un6'),
-                                 size_hint_y=None, height=dp(48))
-        koth.add_widget(self.koth_game)
+        self.koth_match_label = self.label_in(koth, '', 14, 36)
         self.label_in(koth, 'Red del combate', 14, 40)
         self.koth_network = Spinner(text='Netplay' if self.prefs.get('koth_transport') == 'relay' else 'ZeroTier',
                                     values=('ZeroTier', 'Netplay'), size_hint_y=None, height=dp(48))
@@ -191,9 +262,10 @@ class MobileApp(App):
         self.button(koth, 'Desconectar de KOTH', self.stop_koth)
         self.koth_status = self.label_in(koth, 'KOTH desconectado.', 14, 110)
         self.koth_info = self.label_in(koth, '', 14, 92)
-        self.inputs['koth_url'].bind(text=self.refresh_koth_entry)
         self.refresh_koth_entry()
-        tournaments = self.page(tabs, 'Torneos')
+        tournaments = self.page(tabs, 'tournaments')
+        self.tournament_category = self.event_categories(tournaments, 'official', self.render_tournaments)
+        self.tournament_catalog = []
         self.button(tournaments, 'Actualizar torneos', self.open_tournaments)
         self.tournament_events = self.tournament_column(tournaments)
         self.tournament_details = self.tournament_column(tournaments)
@@ -201,23 +273,72 @@ class MobileApp(App):
         self.button(tournaments, 'Detener partida', self.stop_host)
         self.button(tournaments, 'Volver a ARMSX2', self.open_emulator)
         self.tournament_status = self.label_in(tournaments, 'Sin conexión.', 14, 110)
-        self.inputs['koth_url'].bind(text=self.clear_tournaments)
-        account = self.page(tabs, 'Discord')
-        self.account_label = self.label_in(account, 'Sin sesión verificada', 17, 70)
-        self.login_button = self.button(account, 'Iniciar sesión con Discord', self.login)
-        self.button(account, 'Cancelar login', self.cancel_login)
-        self.button(account, 'Cerrar sesión', self.logout)
-        self.label_in(account, 'El login abre el navegador y usa el servidor existente.\nLa sesión se guarda en los datos privados de esta app.\nNunca se incluye el secreto de Discord en el APK.', 14, 125)
+        history = self.page(tabs, 'history')
+        self.label_in(history, 'Historial de peleas', 24)
+        self.button(history, 'Actualizar historial', lambda: self.load_history(1))
+        self.history_rows = self.tournament_column(history)
+        history_nav = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+        self.history_page = 1
+        self.history_previous = self.button(history_nav, 'Anterior', lambda: self.load_history(self.history_page - 1))
+        self.history_next = self.button(history_nav, 'Siguiente', lambda: self.load_history(self.history_page + 1))
+        history.add_widget(history_nav)
+        self.reset_history()
+        tabs.get_screen('history').bind(on_enter=lambda *_: self.load_history(1))
+
+        help_page = self.page(tabs, 'help')
+        self.label_in(help_page, 'Ayuda', 24)
+        for title, steps in HELP_GUIDES:
+            guide = self.rounded_panel((.09, .14, .23, .98), padding=12)
+            self.wrapped_label(guide, title, size=17, bold=True)
+            for number, step in enumerate(steps, 1):
+                label = self.wrapped_label(guide, '')
+                self.set_text(label, step, number=number)
+            help_page.add_widget(guide)
+        self.label_in(help_page, 'Cuenta Discord', 20, 36)
+        self.label_in(help_page, 'El inicio de sesión abre el navegador. Vuelve a Netplay cuando termines.', 14, 68)
+        self.button(help_page, 'Abrir cuenta Discord en Ajustes', self.open_account_settings)
+        store = self.page(tabs, 'store')
+        self.label_in(store, 'Tienda', 24)
+        self.button(store, 'Volver a Ajustes', self.open_account_settings)
+        category = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+        self.button(category, 'Fondos', lambda: self.load_store('background'))
+        self.button(category, 'Personajes', lambda: self.load_store('character'))
+        store.add_widget(category)
+        self.store_balance = self.label_in(store, '', 16, 40)
+        self.store_search = TextInput(multiline=False, size_hint_y=None, height=dp(48), font_size=dp(16))
+        self.set_text(self.store_search, 'Buscar por nombre', property_name='hint_text')
+        store.add_widget(self.store_search)
+        self.store_rows = self.tournament_column(store)
+        self.store_data = None
+        self.store_previews = []
+        self.store_preview_pending = 0
+        self.store_scroll = store.parent
+        self.refresh_store_cards = Clock.create_trigger(self.render_store_cards, .15)
+        self.refresh_store_previews = Clock.create_trigger(self.load_visible_store_previews)
+        self.store_search.bind(text=self.refresh_store_cards)
+        self.store_scroll.bind(scroll_y=self.refresh_store_previews, size=self.refresh_store_previews)
+        tabs.get_screen('store').bind(on_enter=self.refresh_store_previews)
+        tabs.current = 'play'
         root.add_widget(tabs)
-        self.status = self.label('Listo. Activa PINE en ARMSX2 antes de probar.', 140)
-        root.add_widget(self.status)
+        self.status = Label(size_hint_y=None, height=dp(56), font_size=dp(13), halign='left', valign='middle')
+        self.set_text(self.status, 'Listo. Activa PINE en ARMSX2 antes de probar.')
+        status_scroll = ScrollView(size_hint_y=None, height=dp(56))
+        self.status.bind(width=lambda widget, value: setattr(widget, 'text_size', (value, None)),
+                         texture_size=lambda widget, value: setattr(widget, 'height', max(dp(56), value[1])))
+        status_scroll.add_widget(self.status)
+        root.add_widget(status_scroll)
+        navigation = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(3))
+        for key, label in (('play', 'Partida'), ('koth', 'KOTH'), ('tournaments', 'Torneos'),
+                           ('history', 'Historial'), ('settings', 'Ajustes'), ('help', 'Ayuda')):
+            self.nav_button(navigation, tabs, key, label)
+        root.add_widget(navigation)
         if self.account.session:
             self.account.acct_restore()
             self.watch_account()
         self.watch_host()
         if platform == 'android':
             Clock.schedule_once(lambda _: self.check_updates(automatic=True), 2)
-        return root
+        return shell
 
     def label(self, text, height=48, size=14):
         widget = Label(size_hint_y=None, height=dp(height), font_size=dp(size),
@@ -232,8 +353,7 @@ class MobileApp(App):
         return widget
 
     def page(self, tabs, title):
-        tab = TabbedPanelItem()
-        self.set_text(tab, title)
+        tab = Screen(name=title)
         scroll = ScrollView()
         content = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(10), padding=dp(8))
         content.bind(minimum_height=content.setter('height'))
@@ -241,6 +361,444 @@ class MobileApp(App):
         tab.add_widget(scroll)
         tabs.add_widget(tab)
         return content
+
+    def nav_button(self, parent, manager, key, label):
+        button = self.button(parent, label, lambda: setattr(manager, 'current', key))
+        button.font_size = dp(12)
+        button.bind(size=lambda widget, size: setattr(widget, 'text_size', (size[0] - dp(4), size[1])))
+
+        def highlight(*_):
+            selected = manager.current == key or (key == 'settings' and manager.current == 'store')
+            button.background_color = (.22, .39, .78, 1) if selected else (.10, .15, .25, 1)
+
+        manager.bind(current=highlight)
+        highlight()
+
+    def open_account_settings(self):
+        self.connection.parent.scroll_y = 1
+        self.sections.current = 'settings'
+
+    def open_store(self):
+        if not self.appearance_owner():
+            self.say('Inicia sesión con Discord para abrir la tienda.')
+            return
+        if self.busy:
+            self.say('Espera a que termine la consulta actual.')
+            return
+        self.sections.current = 'store'
+        self.load_store('background')
+
+    def load_store(self, preference):
+        owner, session = self.appearance_owner(), self.account.session
+        if not owner or self.busy:
+            return
+        self.store_data = None
+        self.store_previews.clear()
+        self.store_rows.clear_widgets()
+        self.set_text(self.store_balance, 'Consultando…')
+
+        def show(data):
+            if owner != self.appearance_owner() or session != self.account.session or self.sections.current != 'store':
+                return
+            self.render_store(preference, data)
+
+        self.run_job(lambda: appearance_store(session, preference), show)
+
+    def render_store(self, preference, data):
+        self.store_data = preference, data
+        self.set_text(self.store_balance, 'Saldo: {points} puntos', points=data['balance'])
+        self.render_store_cards()
+
+    @staticmethod
+    def store_search_key(value):
+        return ''.join(char for char in normalize('NFKD', value.casefold()) if not combining(char))
+
+    def render_store_cards(self, *_):
+        if self.store_data is None:
+            return
+        preference, data = self.store_data
+        self.store_rows.clear_widgets()
+        self.store_previews = []
+        self.store_scroll.scroll_y = 1
+        self.button(self.store_rows, 'Actualizar tienda', lambda: self.load_store(preference))
+        if not data['items']:
+            self.label_in(self.store_rows, 'No hay artículos disponibles.', 14, 48)
+            return
+        query = self.store_search_key(self.store_search.text.strip())
+        items = [item for item in data['items'] if query in self.store_search_key(item['name'])]
+        if not items:
+            self.label_in(self.store_rows, 'No se encontraron artículos con ese nombre.', 14, 48)
+            return
+        grid = GridLayout(cols=2, spacing=dp(8), size_hint_y=None, row_default_height=dp(218), row_force_default=True)
+        grid.bind(minimum_height=grid.setter('height'))
+        grid.bind(pos=self.refresh_store_previews, size=self.refresh_store_previews)
+        self.store_rows.add_widget(grid)
+        for item in items:
+            cost = tr('En tu colección') if item['owned'] else tr('Gratis') if item['price'] == 0 else tr('{points} puntos', points=item['price'])
+            card = self.rounded_panel((.09, .14, .23, .98), padding=8, height=218)
+            grid.add_widget(card)
+            preview = FloatLayout()
+            image = Image(fit_mode='contain', pos_hint={'x': 0, 'y': 0})
+            placeholder = Label(font_size=dp(12), color=(.73, .79, .91, 1), pos_hint={'x': 0, 'y': 0})
+            self.set_text(placeholder, 'Vista previa')
+            preview.add_widget(placeholder)
+            preview.add_widget(image)
+            card.add_widget(preview)
+            self.store_previews.append((item, image, placeholder))
+            name = self.wrapped_label(card, item['name'], bold=True)
+            name.max_lines = 2
+            self.wrapped_label(card, cost, size=13, color=(.73, .79, .91, 1))
+            self.button(card, 'Ver artículo', lambda item=item: self.show_store_item(preference, item, data))
+        self.refresh_store_previews()
+
+    def load_visible_store_previews(self, *_):
+        owner, session = self.appearance_owner(), self.account.session
+        if self.closed or not owner or self.store_data is None or self.sections.current != 'store':
+            return
+        preference, _ = self.store_data
+        previews = self.store_previews
+        content = self.store_rows.parent
+        bottom = content.y + max(0, content.height - self.store_scroll.height) * self.store_scroll.scroll_y
+        top = bottom + self.store_scroll.height
+        for item, image, placeholder in previews:
+            if self.store_preview_pending >= 3:
+                break
+            if not placeholder.opacity or not bottom - dp(70) <= image.parent.center_y <= top + dp(70):
+                continue
+            if getattr(image, 'preview_requested', False):
+                continue
+            image.preview_requested = True
+            self.store_preview_pending += 1
+            future = self.store_preview_worker.submit(cache_appearance, self.user_data_dir, owner, preference, item, session)
+
+            def finish(_, job=future, target=image, message=placeholder):
+                self.store_preview_pending -= 1
+                if self.closed:
+                    return
+                if previews is self.store_previews and owner == self.appearance_owner() and session == self.account.session:
+                    try:
+                        target.source = str(job.result())
+                    except (OSError, ValueError):
+                        self.set_text(message, 'Vista previa no disponible')
+                    else:
+                        message.opacity = 0
+                self.refresh_store_previews()
+
+            future.add_done_callback(lambda _, done=finish: Clock.schedule_once(done))
+
+    def show_store_item(self, preference, item, data):
+        owner, session = self.appearance_owner(), self.account.session
+        if not owner or self.busy:
+            return
+
+        def fetch():
+            try:
+                return cache_appearance(self.user_data_dir, owner, preference, item, session)
+            except (OSError, ValueError):
+                return None
+
+        def show(path):
+            if owner != self.appearance_owner() or session != self.account.session or self.sections.current != 'store':
+                return
+            content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
+            dialog = Popup(title=item['name'], content=content, size_hint=(.92, None),
+                           height=dp(350 if path else 240))
+            if path:
+                content.add_widget(Image(source=str(path), fit_mode='contain'))
+            if item['owned']:
+                self.button(content, 'Usar', lambda: (dialog.dismiss(), self.use_store_item(preference, item)))
+            elif item['price'] > data['balance']:
+                self.label_in(content, 'Puntos insuficientes.', 14, 40)
+            else:
+                price = self.label_in(content, '', 14, 40)
+                self.set_text(price, 'Precio: {points} puntos', points=item['price'])
+                self.button(content, 'Confirmar compra' if item['price'] else 'Añadir a mi colección',
+                            lambda: (dialog.dismiss(), self.purchase_store_item(preference, item, data)))
+            self.button(content, 'Cerrar', dialog.dismiss)
+            dialog.open()
+
+        self.run_job(fetch, show)
+
+    def remember_store_item(self, preference, item):
+        owner = self.appearance_owner()
+        if self.collection_owner not in (None, owner):
+            self.reset_collection()
+        self.collection_owner = owner
+        picker = self.appearance_pickers[preference]
+        label = self.store_item_label(item)
+        picker.items[label] = item
+        picker.values = (*picker.local_choices, *picker.items)
+        return picker, label
+
+    def use_store_item(self, preference, item):
+        if self.appearance_owner():
+            picker, label = self.remember_store_item(preference, item)
+            picker.text = label
+
+    def purchase_store_item(self, preference, item, data):
+        from discord_auth import AccountError
+
+        owner, session = self.appearance_owner(), self.account.session
+        if not owner:
+            return
+
+        def purchase():
+            try:
+                return appearance_store(session, preference, item=item)
+            except AccountError as error:
+                if str(error) == 'price_changed':
+                    raise ValueError(tr('El precio cambió. Actualiza la tienda antes de comprar.')) from None
+                if str(error) == 'insufficient_balance':
+                    raise ValueError(tr('Puntos insuficientes.')) from None
+                raise
+
+        def show(result):
+            if owner != self.appearance_owner() or session != self.account.session:
+                return
+            data['balance'], item['owned'] = result['balance'], True
+            self.remember_store_item(preference, item)
+            if self.sections.current == 'store':
+                self.render_store(preference, data)
+            self.say('Artículo añadido a tu colección.')
+
+        self.run_job(purchase, show)
+
+    def appearance_picker(self, parent, title, preference, choices, default):
+        self.label_in(parent, title, 14, 28)
+        names = {value: name for name, value in choices.items()}
+        picker = Spinner(text=names.get(self.prefs.get(preference), names[default]),
+                         values=tuple(choices), size_hint_y=None, height=dp(48))
+        picker.preference, picker.local_choices = preference, choices
+        picker.items = {}
+        picker.selection_revision = 0
+        picker.local_selection = picker.applied = picker.text
+        picker.bind(text=self.select_appearance)
+        self.appearance_pickers[preference] = picker
+        parent.add_widget(picker)
+        self.apply_appearance(picker, picker.applied)
+        return picker
+
+    def appearance_owner(self):
+        account_id = (self.account.account or {}).get('id')
+        return str(account_id) if self.discord_verified and self.account.session and account_id else None
+
+    def appearance_preferences(self, owner):
+        selected = self.store_appearance.get(owner)
+        if not isinstance(selected, dict):
+            selected = {}
+            self.store_appearance[owner] = selected
+        return selected
+
+    @staticmethod
+    def store_item_label(item):
+        return f"{item['name']} · {tr('Tienda')} #{item['id']}"
+
+    def apply_appearance(self, picker, label, path=None):
+        picker.applied = picker.text = label
+        image = self.backdrop if picker.preference == 'background' else self.character_art
+        if path is None:
+            selection = picker.local_choices[label]
+            assets = ROOT / 'assets' if (ROOT / 'pine.py').is_file() else Path(__file__).with_name('assets')
+            if picker.preference == 'background':
+                path = assets / 'background' / 'characters' / (selection + '.jpg') if selection else None
+            elif selection == 'naruto':
+                path = assets / 'naruto_mascot.png'
+            elif selection:
+                path = assets / 'characters' / (selection + '.png')
+        image.source = str(path) if path else ''
+
+    def select_appearance(self, picker, label):
+        if label == picker.applied:
+            return
+        if label not in picker.local_choices and self.busy:
+            picker.text = picker.applied
+            self.say('Espera a que termine la consulta actual.')
+            return
+        picker.selection_revision += 1
+        revision = picker.selection_revision
+        owner = self.appearance_owner()
+        preference = picker.preference
+        if label in picker.local_choices:
+            picker.local_selection = label
+            self.apply_appearance(picker, label)
+            if owner:
+                self.appearance_preferences(owner).pop(preference, None)
+            self.persist()
+            return
+        picker.text = picker.applied
+        item = picker.items.get(label)
+        if not item or not owner or owner != self.collection_owner:
+            return
+        session = self.account.session
+
+        def show(path):
+            if (revision != picker.selection_revision or owner != self.appearance_owner() or session != self.account.session
+                    or picker.items.get(label) != item):
+                return
+            self.apply_appearance(picker, label, path)
+            self.appearance_preferences(owner)[preference] = str(item['id'])
+            self.persist()
+            self.say('Apariencia aplicada.')
+
+        self.run_job(lambda: cache_appearance(self.user_data_dir, owner, preference, item, session), show)
+
+    def reset_collection(self):
+        self.collection_owner = None
+        self.collection_loaded = False
+        for picker in self.appearance_pickers.values():
+            picker.items = {}
+            self.apply_appearance(picker, picker.local_selection)
+            picker.values = tuple(picker.local_choices)
+        self.collection_button.disabled = self.appearance_owner() is None
+        self.set_text(self.collection_note, 'Inicia sesión con Discord para ver tu colección.'
+                      if self.collection_button.disabled else 'Actualiza para ver tus fondos y personajes.')
+
+    def open_collection(self):
+        if self.appearance_owner() and not self.collection_loaded and not self.busy:
+            self.refresh_collection()
+
+    def refresh_collection(self):
+        owner = self.appearance_owner()
+        if not owner:
+            self.reset_collection()
+            return
+        session = self.account.session
+        selected = dict(self.appearance_preferences(owner))
+
+        def fetch():
+            collection = owned_appearance(session)
+            images = {}
+            for preference, items in collection.items():
+                item = items.get(selected.get(preference))
+                if item:
+                    try:
+                        images[preference] = cache_appearance(self.user_data_dir, owner, preference, item, session)
+                    except (OSError, ValueError):
+                        pass
+            return collection, images
+
+        def show(result):
+            if owner != self.appearance_owner() or session != self.account.session:
+                return
+            collection, images = result
+            self.collection_owner = owner
+            self.collection_loaded = True
+            for preference, picker in self.appearance_pickers.items():
+                picker.items = {self.store_item_label(item): item
+                                for item in collection[preference].values()}
+                picker.values = (*picker.local_choices, *picker.items)
+                saved = self.appearance_preferences(owner).get(preference)
+                label = next((label for label, item in picker.items.items() if str(item['id']) == saved), None)
+                if label and preference in images:
+                    self.apply_appearance(picker, label, images[preference])
+                elif picker.applied not in picker.items:
+                    self.apply_appearance(picker, picker.local_selection)
+            self.set_text(self.collection_note, 'Colección actualizada.' if any(collection.values())
+                          else 'Tu colección aún no tiene fondos ni personajes.')
+            self.say('Colección actualizada.')
+
+        self.run_job(fetch, show)
+
+    def reset_history(self):
+        self.history_rows.clear_widgets()
+        self.history_page = 1
+        self.history_previous.disabled = self.history_next.disabled = True
+        self.label_in(self.history_rows, 'Actualiza para ver tus peleas.' if self.discord_verified
+                      else 'Inicia sesión con Discord en Ajustes para ver tus peleas.', 14, 68)
+
+    def load_history(self, page):
+        from discord_auth import api_call
+        from koth_client import DEFAULT_URL
+        session = self.account.session
+        if not self.discord_verified or not session:
+            self.reset_history()
+            return
+
+        directory = self.user_data_dir
+        language = self.language
+
+        def fetch():
+            data = api_call(DEFAULT_URL, 'GET', f'/api/netplay/history/?page={page}', follow_redirects=False,
+                            extra_headers={'X-Netplay-Session': session, 'Accept-Language': language})
+            return data, history_portraits(directory, data['fights'])
+
+        def show(result):
+            if session != self.account.session or not self.discord_verified:
+                return
+            data, portraits = result
+            self.history_page = data['page']
+            self.history_previous.disabled = self.history_page <= 1
+            self.history_next.disabled = self.history_page >= data['pages']
+            self.history_rows.clear_widgets()
+            if not data['fights']:
+                self.label_in(self.history_rows, 'Todavía no hay peleas registradas.', 14, 60)
+            for fight in data['fights']:
+                self.history_rows.add_widget(self.history_card(fight, portraits))
+            self.history_rows.parent.parent.scroll_y = 1
+            self.say('Historial actualizado.')
+
+        self.run_job(fetch, show)
+
+    def history_card(self, fight, portraits):
+        card = self.rounded_panel((.09, .14, .23, .98), padding=10)
+        date = datetime.fromisoformat(fight['date']).astimezone().strftime('%d/%m/%Y %H:%M')
+        self.wrapped_label(card, f"{fight['outcome']} · {date}", size=16, bold=True)
+        self.wrapped_label(card, fight['event'] or 'Partida casual', color=(.73, .79, .91, 1))
+        rival = self.wrapped_label(card, '')
+        self.set_text(rival, 'Rival: {name}', name=fight['rival'] or '—')
+        matchup = BoxLayout(spacing=dp(6), size_hint_y=None)
+        card.add_widget(matchup)
+        players = (fight['players'] + [{}, {}])[:2]
+        panels = []
+        for slot, player in enumerate(players, start=1):
+            if slot == 2:
+                matchup.add_widget(Label(text='VS', font_size=dp(12), size_hint_x=None, width=dp(24)))
+            panel = self.rounded_panel((.14, .21, .34, 1), padding=6)
+            panel.pos_hint = {'top': 1}
+            matchup.add_widget(panel)
+            panels.append(panel)
+            self.wrapped_label(panel, f'P{slot}', centered=True, size=12)
+            portrait = portraits.get(player.get('portrait'))
+            if portrait:
+                panel.add_widget(Image(source=str(portrait), fit_mode='contain', size_hint_y=None, height=dp(62)))
+            self.wrapped_label(panel, player.get('name') or '—', centered=True, bold=True)
+            self.wrapped_label(panel, player.get('character') or 'Personaje sin registrar', centered=True,
+                              color=(.73, .79, .91, 1))
+
+        def fit_matchup(*_):
+            matchup.height = max(panel.height for panel in panels)
+
+        for panel in panels:
+            panel.bind(height=fit_matchup)
+        fit_matchup()
+        score = fight.get('score')
+        if score is not None:
+            result = self.wrapped_label(card, '', centered=True, bold=True)
+            self.set_text(result, 'P1 {p1} · P2 {p2} · Empates {draws}', **score)
+        return card
+
+    @staticmethod
+    def rounded_panel(color, *, padding, height=None):
+        panel = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(padding), size_hint_y=None)
+        if height is None:
+            panel.bind(minimum_height=panel.setter('height'))
+        else:
+            panel.height = dp(height)
+        with panel.canvas.before:
+            Color(*color)
+            shape = RoundedRectangle(radius=[dp(10)])
+        panel.bind(pos=lambda _, value: setattr(shape, 'pos', value),
+                   size=lambda _, value: setattr(shape, 'size', value))
+        return panel
+
+    def wrapped_label(self, parent, message, *, size=14, centered=False, bold=False, color=(1, 1, 1, 1)):
+        label = Label(font_size=dp(size), bold=bold, color=color, halign='center' if centered else 'left',
+                      size_hint_y=None, height=dp(22))
+        label.bind(width=lambda widget, width: setattr(widget, 'text_size', (width, None)),
+                   texture_size=lambda widget, texture: setattr(widget, 'height', max(dp(20), texture[1])))
+        self.set_text(label, message)
+        parent.add_widget(label)
+        return label
 
     def field(self, parent, key, title, default, numeric=False):
         self.label_in(parent, title, 14, 28)
@@ -252,7 +810,8 @@ class MobileApp(App):
         parent.add_widget(field)
 
     def button(self, parent, text, action):
-        button = Button(size_hint_y=None, height=dp(48), font_size=dp(15), halign='center', valign='middle')
+        button = Button(size_hint_y=None, height=dp(48), font_size=dp(15), halign='center', valign='middle',
+                        background_normal='', background_down='', background_color=(.18, .26, .43, 1))
         button.bind(size=lambda widget, size: setattr(widget, 'text_size', (size[0] - dp(12), size[1])))
         self.set_text(button, text)
         button.bind(on_release=lambda *_: action())
@@ -274,7 +833,7 @@ class MobileApp(App):
 
     @staticmethod
     def transport_labels():
-        return tr('Servidor UN5'), tr('Directo / ZeroTier')
+        return 'Netplay', 'ZeroTier'
 
     @staticmethod
     def transport_mode(spinner):
@@ -287,6 +846,7 @@ class MobileApp(App):
         write_json(self.prefs_path, self.prefs, private=True)
         for widget, (property_name, message, values) in list(self.localized_widgets.items()):
             setattr(widget, property_name, tr(message, **values))
+        self.update_export_options()
         self.changing_language = True
         try:
             for spinner in (self.host_transport, self.client_transport):
@@ -298,6 +858,8 @@ class MobileApp(App):
         self.refresh_host()
 
     def run_job(self, job, success):
+        if self.closed:
+            return
         if self.busy:
             self.say('Espera a que termine la consulta actual.')
             return
@@ -318,14 +880,18 @@ class MobileApp(App):
         from appdata import write_json
         self.prefs = {key: field.text.strip() for key, field in self.inputs.items()}
         self.prefs['language'] = self.language
+        self.prefs['koth_url'] = self.koth_url
         self.prefs['game'] = self.game.text
-        self.prefs['koth_game'] = self.koth_game.text
+        self.prefs['koth_game'] = self.koth_default_game
         self.prefs['koth_transport'] = 'relay' if self.koth_network.text == 'Netplay' else 'zerotier'
         self.prefs['overlay'] = self.overlay.active
         self.prefs['transport'] = self.transport_mode(self.host_transport)
         self.prefs['client_transport'] = self.transport_mode(self.client_transport)
         self.prefs['client_game'] = self.client_game.text
         self.prefs['guest_host'] = self.host_ip.text.strip()
+        for picker in self.appearance_pickers.values():
+            self.prefs[picker.preference] = picker.local_choices[picker.local_selection]
+        self.prefs['store_appearance'] = self.store_appearance
         write_json(self.prefs_path, self.prefs, private=True)
 
     def save_connection(self):
@@ -335,7 +901,6 @@ class MobileApp(App):
                 raise ValueError(tr('Puerto PINE inválido.'))
             if self.inputs['zt_address'].text.strip():
                 validate_address(self.inputs['zt_address'].text)
-            https_url(self.inputs['koth_url'].text)
             self.persist()
             self.say('Configuración guardada. La conectividad ZeroTier aún debe probarse en una partida.')
         except Exception as error:
@@ -419,8 +984,15 @@ class MobileApp(App):
         except Exception as error:
             self.say(str(error))
 
+    def update_export_options(self, *_):
+        un6 = self.export_game.text == 'un6'
+        self.export_variant.disabled = not un6
+        self.export_variant.values = tuple(tr(label) for label in self.export_variants)
+        self.export_variant.text = self.export_variant.values[0] if un6 else tr('UN5 · Slot 1')
+
     def export_state(self):
-        self.export_match_state(self.export_game.text)
+        variant = next((key for label, key in self.export_variants.items() if tr(label) == self.export_variant.text), None)
+        self.export_match_state(self.export_game.text, variant)
 
     def export_match_state(self, game, variant=None):
         if platform != 'android':
@@ -431,12 +1003,10 @@ class MobileApp(App):
         self.run_job(lambda: download_state(self.user_data_dir, game, variant=variant), self.say)
 
     def export_koth_state(self):
-        from koth_client import KOTH_STATES
-
         event = self.koth_choices.get(self.koth_selected_id)
-        if not event or self.koth_events_url != self.inputs['koth_url'].text.strip().rstrip('/'):
+        if not event or self.koth_events_url != self.koth_url:
             return
-        game, variant = KOTH_STATES.get(event.get('match_state'), (self.koth_game.text, None))
+        game, variant = event_match(event, self.koth_default_game)
         self.export_match_state(game, variant)
 
     def test_pine(self):
@@ -444,23 +1014,38 @@ class MobileApp(App):
         self.run_job(lambda: pine_diagnostics(slot, android=platform == 'android'), self.say)
 
     def refresh_koth_entry(self, *_):
-        source = self.inputs['koth_url'].text.strip().rstrip('/')
+        source = self.koth_url
         session = self.account.session if self.discord_verified else None
         event = self.koth_choices.get(self.koth_selected_id, {})
+        casual = self.koth_category() == 'casual'
+        for button in (self.koth_create, self.koth_start):
+            button.opacity = 1 if casual else 0
+            button.height = dp(48) if casual else 0
+        self.koth_create.disabled = not casual
         self.koth_start.disabled = not (
             session and self.koth_owner_scope == (source, session) and self.koth_events_url == source
             and event.get('casual') and event.get('status') == 'draft' and event['id'] in self.koth_owned)
-        self.koth_export.disabled = not (event and self.koth_events_url == source)
+        try:
+            match = event_match(event, self.koth_default_game) if event else None
+        except ValueError:
+            match = None
+        self.koth_export.disabled = not (match and self.koth_events_url == source)
+        if match:
+            self.set_text(self.koth_match_label, 'Juego: {game}', game=match[0].upper())
+        else:
+            self.set_text(self.koth_match_label, 'El estado configurado no es compatible.' if event else '')
         self.koth_join.disabled = True
         if not self.discord_verified or not self.account.session:
             self.set_text(self.koth_info, 'Inicia sesión con Discord para inscribirte y conectar.')
-        elif self.koth_events_url != self.inputs['koth_url'].text.strip().rstrip('/'):
+        elif self.koth_events_url != self.koth_url:
             self.set_text(self.koth_info, 'Actualiza los eventos del servidor KOTH.')
         elif self.koth_selected_id not in self.koth_choices:
             self.set_text(self.koth_info, 'Selecciona un evento disponible.')
-        else:
+        elif match:
             self.koth_join.disabled = False
             self.set_text(self.koth_info, 'Si tu IP de ZeroTier registrada cambia, perderás hasta 1 punto.')
+        else:
+            self.set_text(self.koth_info, '')
 
     def tournament_column(self, parent):
         content = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(6))
@@ -469,34 +1054,58 @@ class MobileApp(App):
         return content
 
     def tournament_source(self):
-        return self.inputs['koth_url'].text.strip().rstrip('/')
+        return self.koth_url
 
-    def clear_tournaments(self, *_):
-        self.tournament_id = None
-        self.tournament_events.clear_widgets()
-        self.tournament_details.clear_widgets()
+    def event_categories(self, parent, default, render):
+        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+        parent.add_widget(row)
+        selection = default
+        buttons = {}
+
+        def select(category):
+            nonlocal selection
+            selection = category
+            for key, button in buttons.items():
+                button.background_color = (.22, .39, .78, 1) if key == selection else (.10, .15, .25, 1)
+            render()
+
+        for key, label in (('casual', 'Casual'), ('official', 'Oficial')):
+            button = self.button(row, label, lambda key=key: select(key))
+            button.background_color = (.22, .39, .78, 1) if key == default else (.10, .15, .25, 1)
+            buttons[key] = button
+        return lambda: selection
 
     def open_tournaments(self):
-        from koth_client import scheduled_tournaments, tournament_label
+        from koth_client import scheduled_tournaments
         source = self.tournament_source()
+        session = self.account.session if self.discord_verified else None
 
         def show(events):
-            if source != self.tournament_source():
+            verified_session = self.account.session if self.discord_verified else None
+            if source != self.tournament_source() or session != verified_session:
                 return
-            self.tournament_events.clear_widgets()
-            selected = next((event for event in events if event['id'] == self.tournament_id), None)
-            for event in events:
-                self.button(self.tournament_events, tournament_label(event) + ' · ' +
-                            self.tournament_state(event.get('status', 'draft')),
-                            lambda event=event: self.select_tournament(source, event))
-            self.tournament_details.clear_widgets()
-            if events:
-                self.select_tournament(source, selected or events[0])
-            else:
-                self.tournament_id = None
-                self.label_in(self.tournament_events, 'No hay torneos disponibles.')
+            self.tournament_catalog = events
+            self.say('Torneos actualizados.')
+            self.render_tournaments()
 
-        self.run_job(lambda: scheduled_tournaments(https_url(source), all_statuses=True), show)
+        self.run_job(lambda: scheduled_tournaments(https_url(source), all_statuses=True, session=session), show)
+
+    def render_tournaments(self):
+        from koth_client import tournament_label
+        source = self.tournament_source()
+        events = active_events(self.tournament_catalog, casual=self.tournament_category() == 'casual')
+        selected = next((event for event in events if event['id'] == self.tournament_id), None)
+        self.tournament_id = None
+        self.tournament_details.clear_widgets()
+        self.tournament_events.clear_widgets()
+        for event in events:
+            self.button(self.tournament_events, tournament_label(event) + ' · ' +
+                        self.tournament_state(event['status']),
+                        lambda event=event: self.select_tournament(source, event))
+        if events:
+            self.select_tournament(source, selected or events[0])
+        else:
+            self.label_in(self.tournament_events, 'No hay torneos disponibles.')
 
     @staticmethod
     def tournament_state(status):
@@ -522,20 +1131,28 @@ class MobileApp(App):
             return
         panel = self.tournament_details
         status = data.get('status', event.get('status', 'draft'))
+        if status not in ('draft', 'running'):
+            self.tournament_catalog = [item for item in self.tournament_catalog if item['id'] != event['id']]
+            self.render_tournaments()
+            return
+        try:
+            match = event_match(data, self.game.text, event=event)
+        except ValueError as error:
+            self.label_in(panel, str(error), 14, 42)
+            match = None
+        if match:
+            label = self.label_in(panel, '', 14, 30)
+            self.set_text(label, 'Juego: {game}', game=match[0].upper())
         if status == 'draft':
             self.button(panel, 'Inscribirme en el torneo', lambda: self.enroll_tournament(source, event))
-        if status == 'running':
-            self.label_in(panel, 'Juego del cruce', 14, 30)
-            game = Spinner(text=self.game.text, values=('un5', 'un6'),
-                           size_hint_y=None, height=dp(48))
-            panel.add_widget(game)
+        if status == 'running' and match:
             network = None
             if event['format'] == 'round_robin':
                 self.label_in(panel, 'Red del combate', 14, 40)
                 network = Spinner(text='ZeroTier', values=('ZeroTier', 'Netplay'), size_hint_y=None, height=dp(48))
                 panel.add_widget(network)
             self.button(panel, 'Conectar a mi cruce', lambda: self.connect_tournament(
-                source, event, game.text, network.text if network else None))
+                source, event, data, network.text if network else None))
         self.button(panel, 'Abrir cuadro público', lambda: webbrowser.open(
             f"{site_url(source)}/torneos/{int(event['id'])}/publico/"))
         bracket = self.tournament_column(panel)
@@ -580,9 +1197,9 @@ class MobileApp(App):
 
         self.run_job(lambda: join_tournament(source, session, event['id']), show)
 
-    def connect_tournament(self, source, event, game, network=None):
+    def connect_tournament(self, source, event, bracket, network=None):
         from host import prepare_files
-        from koth_client import KOTH_STATES, assigned_fixture
+        from koth_client import assigned_fixture
         if platform != 'android':
             self.say('El servicio host se inicia desde la APK Android.')
             return
@@ -610,17 +1227,20 @@ class MobileApp(App):
             self.say(str(error))
             return
 
+        fallback_game = self.game.text
+
         def prepare():
             fixture = assigned_fixture(url, session, event['id'])
-            if fixture:
-                match = KOTH_STATES.get(fixture.get('match_state'))
-                if match:
-                    prepare_files(self.user_data_dir, match[0], variant=match[1])
-                else:
-                    prepare_files(self.user_data_dir, game)
-            return fixture
+            if not fixture:
+                return None, None
+            event_settings = {**event, **{key: bracket[key] for key in ('match_state', 'match_game', 'game')
+                                          if bracket.get(key)}}
+            match = event_match(fixture, fallback_game, event=event_settings)
+            prepare_files(self.user_data_dir, match[0], variant=match[1])
+            return fixture, match
 
-        def show(fixture):
+        def show(result):
+            fixture, match = result
             if (not self.is_current_tournament(source, event) or not self.discord_verified
                     or self.account.session != session):
                 return
@@ -631,8 +1251,7 @@ class MobileApp(App):
                 self.say('Ya hay una partida activa. Deténla antes de crear otra.')
                 return
             role = fixture['role']
-            match = KOTH_STATES.get(fixture.get('match_state'))
-            config = {'directory': self.user_data_dir, 'game': match[0] if match else game, 'pine_slot': slot,
+            config = {'directory': self.user_data_dir, 'game': match[0], 'pine_slot': slot,
                       'address': address, 'transport': 'direct', 'fixture': {
                           'event_id': fixture['event_id'], 'fixture_id': fixture['fixture_id']},
                       'url': url, 'role': 'host' if role == 'p1' else 'guest',
@@ -645,7 +1264,7 @@ class MobileApp(App):
 
     def list_events(self):
         try:
-            source = self.inputs['koth_url'].text.strip().rstrip('/')
+            source = self.koth_url
             url = https_url(source)
             self.persist()
         except ValueError as error:
@@ -664,7 +1283,7 @@ class MobileApp(App):
             return events, owned, None
 
         def show(result):
-            if source != self.inputs['koth_url'].text.strip().rstrip('/'):
+            if source != self.koth_url:
                 return
             events, owned, error = result
             self.koth_owner_scope = (source, session)
@@ -678,11 +1297,16 @@ class MobileApp(App):
         self.run_job(fetch, show)
 
     def show_koth_events(self, source, events):
-        statuses = {'draft': '{event} · Preparación', 'running': '{event} · En curso'}
         if self.koth_events_url != source:
             self.koth_selected_id = None
-        self.koth_choices = {event['id']: event for event in events if event.get('status') in statuses}
         self.koth_events_url = source
+        self.koth_events = list(events)
+        self.render_koth_events()
+
+    def render_koth_events(self):
+        statuses = {'draft': '{event} · Preparación', 'running': '{event} · En curso'}
+        self.koth_choices = {event['id']: event for event in
+                             active_events(self.koth_events, casual=self.koth_category() == 'casual')}
         if self.koth_selected_id not in self.koth_choices:
             self.koth_selected_id = None
         self.koth_events_box.clear_widgets()
@@ -699,7 +1323,7 @@ class MobileApp(App):
 
     def create_casual(self):
         try:
-            source = self.inputs['koth_url'].text.strip().rstrip('/')
+            source = self.koth_url
             https_url(source)
         except ValueError as error:
             self.say(str(error))
@@ -722,7 +1346,7 @@ class MobileApp(App):
             content.add_widget(field)
             fields.append(field)
         self.label_in(content, 'Juego', 14, 26)
-        game = Spinner(text=self.koth_game.text.upper(), values=('UN5', 'UN6'), size_hint_y=None, height=dp(44))
+        game = Spinner(text=self.koth_default_game.upper(), values=('UN5', 'UN6'), size_hint_y=None, height=dp(44))
         content.add_widget(game)
         self.label_in(content, 'Estado de partida', 14, 26)
         state = Spinner(size_hint_y=None, height=dp(44))
@@ -776,7 +1400,7 @@ class MobileApp(App):
         from koth_client import get_event, management_command
         def current():
             return (self.discord_verified and session == self.account.session
-                    and source == self.inputs['koth_url'].text.strip().rstrip('/'))
+                    and source == self.koth_url)
         if not current():
             return
 
@@ -790,7 +1414,7 @@ class MobileApp(App):
         def show(result):
             if not current():
                 return
-            choices = dict(self.koth_choices) if self.koth_events_url == source else {}
+            choices = {item['id']: item for item in self.koth_events} if self.koth_events_url == source else {}
             choices[result['id']] = result
             if self.koth_owner_scope != (source, session):
                 self.koth_owned.clear()
@@ -815,7 +1439,7 @@ class MobileApp(App):
         if self.koth_join.disabled:
             return
         from appdata import DATA_DIR
-        from koth_client import KOTH_STATES, MembershipStore, enroll
+        from koth_client import MembershipStore, enroll
         try:
             url = https_url(self.koth_events_url)
             transport = 'relay' if self.koth_network.text == 'Netplay' else 'zerotier'
@@ -850,7 +1474,7 @@ class MobileApp(App):
         store = MembershipStore(DATA_DIR / f'mobile-koth-{account_key}.json')
         event = self.koth_choices[self.koth_selected_id]
 
-        config = {'directory': self.user_data_dir, 'game': self.koth_game.text, 'pine_slot': slot,
+        config = {'directory': self.user_data_dir, 'pine_slot': slot,
                   'address': address, 'koth_transport': transport, 'transport': 'direct', 'role': 'koth', 'url': url,
                   'nick': name, 'overlay': False, 'event_name': event['name'],
                   'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
@@ -863,9 +1487,8 @@ class MobileApp(App):
                 values['deducted'] = result['points_deducted']
             self.say(message, **values)
             if platform == 'android':
-                match = KOTH_STATES.get(result['event'].get('match_state'))
-                if match:
-                    config.update(game=match[0], variant=match[1])
+                game, variant = event_match(result['event'], self.koth_default_game, event=event)
+                config.update(game=game, variant=variant)
                 self.launch_mobile_service(dict(config, koth_ticket=result['ticket']), return_to_game=False)
 
         self.run_job(lambda: enroll(url, event, name, store, netplay_session=session,
@@ -907,13 +1530,21 @@ class MobileApp(App):
         else:
             self.set_text(self.account_label, 'Sin sesión verificada')
         self.refresh_koth_entry()
+        self.reset_history()
+        if self.collection_owner != self.appearance_owner() or not self.discord_verified:
+            self.reset_collection()
+        if self.discord_verified and self.sections.current == 'history':
+            self.load_history(1)
         messages = {'restore': 'Sesión restaurada.', 'login': 'Sesión iniciada.', 'logout': 'Sesión cerrada.'}
         self.say(messages[operation] if ok else str(error))
         pending_source = self.pending_casual_source
         self.pending_casual_source = None
         if (pending_source and self.discord_verified and operation in ('restore', 'login')
-                and pending_source == self.inputs['koth_url'].text.strip().rstrip('/')):
+                and pending_source == self.koth_url):
             self.create_casual()
+        elif self.appearance_owner() and (self.sections.current == 'settings'
+                                          or self.store_appearance.get(self.appearance_owner())):
+            self.open_collection()
 
     def cancel_login(self):
         self.pending_casual_source = None
@@ -943,7 +1574,7 @@ class MobileApp(App):
     def start_client(self):
         self.start_session('guest')
 
-    def start_session(self, role):
+    def start_session(self, role, room_ip=None, room_tag=None):
         if platform != 'android':
             self.say('El servicio host se inicia desde la APK Android.')
             return
@@ -957,7 +1588,7 @@ class MobileApp(App):
                                                Uri.parse('package:' + activity.getPackageName())))
                 self.say('Permite Mostrar sobre otras apps, vuelve y pulsa Crear partida.')
                 return
-        from host import prepare_files
+        from host import prepare_files, zerotier_guest_state
         if self.active_mobile_session():
             self.say('Ya hay una partida activa. Deténla antes de crear otra.')
             return
@@ -971,7 +1602,7 @@ class MobileApp(App):
             if address and transport == 'direct':
                 address = validate_address(address)
             game = self.game.text if role == 'host' else self.client_game.text
-            host_ip = validate_address(self.host_ip.text) if role == 'guest' and transport == 'direct' else ''
+            host_ip = resolve_zerotier_host(room_ip or self.host_ip.text, address) if role == 'guest' and transport == 'direct' else ''
             room_id = self.selected_room_id if role == 'guest' and transport == 'server' else ''
             if role == 'guest' and transport == 'server':
                 if not room_id:
@@ -985,10 +1616,15 @@ class MobileApp(App):
         config = {'directory': self.user_data_dir, 'game': game, 'pine_slot': slot,
                   'address': address, 'transport': transport, 'role': role, 'host_ip': host_ip, 'room_id': room_id,
                   'nick': (self.account.account or {}).get('nick') or (('Android P1' if role == 'host' else 'Android P2') if transport == 'server' else ('Player1' if role == 'host' else 'Player2')),
-                  'overlay': self.overlay.active,
+                  'overlay': self.overlay.active, 'announce_zerotier': role == 'host' and transport == 'direct' and bool(address),
                   'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
-        self.run_job(lambda: prepare_files(self.user_data_dir, game, relay=transport == 'server'),
-                     lambda _: self.launch_mobile_service(config))
+        def prepare():
+            if role == 'guest' and transport == 'direct':
+                variant, tag = zerotier_guest_state(game, host_ip, room_tag)
+                return prepare_files(self.user_data_dir, game, variant=variant, expected_state_tag=tag)
+            return prepare_files(self.user_data_dir, game, relay=transport == 'server')
+
+        self.run_job(prepare, lambda _: self.launch_mobile_service(config))
 
     def active_mobile_session(self):
         from host import ACTIVE
@@ -1044,6 +1680,8 @@ class MobileApp(App):
             self.say('Cancela primero el login y espera a que termine.')
             return
         self.discord_verified = False
+        self.reset_history()
+        self.reset_collection()
         self.refresh_koth_entry()
         self.account.acct_logout()
         self.watch_account()
@@ -1067,6 +1705,7 @@ class MobileApp(App):
         if self.host_timer:
             self.host_timer.cancel()
         self.worker.shutdown(wait=False, cancel_futures=True)
+        self.store_preview_worker.shutdown(wait=False, cancel_futures=True)
         self.persist()
     
     def refresh_rooms(self):
@@ -1096,6 +1735,71 @@ class MobileApp(App):
         self.selected_room_id = room['id']
         if room.get('game') in ('un5', 'un6'):
             self.client_game.text = room['game']
+
+    def update_host_ip_hint(self, *_):
+        self.zerotier_rooms_box.clear_widgets()
+        try:
+            prefix = zerotier_prefix(self.inputs['zt_address'].text)
+        except ValueError:
+            prefix = ''
+        if prefix:
+            self.set_text(self.ip_label, 'Último número de la IP del anfitrión · {prefix}', prefix=prefix)
+        else:
+            self.set_text(self.ip_label, 'IPv4 del anfitrión')
+        self.host_ip.input_type = 'number' if prefix else 'text'
+        self.host_ip.hint_text = '172' if prefix else '192.168.195.172'
+
+    def refresh_zerotier_rooms(self):
+        try:
+            address = validate_address(self.inputs['zt_address'].text)
+        except ValueError:
+            self.say('Configura tu IPv4 de ZeroTier en Ajustes para buscar salas.')
+            return
+
+        def show(rooms):
+            if address != self.inputs['zt_address'].text.strip():
+                return
+            self.zerotier_rooms_box.clear_widgets()
+            if not rooms:
+                self.label_in(self.zerotier_rooms_box, 'No se encontraron salas en tu red ZeroTier.', 14, 54)
+            for room in rooms:
+                self.button(self.zerotier_rooms_box, f"{room['nick']} · {room['game'].upper()} · {room['ip']}",
+                            lambda room=room: self.join_zerotier_room(room))
+                self.button(self.zerotier_rooms_box, 'Descargar estado de esta sala',
+                            lambda room=room: self.export_zerotier_guest_state(room))
+            self.say('Salas disponibles: {count}', count=len(rooms))
+
+        session = self.account.session if self.discord_verified else None
+        self.run_job(lambda: discover_zerotier_rooms(address, session), show)
+
+    def join_zerotier_room(self, room):
+        self.client_game.text = room['game']
+        self.start_session('guest', room_ip=room['ip'], room_tag=room.get('tag'))
+
+    def export_zerotier_guest_state(self, room=None):
+        if platform != 'android':
+            self.say('Guardar en Descargas está disponible en Android 10 o posterior.')
+            return
+        from downloads import download_state
+        from host import zerotier_guest_state
+        try:
+            game = room['game'] if room else self.client_game.text
+            host = room['ip'] if room else resolve_zerotier_host(self.host_ip.text, self.inputs['zt_address'].text)
+        except ValueError as error:
+            self.say(str(error))
+            return
+
+        def export():
+            variant, tag = zerotier_guest_state(game, host, room.get('tag') if room else None)
+            if not tag:
+                raise ValueError(tr('El anfitrión todavía no anuncia el estado de la partida.'))
+            return download_state(self.user_data_dir, game, variant=variant, expected_state_tag=tag)
+
+        self.run_job(export, self.say)
+
+    def open_client_role(self):
+        if self.transport_mode(self.client_transport) == 'server' and not self.busy:
+            self.refresh_rooms()
 
     def on_transport_change(self, spinner, _):
         if self.changing_language:

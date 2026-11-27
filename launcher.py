@@ -39,7 +39,7 @@ except ImportError:                                       # sem Pillow: a lista 
 
 import i18n
 import launcher_core as core
-from rooms import RoomListener, uses_interface
+from rooms import RoomListener, django_rooms, uses_interface
 from discord_auth import UA, NoRedirect, api_call, ssl_context
 from i18n import has, tr
 from koth_client import DEFAULT_URL, KOTH_STATES, event_for_ticket, game_downloads
@@ -124,6 +124,10 @@ class Launcher(tk.Tk):
         self.casual_transport = tk.StringVar(value='netplay')
         self.koth_category = tk.StringVar(value='casual')
         self.zerotier_rooms = None
+        self.zerotier_discovery = []
+        self.zerotier_discovery_session = None
+        self.zerotier_discovery_pending = False
+        self.zerotier_discovery_at = 0
         self.play_view_open = False
         self.background_revision = 0
         self._background_download_lock = threading.Lock()
@@ -1544,18 +1548,42 @@ class Launcher(tk.Tk):
             self._close_zerotier_rooms()
         if self.zerotier_rooms is None:
             self.zerotier_rooms = RoomListener(zerotier_address=address)
-        rooms = self.zerotier_rooms.poll()
+        self._poll_django_zerotier_rooms(address)
+        rooms = {(room['ip'], room['port']): room for room in self.zerotier_discovery}
+        rooms.update(((room['ip'], room['port']), room) for room in self.zerotier_rooms.poll())
         return [
             {**room, 'id': f"zt:{room['ip']}:{room['port']}", 'is_local': room['ip'] == address}
-            for room in rooms
+            for room in sorted(rooms.values(), key=lambda room: (room['nick'].lower(), room['ip']))
             if room.get('game') and room['port'] == int(core.HOST_PORT)
             and (self.backend.running if room['ip'] == address else uses_interface(room['ip'], address))
         ], self.zerotier_rooms.error
+
+    def _poll_django_zerotier_rooms(self, address):
+        session = self.backend.session
+        if session != self.zerotier_discovery_session:
+            self.zerotier_discovery = []
+            self.zerotier_discovery_session = session
+            self.zerotier_discovery_at = 0
+        now = time.monotonic()
+        if not session or self.zerotier_discovery_pending or now < self.zerotier_discovery_at:
+            return
+        listener = self.zerotier_rooms
+        self.zerotier_discovery_pending = True
+        self.zerotier_discovery_at = now + 3
+
+        def done(found, _error):
+            self.zerotier_discovery_pending = False
+            if listener is self.zerotier_rooms and session == self.backend.session:
+                self.zerotier_discovery = found or []
+
+        self._window_task(self, lambda: django_rooms(DEFAULT_URL, session, address, int(core.HOST_PORT)), done)
 
     def _close_zerotier_rooms(self):
         if self.zerotier_rooms is not None:
             self.zerotier_rooms.close()
             self.zerotier_rooms = None
+        self.zerotier_discovery = []
+        self.zerotier_discovery_at = 0
 
     def _refresh_zerotier_rooms(self):
         if self.zerotier_rooms is not None and self.zerotier_rooms.error:

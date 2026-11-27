@@ -17,7 +17,7 @@ Everything received here comes from the network, so it is validated field by fie
 capped, types are checked, nicks are reduced to printable ASCII.
 """
 import argparse
-from ipaddress import IPv4Interface
+from ipaddress import IPv4Address, IPv4Interface, IPv4Network
 import json
 import re
 import socket
@@ -26,6 +26,7 @@ import time
 
 DISCOVERY_PORT = 47401
 ZEROTIER_DISCOVERY_PORT = 47403
+ZEROTIER_GAME_PORT = 47400
 ZEROTIER_GROUP = '239.255.47.43'
 MAGIC = b'UN5R1'                    # 'UN5 Room', protocol version 1
 MAX_PACKET = 512
@@ -34,6 +35,96 @@ ROOM_TTL = 7.0                      # seconds without an announcement before a r
 MAX_ROOMS = 64                      # a flood of fake rooms can not grow the list beyond this
 STATUSES = ('waiting', 'playing')
 _TAG_RE = re.compile(r'^[0-9a-f]{16}$')
+_ROOM_SESSION_RE = re.compile(r'^[0-9a-f]{32}$')
+_DISCOVERY_ADDRESS_POOLS = tuple(map(IPv4Network, ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10')))
+DJANGO_DISCOVERY_PATH = '/api/netplay/casual/discovery/'
+
+
+def discovery_subnet(value):
+    try:
+        address = IPv4Address(value)
+    except ValueError:
+        return None
+    if any(address in pool for pool in _DISCOVERY_ADDRESS_POOLS):
+        network = IPv4Interface(f'{address}/24').network
+        if address not in (network.network_address, network.broadcast_address):
+            return network
+    return None
+
+
+def django_rooms(url, session, local_address, port):
+    from concurrent.futures import ThreadPoolExecutor
+    from urllib.parse import urlencode
+    from discord_auth import AccountError, api_call
+    from statesync import StateError, advertised_room
+
+    subnet = discovery_subnet(local_address)
+    if not session or not subnet:
+        return []
+    try:
+        response = api_call(url, 'GET', DJANGO_DISCOVERY_PATH + '?' + urlencode({'address': local_address}),
+                            extra_headers={'X-Netplay-Session': session}, timeout=3, follow_redirects=False)
+    except AccountError:
+        return []  # Older Django deployments can still use the LAN listener.
+
+    def confirm(candidate):
+        address, key = candidate.get('address'), candidate.get('session')
+        if (address == local_address or discovery_subnet(address) != subnet or not isinstance(key, str)
+                or not _ROOM_SESSION_RE.fullmatch(key) or not uses_interface(address, local_address)):
+            return None
+        try:
+            payload = advertised_room(address, port, local_address, key, MAX_PACKET)
+        except (OSError, StateError):
+            return None
+        room = parse_room(payload, (address, port))
+        return room if room and room.get('game') and room['port'] == port and room['status'] == 'waiting' else None
+
+    candidates = response.get('rooms', []) if isinstance(response, dict) else []
+    if not isinstance(candidates, list) or not candidates:
+        return []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return [room for room in pool.map(confirm, (row for row in candidates[:32] if isinstance(row, dict))) if room]
+
+
+class DjangoRoomPublisher:
+    """Publishes a short lease while the game's host is waiting, outside the frame loop."""
+
+    def __init__(self, url, token, room_id, address, state_server, packet):
+        from threading import Event, Thread
+
+        self.url, self.token = url, token
+        self.room_id, self.address = room_id, address
+        self.state_server = state_server
+        self.state_server.room_advertisement = bytes.fromhex(room_id), packet
+        self.stopped = Event()
+        self.worker = Thread(target=self._run, name='room-discovery', daemon=True)
+        self.worker.start()
+
+    def _run(self):
+        from discord_auth import AccountError, api_call
+
+        def update(waiting):
+            api_call(self.url, 'POST', DJANGO_DISCOVERY_PATH,
+                     {'session': self.room_id, 'address': self.address, 'waiting': waiting},
+                     extra_headers={'X-Netplay-Session': self.token}, timeout=3, follow_redirects=False)
+
+        published = False
+        while not self.stopped.is_set():
+            try:
+                update(True)
+                published = True
+            except AccountError:
+                pass  # Registration may still be in flight, or the deployment may predate the endpoint.
+            self.stopped.wait(5)
+        if published:
+            try:
+                update(False)
+            except AccountError:
+                pass  # The lease also expires on the server.
+
+    def close(self):
+        self.state_server.room_advertisement = None
+        self.stopped.set()
 
 
 def clean_nick(value, limit=15):

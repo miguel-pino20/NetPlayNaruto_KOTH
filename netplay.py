@@ -1048,7 +1048,7 @@ def play_connected(args, is_host, server_mode, pine, core):
     server = None
     sym_server = None
     discovery_game = getattr(args, 'announce_zerotier', None)
-    if is_host and args.state and discovery_game and not server_mode:
+    if is_host and args.state and discovery_game and not server_mode and not getattr(args, 'share_zerotier_state', False):
         try:
             server = statesync.StateServer(args.state, args.port, bind=args.bind_address, metadata_only=True)
         except OSError as error:
@@ -1131,6 +1131,16 @@ def play_connected(args, is_host, server_mode, pine, core):
     board = scoreboard.start_for_session(args, pine, is_host,    # None unless scoreboard.json has enabled: true
                                          room=getattr(poller, 'room_id', '') if poller else '',
                                          online=server_mode, node=node)
+    room_publisher = None
+    if is_host and discovery_game and server is not None and rooms is not None and rooms.discovery_subnet(args.bind_address):
+        sink = next((sink for sink in (board.sinks if board else ())
+                     if isinstance(sink, scoreboard.DjangoSink) and sink.host_secret
+                     and sink.room_url.startswith('https://')), None)
+        if sink:
+            packet = rooms.encode_room(nick, args.port, args.delay, tag, game=discovery_game)
+            room_publisher = rooms.DjangoRoomPublisher(
+                sink.room_url.removesuffix('/api/netplay/casual/rooms/'), sink.token, sink.session,
+                args.bind_address, server, packet)
     fixture_results = next((sink for sink in (board.sinks if board else ())
                             if isinstance(sink, scoreboard.FixtureResults)), None)
     if fixture_results:
@@ -1201,6 +1211,9 @@ def play_connected(args, is_host, server_mode, pine, core):
                 if poller.lost and not lost_said:
                     lost_said = True
                     print('warning: the server forgot this room (restart?): new guests cannot join it.')
+            if room_publisher is not None and node.started:
+                room_publisher.close()
+                room_publisher = None
             if announcer is not None:
                 if discovery_game and node.started:
                     names, pings = node.info()
@@ -1301,6 +1314,8 @@ def play_connected(args, is_host, server_mode, pine, core):
         pass
     finally:
         presence_stop.set()
+        if room_publisher is not None:
+            room_publisher.close()
         if board is not None:
             board.close()
         if replay is not None:
@@ -1424,6 +1439,7 @@ def main(argv=None, *, prepare_fixture=None):
             q.add_argument('--no-announce', action='store_true',
                            help='do not show this room in the room list of other players')
             q.add_argument('--announce-zerotier', choices=('un5', 'un6'), help=argparse.SUPPRESS)
+            q.add_argument('--share-zerotier-state', action='store_true', help=argparse.SUPPRESS)
             q.add_argument('--ignore-desync', action='store_true',
                            help='debug: print hash mismatches but keep the match running')
         else:

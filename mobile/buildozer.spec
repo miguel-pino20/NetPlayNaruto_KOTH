@@ -3,10 +3,10 @@ title = Naruto Netplay
 package.name = narutonetplay
 package.domain = org.un5
 source.dir = build/app
-source.include_exts = py,png,json
+source.include_exts = py,png,jpg,json
 version.regex = VERSION = "(.*)"
 version.filename = ../release_info.py
-android.numeric_version = 1026419
+android.numeric_version = 1026420
 icon.filename = ../appimage/un5-netplay.png
 requirements = python3,kivy==2.3.1,openssl,certifi,pyjnius
 p4a.commit = 58d21141f17c889bf8585f5665921d72028f8831

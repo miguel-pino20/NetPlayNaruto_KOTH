@@ -5,7 +5,10 @@ import shutil
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 SHARED = ('pine.py', 'appdata.py', 'discord_auth.py', 'koth_client.py', 'hill.py', 'spectator.py',
-          'updater.py', 'release_info.py', 'core_link.py', 'node.py', 'wire.py', 'netplay.py', 'scoreboard.py', 'chars_un6.json', 'netlink.py', 'statesync.py', 'rooms.py')
+          'updater.py', 'release_info.py', 'core_link.py', 'node.py', 'wire.py', 'netplay.py', 'scoreboard.py', 'chars_un6.json', 'netlink.py', 'statesync.py', 'rooms.py', 'zerotier_networks.py')
+APPEARANCE = ('naruto_mascot.png', 'characters/sasuke.png', 'characters/kakashi.png',
+              'background/characters/naruto.jpg', 'background/characters/sasuke.jpg',
+              'background/characters/kakashi.jpg', 'background/characters/shikamaru.jpg')
 
 
 def prepare():
@@ -27,6 +30,10 @@ def prepare():
     for name in ('main.py', 'mobile_locale.py', 'backend.py', 'koth.py', 'host.py', 'host_service.py', 'floating.py', 'downloads.py', 'updates.py'):
         shutil.copy2(HERE / name, target / name)
     shutil.copy2(ROOT / "appimage" / "un5-netplay.png", target / "un5-netplay.png")
+    for name in APPEARANCE:
+        destination = target / 'assets' / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / 'assets' / name, destination)
     # Manifest-only Android library merged by Gradle; Java comes from android.add_src.
     import io
     import zipfile

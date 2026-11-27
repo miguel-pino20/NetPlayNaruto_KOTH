@@ -76,7 +76,114 @@ class MobileBaseTests(unittest.TestCase):
                 validate_address(address)
         self.assertEqual(validate_address('10.147.0.12'), '10.147.0.12')
 
+    def test_zerotier_host_accepts_short_or_full_address(self):
+        from mobile.backend import resolve_zerotier_host
+
+        self.assertEqual(resolve_zerotier_host('172', '192.168.195.24'), '192.168.195.172')
+        self.assertEqual(resolve_zerotier_host('10.147.0.12', '192.168.195.24'), '10.147.0.12')
+        for value, local in (('172', ''), ('256', '192.168.195.24'), ('172', 'bad')):
+            with self.subTest(value=value, local=local), self.assertRaises(ValueError):
+                resolve_zerotier_host(value, local)
+
+    def test_mobile_zerotier_guest_accepts_confirmed_django_room(self):
+        from mobile.backend import discover_zerotier_rooms
+        from rooms import ZEROTIER_GAME_PORT
+
+        room = {'ip': '192.168.195.14', 'port': ZEROTIER_GAME_PORT, 'game': 'un6', 'status': 'waiting'}
+        with (patch('rooms.RoomListener') as listener,
+              patch('rooms.django_rooms', return_value=[room]) as lookup,
+              patch('rooms.uses_interface', return_value=True)):
+            listener.return_value.error = 'Multicast unavailable'
+            listener.return_value.poll.return_value = []
+            self.assertEqual(discover_zerotier_rooms('192.168.195.176', 'session'), [room])
+        self.assertEqual(lookup.call_args.args[1:], ('session', '192.168.195.176', ZEROTIER_GAME_PORT))
+
+    def test_event_categories_exclude_finished_events(self):
+        from mobile.backend import active_events
+
+        events = [{'status': 'draft', 'casual': True}, {'status': 'running', 'casual': False},
+                  {'status': 'finished', 'casual': True}, {'status': 'finished'}]
+        self.assertEqual(active_events(events, casual=True), [events[0]])
+        self.assertEqual(active_events(events, casual=False), [events[1]])
+
+    def test_event_match_prefers_configured_game_and_variant(self):
+        from mobile.backend import event_match
+
+        event = {'match_state': 'un6-transformed'}
+        self.assertEqual(event_match({}, 'un5', event=event), ('un6', 'transformed'))
+        self.assertEqual(event_match({'match_state': 'un6-audio20'}, 'un5', event=event), ('un6', 'audio20'))
+        self.assertEqual(event_match({}, 'un5'), ('un5', None))
+        with self.assertRaises(ValueError):
+            event_match({'match_state': 'unsupported'}, 'un5')
+
+    def test_appearance_collection_contains_only_owned_items(self):
+        from mobile.backend import owned_appearance
+
+        owned = {'id': 1, 'name': 'Shikamaru', 'owned': True, 'price': 2, 'image_version': 'a' * 64}
+        unclaimed = dict(owned, id=2, owned=False, price=0)
+        with patch('discord_auth.api_call', return_value={'items': [owned, unclaimed]}) as api:
+            collection = owned_appearance('session')
+        self.assertEqual(collection['background'], {'1': owned})
+        self.assertEqual(collection['character'], {'1': owned})
+        self.assertEqual([call.args[2] for call in api.call_args_list],
+                         ['/api/netplay/store/backgrounds/', '/api/netplay/store/characters/'])
+        self.assertTrue(all(call.kwargs['extra_headers'] == {'X-Netplay-Session': 'session'}
+                            and call.kwargs['follow_redirects'] is False for call in api.call_args_list))
+
+    def test_mobile_store_purchase_sends_the_displayed_price(self):
+        from mobile.backend import appearance_store
+
+        with patch('discord_auth.api_call', return_value={'balance': 7}) as api:
+            self.assertEqual(appearance_store('session', 'character', item={'id': 4, 'price': 3}), {'balance': 7})
+        self.assertEqual(api.call_args.args[1:], ('POST', '/api/netplay/store/characters/4/purchase/', {'price': 3}))
+
+    def test_history_portraits_deduplicate_and_allow_only_character_paths(self):
+        from mobile.backend import history_portraits
+
+        path = '/static/characters/42.ab12.png'
+        fights = [{'players': [{'portrait': path}, {'portrait': path},
+                               {'portrait': 'https://example.com/42.png'}, {'portrait': None}]}]
+        with patch('mobile.backend._history_portrait', return_value='portrait.png') as fetch:
+            self.assertEqual(history_portraits('/cache', fights), {path: 'portrait.png'})
+        fetch.assert_called_once_with('/cache', path)
+
 class MobileHostTests(unittest.TestCase):
+    def test_armsx2_slots_follow_un6_variants(self):
+        from mobile.host import emulator_slot
+        from netlink import UN6_AUDIO20_STATE_TAG, UN6_ORIGINAL_STATE_TAG, UN6_PORTAL_STATE_TAG
+
+        self.assertEqual(emulator_slot('un5', None), 1)
+        self.assertEqual(emulator_slot('un6', UN6_ORIGINAL_STATE_TAG), 1)
+        self.assertEqual(emulator_slot('un6', UN6_PORTAL_STATE_TAG), 2)
+        self.assertEqual(emulator_slot('un6', UN6_AUDIO20_STATE_TAG), 3)
+
+    def test_zerotier_guest_matches_the_host_state(self):
+        from mobile.host import zerotier_guest_state
+        from netlink import UN6_AUDIO20_STATE_TAG, UN6_ORIGINAL_STATE_TAG
+        from statesync import StateError
+
+        with patch('statesync.advertised_tag', return_value=UN6_ORIGINAL_STATE_TAG) as query:
+            self.assertEqual(zerotier_guest_state('un6', '192.168.195.14'), ('original', UN6_ORIGINAL_STATE_TAG))
+            self.assertEqual(zerotier_guest_state('un6', '192.168.195.14', UN6_AUDIO20_STATE_TAG),
+                             ('audio20', UN6_AUDIO20_STATE_TAG))
+            query.assert_called_once_with('192.168.195.14', 47400)
+        with patch('statesync.advertised_tag', side_effect=StateError('no announcement')):
+            self.assertEqual(zerotier_guest_state('un6', '192.168.195.14'), (None, None))
+
+    def test_mobile_zerotier_room_is_announced_without_disabling_state_sharing(self):
+        from mobile.host import host_arguments
+        from netplay import main
+
+        command = host_arguments({'directory': '/private/mobile', 'game': 'un6', 'pine_slot': 28011,
+                                  'address': '10.147.0.12', 'stop_file': '/private/mobile/host.stop',
+                                  'transport': 'direct', 'announce_zerotier': True})
+        with patch('netplay.cmd_play') as play:
+            main(command)
+        args = play.call_args.args[0]
+        self.assertEqual(args.announce_zerotier, 'un6')
+        self.assertTrue(args.share_zerotier_state)
+        self.assertFalse(args.no_announce)
+
     def test_tournament_roles_use_the_shared_fixture_connection(self):
         from mobile.host import session_arguments
         from netplay import main

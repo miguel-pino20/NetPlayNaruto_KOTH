@@ -35,7 +35,7 @@ def paths(directory, game):
     return root / 'match.p2s', root / 'symbols.json'
 
 
-def prepare_files(directory, game, *, relay=False, variant=None):
+def prepare_files(directory, game, *, relay=False, variant=None, expected_state_tag=None):
     from discord_auth import api_call, ssl_context
     from netlink import UN6_PORTAL_SYMBOLS_TAG, default_file, un6_state_catalog
     state, symbols = paths(directory, game)
@@ -48,6 +48,8 @@ def prepare_files(directory, game, *, relay=False, variant=None):
                 f'{SERVER}/blob/{UN6_PORTAL_SYMBOLS_TAG}', UN6_PORTAL_SYMBOLS_TAG)
         else:
             url, expected = default_file(SERVER, game, kind, info, relay=relay)
+        if kind == 'state' and expected_state_tag is not None and expected != expected_state_tag:
+            raise ValueError(tr('El estado anunciado por el anfitrión no está disponible para este juego.'))
         if not isinstance(expected, str) or len(expected) != 16 or any(c not in '0123456789abcdef' for c in expected):
             raise ValueError(tr('El servidor no publicó un identificador válido para {kind}', kind=kind))
         if destination.exists() and file_tag(destination) == expected:
@@ -76,6 +78,37 @@ def prepare_files(directory, game, *, relay=False, variant=None):
     return state, symbols
 
 
+def zerotier_guest_state(game, host, announced_tag=None):
+    from netlink import un6_state_catalog
+    from rooms import ZEROTIER_GAME_PORT
+    from statesync import StateError, advertised_tag
+
+    tag = announced_tag
+    if tag is None:
+        try:
+            tag = advertised_tag(host, ZEROTIER_GAME_PORT)
+        except StateError:
+            return None, None  # Hosts without the state query use the existing default.
+    if game == 'un6':
+        for variant, (_, state_tag) in un6_state_catalog(SERVER).items():
+            if state_tag == tag:
+                return variant, tag
+    return None, tag
+
+
+UN6_STATE_SLOTS = {'original': 1, 'transformed': 2, 'audio20': 3}
+
+
+def emulator_slot(game, state_tag):
+    from netlink import un6_state_catalog
+
+    if game == 'un6':
+        for variant, (_, tag) in un6_state_catalog(SERVER).items():
+            if tag == state_tag:
+                return UN6_STATE_SLOTS[variant]
+    return 1
+
+
 def session_arguments(config):
     from netlink import DEFAULT_SERVER, DEFAULT_API_URL
     state, symbols = paths(config['directory'], config['game'])
@@ -91,7 +124,12 @@ def session_arguments(config):
     args = ['--symbols', str(symbols), '--pine-slot', str(slot), '--stop-file', config['stop_file'],
             role, '--state', str(state), '--delay', '3', '--auto-delay',
             '--nick', config.get('nick', 'Player1')]
-    args += ['--port', '47400', '--no-announce'] if role == 'host' else ['--bind-port', '0']
+    args += ['--port', '47400'] if role == 'host' else ['--bind-port', '0']
+    if role == 'host':
+        if transport == 'direct' and config.get('address') and config.get('announce_zerotier') and not config.get('fixture'):
+            args += ['--announce-zerotier', config['game'], '--share-zerotier-state']
+        else:
+            args += ['--no-announce']
     if transport == 'server':
         args += ['--server', DEFAULT_SERVER, '--api-url', DEFAULT_API_URL, '--relay-only']
         if role == 'host':
@@ -143,6 +181,7 @@ def wait_for_match(config, report):
     from netlink import UN6_AUDIO20_STATE_TAG, UN6_ORIGINAL_STATE_TAG, UN6_PORTAL_STATE_TAG
     state, symbols = paths(config['directory'], config['game'])
     expected_un6 = file_tag(state) if config['game'] == 'un6' else None
+    slot = emulator_slot(config['game'], expected_un6)
     # ARMSX2 loads the file installed by the player, which can differ from the download.
     awakening_instruction = {
         UN6_ORIGINAL_STATE_TAG: 0x0C07FA84,
@@ -164,15 +203,15 @@ def wait_for_match(config, report):
                 ensure_controllers(client)
                 configured = True
             if not loaded:
-                # PINE index 0 is slot 1 in the ARMSX2 UI. File installation is not supported by PINE.
-                client.load_state(0)
+                # ARMSX2 displays slots starting at 1, while PINE starts at 0.
+                client.load_state(slot - 1)
                 loaded = True
                 time.sleep(1.5)
             base, _, _ = resolve_base(client, symbols)
             if not PineCore(base, pine=client, serial=None).frozen():
-                raise ValueError(tr('Falta el estado compartido preparado en el slot 1 de ARMSX2.'))
+                raise ValueError(tr('Falta el estado compartido preparado en el slot {slot} de ARMSX2.', slot=slot))
             if awakening_instruction is not None and client.read(0xA19A34, 4) != awakening_instruction:
-                raise ValueError(tr('El estado de UN6 en el slot 1 de ARMSX2 no coincide con el de esta partida.'))
+                raise ValueError(tr('El estado de UN6 en el slot {slot} de ARMSX2 no coincide con el de esta partida.', slot=slot))
             return
         except (PineError, OSError, RuntimeError, ValueError, KeyError) as error:
             last = str(error)
