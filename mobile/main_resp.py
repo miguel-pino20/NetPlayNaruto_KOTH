@@ -181,6 +181,7 @@ class MobileApp(App):
                                  size_hint_y=None, height=dp(48))
         koth.add_widget(self.koth_game)
         self.koth_start = self.button(koth, 'Iniciar evento casual', self.start_casual)
+        self.koth_export = self.button(koth, 'Descargar estado del evento', self.export_koth_state)
         self.koth_join = self.button(koth, 'Inscribirme y conectar', self.join_koth)
         self.button(koth, 'Volver a ARMSX2', self.open_emulator)
         self.button(koth, 'Desconectar de KOTH', self.stop_koth)
@@ -414,13 +415,24 @@ class MobileApp(App):
             self.say(str(error))
 
     def export_state(self):
+        self.export_match_state(self.export_game.text)
+
+    def export_match_state(self, game, variant=None):
         if platform != 'android':
             self.say('Guardar en Descargas está disponible en Android 10 o posterior.')
             return
         from downloads import download_state
-        game = self.export_game.text
         self.say('Descargando y verificando estado {game}…', game=game.upper())
-        self.run_job(lambda: download_state(self.user_data_dir, game), self.say)
+        self.run_job(lambda: download_state(self.user_data_dir, game, variant=variant), self.say)
+
+    def export_koth_state(self):
+        from koth_client import KOTH_STATES
+
+        event = self.koth_choices.get(self.koth_selected_id)
+        if not event or self.koth_events_url != self.inputs['koth_url'].text.strip().rstrip('/'):
+            return
+        game, variant = KOTH_STATES.get(event.get('match_state'), (self.koth_game.text, None))
+        self.export_match_state(game, variant)
 
     def test_pine(self):
         slot = self.inputs['pine_slot'].text
@@ -433,6 +445,7 @@ class MobileApp(App):
         self.koth_start.disabled = not (
             session and self.koth_owner_scope == (source, session) and self.koth_events_url == source
             and event.get('casual') and event.get('status') == 'draft' and event['id'] in self.koth_owned)
+        self.koth_export.disabled = not (event and self.koth_events_url == source)
         self.koth_join.disabled = True
         if not self.discord_verified or not self.account.session:
             self.set_text(self.koth_info, 'Inicia sesión con Discord para inscribirte y conectar.')

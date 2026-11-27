@@ -787,7 +787,10 @@ class Backend(DiscordMixin):
                 if not symbols_tag:
                     raise AccountError(tr("err.no_kind", kind="symbols"))
                 cached_symbols = symbols_p.with_name(f'{symbols_p.stem}-{symbols_tag}.json')
-                symbols = next((path for path in (cached_symbols, symbols_p, Path(cfg['symbols_path']))
+                local_symbols = [cached_symbols, symbols_p, Path(cfg['symbols_path'])]
+                if game == 'un6':
+                    local_symbols.append(HERE / 'symbols_un6.json')
+                symbols = next((path for path in local_symbols
                                 if path.is_file() and state_tag(path) == symbols_tag), None)
                 if symbols is None:
                     self.q.put(("line", tr("log.dl_default", kind="symbols")))

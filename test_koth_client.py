@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from discord_auth import AccountError
-from koth_client import DEFAULT_URL, MembershipStore, enroll, link_account, site_url
+from koth_client import DEFAULT_URL, MembershipStore, enroll, event_for_ticket, link_account, site_url
 from launcher_core import Backend
 from urllib.error import HTTPError
 
@@ -20,6 +20,13 @@ class KothClientTests(unittest.TestCase):
         self.store = MembershipStore(self.path)
         self.url = 'https://events.example.test'
         self.event = {'id': 2, 'version': 4}
+
+    def test_personal_code_requires_a_resolved_event_before_selecting_state(self):
+        event = {**self.event, 'match_state': 'un6-transformed'}
+        with patch('koth_client.api_call', side_effect=[event, AccountError('Not found', 404)]):
+            self.assertEqual(event_for_ticket(self.url, 'ticket'), event)
+            with self.assertRaisesRegex(AccountError, 'No se pudo obtener el evento'):
+                event_for_ticket(self.url, 'ticket')
 
     def test_scheduled_registration_uses_official_endpoint_and_verified_session(self):
         from koth_client import TOURNAMENT_FORMATS, scheduled_tournaments, join_tournament, tournament_label

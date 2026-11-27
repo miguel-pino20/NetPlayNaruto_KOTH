@@ -93,13 +93,18 @@ def publish_state(source, filename):
     return shared, True
 
 
-def download_state(directory, game):
+def download_state(directory, game, *, variant=None):
     if __package__:
         from .host import prepare_files
     else:
         from host import prepare_files
-    state, _ = prepare_files(directory, game)
-    name = game.upper() + '-Netplay.p2s'
+    if game == 'un6' and variant:
+        from pathlib import Path
+        state, _ = prepare_files(Path(directory) / 'export', game, variant=variant)
+        name = f'UN6-Netplay-{variant}.p2s'
+    else:
+        state, _ = prepare_files(directory, game)
+        name = game.upper() + '-Netplay.p2s'
     folder, changed = publish_state(state, name)
     message = tr('Estado guardado: {path}') if changed else tr('Estado existente verificado: {path}')
     return tr(message, path=folder + '/' + name) + tr(

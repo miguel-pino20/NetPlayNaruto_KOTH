@@ -273,7 +273,10 @@ def event_for_ticket(url, ticket):
     except AccountError as error:
         if error.code != 404:
             raise
-        return None
+        raise AccountError(
+            'No se pudo obtener el evento de este código KOTH. Selecciona el evento en Rey de la Colina '
+            'o solicita un código vigente para cargar su estado.', 404,
+        ) from None
 
 
 def enroll(url, event, name, store, fallback_ticket='', netplay_session='', *, address=''):

@@ -93,6 +93,24 @@ def round_scores(snapshot):
             for slot, key in (('p1', 'player1'), ('p2', 'player2'))]
 
 
+def waiting_reason(snapshot):
+    reason = snapshot['reason']
+    if snapshot['ready'] or reason != 'Esperando a los dos jugadores de la pareja.':
+        return reason
+    role = snapshot['role']
+    # Django only exposes the guest endpoint to the host.
+    if role == 'host' and snapshot.get('host') and 'guest' in snapshot and not snapshot['guest']:
+        missing, label = 'player2', 'P2'
+    elif role == 'guest' and 'host' in snapshot and not snapshot['host']:
+        missing, label = 'player1', 'P1'
+    else:
+        return reason
+    match = (snapshot.get('event') or {}).get('current_match') or {}
+    name = (match.get(missing) or {}).get('name')
+    player = f'{label} ({name})' if name else label
+    return f'Esperando que el launcher de {player} esté disponible para esta ronda de Rey de la Colina.'
+
+
 def match_command(args, snapshot, stop_file):
     host = snapshot['host']
     role = 'watch' if snapshot['role'] == 'spectator' else snapshot['role']
@@ -228,8 +246,10 @@ def run(args):
                     if time.monotonic() - last_success >= 12:
                         raise HillError('Se perdió la conexión con Django. Se detuvo el combate; vuelve a conectar.') from None
                 else:
+                    reason = waiting_reason(snapshot)
                     if isinstance(snapshot.get('event'), dict):
-                        board = json.dumps({key: snapshot.get(key) for key in ('event', 'role', 'ready', 'reason')},
+                        board = json.dumps({**{key: snapshot.get(key) for key in ('event', 'role', 'ready')},
+                                            'reason': reason},
                                            ensure_ascii=True, sort_keys=True)
                         if board != last_board:
                             print('KOTH_STATE ' + board, flush=True)
@@ -251,7 +271,6 @@ def run(args):
                     if snapshot['status'] == 'finished':
                         print('El torneo finalizó.', flush=True)
                         return 0
-                    reason = snapshot['reason']
                     message = (' | '.join(f"{i+1}. {p['name']} ({p['points']} pts)" for i, p in enumerate(snapshot['queue'])),
                                snapshot['role'], reason)
                     if message != last_message:

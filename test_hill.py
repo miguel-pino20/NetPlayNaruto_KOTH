@@ -51,6 +51,18 @@ class HillTests(unittest.TestCase):
                     queue=[dict(id=1, name='A', points=0)],
                     host=dict(address='10.147.0.1', port=47400, delay=4, relay_room='main-room'))
 
+    def test_waiting_reason_identifies_the_unavailable_player_when_known(self):
+        reason = 'Esperando a los dos jugadores de la pareja.'
+        snapshot = self.snapshot(ready=False)
+        snapshot.update(reason=reason, guest=None, event={'current_match': {
+            'player1': {'name': 'A'}, 'player2': {'name': 'B'},
+        }})
+        self.assertIn('P2 (B)', hill.waiting_reason(snapshot))
+        del snapshot['guest']
+        self.assertEqual(hill.waiting_reason(snapshot), reason)
+        snapshot.update(role='guest', host=None)
+        self.assertIn('P1 (A)', hill.waiting_reason(snapshot))
+
     @patch.dict(os.environ, {'UN5_HILL_TICKET': 'watch-ticket', 'UN5_NETPLAY_SESSION': 'private-session'})
     @patch('hill.time.sleep')
     @patch('hill.subprocess.Popen')

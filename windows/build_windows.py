@@ -55,7 +55,8 @@ def main():
     for path in data_files:
         command += ["--add-data", f"{path}{os.pathsep}."]
     for asset in map(Path, ("assets/background/background1.png", "assets/logo_naruto.png",
-                            "assets/naruto_mascot.png", "assets/naruto_mascot_poses.png")):
+                            "assets/naruto_mascot.png", "assets/naruto_mascot_poses.png",
+                            "saves/UN6-partida-audio-20.p2s")):
         command += ["--add-data", f"{ROOT / asset}{os.pathsep}{asset.parent}"]
     command += ["--add-data", f"{ROOT / 'windows/README.md'}{os.pathsep}."]
     command += ["--add-data", f"{ROOT / 'UPDATES.md'}{os.pathsep}."]

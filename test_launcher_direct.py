@@ -93,6 +93,43 @@ class DirectLauncherTests(unittest.TestCase):
             lookup.assert_called_once_with(config['zerotier_host'], 47400)
             self.assertFalse(state.exists())
 
+    def test_koth_transformed_event_downloads_both_files_with_an_empty_cache(self):
+        from koth_client import KOTH_STATES
+
+        folder = Path(self.folder.name)
+        state, symbols = folder / 'UN6-partida.p2s', folder / 'symbols_un6.json'
+        game, variant = KOTH_STATES['un6-transformed']
+        cfg = dict(game=game, zerotier_state=variant, symbols_path=str(symbols))
+        backend = core.Backend()
+        with patch('launcher_core.HERE', folder), patch('launcher_core.game_paths', return_value=(state, symbols)), \
+                patch('launcher_core.api_call') as defaults, patch.object(backend, '_download') as download:
+            # KOTH selects the event's files before Django assigns either player a role.
+            backend.sync_zerotier_state(cfg, 'host')
+            event = backend.q.get(timeout=2)
+            while event[0] == 'line':
+                event = backend.q.get(timeout=2)
+            self.assertEqual(event, ('sync', True, ''))
+            defaults.assert_not_called()
+            self.assertEqual([call.args for call in download.call_args_list], [
+                (netlink.UN6_PORTAL_STATE_URL, Path(cfg['state_file']), netlink.UN6_PORTAL_STATE_TAG),
+                (f'{core.SERVER_URL}/blob/{netlink.UN6_PORTAL_SYMBOLS_TAG}',
+                 Path(cfg['symbols_path']), netlink.UN6_PORTAL_SYMBOLS_TAG),
+            ])
+
+    def test_koth_audio20_uses_packaged_state_and_symbols_with_an_empty_cache(self):
+        folder = Path(self.folder.name)
+        state, symbols = folder / 'UN6-partida.p2s', folder / 'symbols_un6.json'
+        cfg = dict(game='un6', zerotier_state='audio20', symbols_path=str(symbols))
+        backend = core.Backend()
+        with patch('launcher_core.game_paths', return_value=(state, symbols)), \
+                patch('launcher_core.api_call') as defaults, patch.object(backend, '_download') as download:
+            backend.sync_zerotier_state(cfg, 'host')
+            self.assertEqual(backend.q.get(timeout=2), ('sync', True, ''))
+            defaults.assert_not_called()
+            download.assert_not_called()
+        self.assertEqual(core.state_tag(cfg['state_file']), netlink.UN6_AUDIO20_STATE_TAG)
+        self.assertEqual(core.state_tag(cfg['symbols_path']), netlink.UN6_PORTAL_SYMBOLS_TAG)
+
     def test_listed_zerotier_host_enables_discovery_for_its_game(self):
         self.cfg.update(announce_zerotier=True, game='un6')
         parsed = self.parse_command('host')
