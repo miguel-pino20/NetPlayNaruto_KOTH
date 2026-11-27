@@ -180,6 +180,10 @@ class MobileApp(App):
         self.koth_game = Spinner(text=self.prefs.get('koth_game', self.game.text), values=('un5', 'un6'),
                                  size_hint_y=None, height=dp(48))
         koth.add_widget(self.koth_game)
+        self.label_in(koth, 'Red del combate', 14, 40)
+        self.koth_network = Spinner(text='Netplay' if self.prefs.get('koth_transport') == 'relay' else 'ZeroTier',
+                                    values=('ZeroTier', 'Netplay'), size_hint_y=None, height=dp(48))
+        koth.add_widget(self.koth_network)
         self.koth_start = self.button(koth, 'Iniciar evento casual', self.start_casual)
         self.koth_export = self.button(koth, 'Descargar estado del evento', self.export_koth_state)
         self.koth_join = self.button(koth, 'Inscribirme y conectar', self.join_koth)
@@ -316,6 +320,7 @@ class MobileApp(App):
         self.prefs['language'] = self.language
         self.prefs['game'] = self.game.text
         self.prefs['koth_game'] = self.koth_game.text
+        self.prefs['koth_transport'] = 'relay' if self.koth_network.text == 'Netplay' else 'zerotier'
         self.prefs['overlay'] = self.overlay.active
         self.prefs['transport'] = self.transport_mode(self.host_transport)
         self.prefs['client_transport'] = self.transport_mode(self.client_transport)
@@ -804,14 +809,13 @@ class MobileApp(App):
         from koth_client import KOTH_STATES, MembershipStore, enroll
         try:
             url = https_url(self.koth_events_url)
-            configured_address = self.inputs['zt_address'].text.strip()
-            if not configured_address:
-                self.say('KOTH requiere tu IPv4 de ZeroTier. Configúrala en la pestaña Conexión.')
-                return
-            try:
-                address = validate_address(configured_address)
-            except ValueError as error:
-                raise ValueError(tr('Revisa la IPv4 de ZeroTier en la pestaña Conexión.')) from error
+            transport = 'relay' if self.koth_network.text == 'Netplay' else 'zerotier'
+            address = '0.0.0.0'
+            if transport == 'zerotier':
+                try:
+                    address = validate_address(self.inputs['zt_address'].text.strip())
+                except ValueError as error:
+                    raise ValueError(tr('Revisa la IPv4 de ZeroTier en la pestaña Conexión.')) from error
             self.persist()
         except (ValueError, OSError) as error:
             self.say(str(error))
@@ -838,7 +842,7 @@ class MobileApp(App):
         event = self.koth_choices[self.koth_selected_id]
 
         config = {'directory': self.user_data_dir, 'game': self.koth_game.text, 'pine_slot': slot,
-                  'address': address, 'transport': 'direct', 'role': 'koth', 'url': url,
+                  'address': address, 'koth_transport': transport, 'transport': 'direct', 'role': 'koth', 'url': url,
                   'nick': name, 'overlay': False, 'event_name': event['name'],
                   'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
 
@@ -855,7 +859,8 @@ class MobileApp(App):
                     config.update(game=match[0], variant=match[1])
                 self.launch_mobile_service(dict(config, koth_ticket=result['ticket']), return_to_game=False)
 
-        self.run_job(lambda: enroll(url, event, name, store, netplay_session=session, address=address), show)
+        self.run_job(lambda: enroll(url, event, name, store, netplay_session=session,
+                                    address=address if transport == 'zerotier' else ''), show)
 
     def stop_koth(self):
         state = load_preferences(Path(self.user_data_dir) / 'host-status.json')

@@ -560,6 +560,10 @@ class FixtureResults:
                                  extra_headers={'Idempotency-Key': body['idempotency_key']},
                                  timeout=5, follow_redirects=False)
                 if reply.get('status') == 'pending' and reply.get('session') == self.session:
+                    message = 'Django recibió el resultado y espera el reporte del otro jugador.'
+                    if message != self.last_error:
+                        self.log(f'Torneo: {message}')
+                        self.last_error = message
                     continue
                 series = reply['series']
                 if reply.get('status') != 'recorded' or reply.get('session') != self.session:
@@ -1023,6 +1027,8 @@ def start_for_session(args, pine, is_host, log=print, room='', online=False, nod
         report_path = os.environ.get('UN5_KOTH_RESULT_FILE') if not casual else None
         fixture = getattr(args, 'tournament_fixture', None)
         fixture_sink = FixtureResults(args, log) if fixture and getattr(args, 'fixture_result_grant', None) else None
+        if fixture and not fixture_sink:
+            log('Torneo: el cruce no recibió autorización para enviar resultados desde este jugador.')
         if not casual:
             cfg = merge(cfg, {'enabled': bool(fixture or report_path or cfg['enabled']),
                               'outputs': {'django': {'enabled': False}}})
@@ -1053,6 +1059,13 @@ def start_for_session(args, pine, is_host, log=print, room='', online=False, nod
             f'{"online" if online else "directa"}, activo={bool(cfg.get("enabled"))}.')
         service = build(cfg, lambda addr, size: pine.read(addr, size), is_host, session, log, serial=serial, crc=crc, registration=registration,
                         node=score_node, host_secret=host_secret, fixture_sink=fixture_sink)
+        if fixture and service and isinstance(service.detector, HpDetector):
+            def log_battle_status(previous, current, hp):
+                previous_status = 'sin lectura' if previous is None else f'{previous:#04x}'
+                health = 'sin lectura' if hp is None else f'{hp[0]:.3f}/{hp[1]:.3f}'
+                log(f'Torneo: estado de batalla {previous_status} → {current:#04x} · vida P1/P2 {health}')
+
+            service.detector.on_status = log_battle_status
         if service and report_path:
             service.board.players = json.loads(os.environ.get('UN5_KOTH_PLAYERS') or '{}')
             service.board.listeners.append(koth_reporter(Path(report_path), session))

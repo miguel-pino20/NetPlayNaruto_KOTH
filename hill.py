@@ -1,4 +1,4 @@
-"""Django-coordinated King of the Hill using direct netplay over ZeroTier."""
+"""Django-coordinated King of the Hill using ZeroTier or the Netplay relay."""
 from __future__ import annotations
 
 import hashlib
@@ -111,7 +111,27 @@ def waiting_reason(snapshot):
     return f'Esperando que el launcher de {player} esté disponible para esta ronda de Rey de la Colina.'
 
 
-def match_command(args, snapshot, stop_file):
+def relay_arguments(snapshot, room_file):
+    from netlink import DEFAULT_API_URL, DEFAULT_SERVER
+
+    options = ['--server', DEFAULT_SERVER, '--api-url', DEFAULT_API_URL, '--relay-only', '--koth-relay']
+    if snapshot['role'] == 'host':
+        return options + ['--room-file', str(room_file)]
+    return options + ['--room', snapshot['host']['relay_room'], '--bind-port', '0']
+
+
+def room_heartbeat(body, room_file, round_id, delay):
+    body.update(room_id='', room_round='', delay=delay)
+    if round_id is None:
+        return
+    try:
+        room = json.loads(room_file.read_text(encoding='utf-8'))
+        body.update(room_id=room['room_id'], room_round=round_id, delay=room['delay'])
+    except (OSError, ValueError, KeyError):
+        pass
+
+
+def match_command(args, snapshot, stop_file, room_file=None):
     host = snapshot['host']
     role = 'watch' if snapshot['role'] == 'spectator' else snapshot['role']
     command = [sys.executable, '-u', str(Path(__file__).with_name('netplay.py')),
@@ -124,15 +144,18 @@ def match_command(args, snapshot, stop_file):
         command += ['--session-epoch', str(snapshot.get('session_epoch') or snapshot['round_id'])]
     if args.stop_file:
         command[3:3] = ['--parent-stop-file', str(args.stop_file)]
-    if role == 'host':
+    if snapshot.get('transport') == 'relay':
+        command += relay_arguments(snapshot, room_file)
+    elif role == 'host':
         command += ['--server', '', '--bind-address', args.address]
         if (snapshot.get('guest') or {}).get('address'):
             command += ['--expect-guest-ip', snapshot['guest']['address']]
-        command += ['--port', str(args.port), '--no-announce', '--no-share-state']
     elif role == 'guest':
         command += ['--server', '', '--bind-address', args.address, '--connect', f"{host['address']}:{host['port']}"]
     else:
         command += ['--server', '', '--connect', f"{host['address']}:{host['spectator_port']}"]
+    if role == 'host':
+        command += ['--port', str(args.port), '--no-announce', '--no-share-state']
     if role in ('host', 'guest') and snapshot.get('spectator_key') and not getattr(args, 'no_spectators', False):
         command += ['--spectator-port', str(args.port+1)]
     return command
@@ -189,7 +212,8 @@ def run(args):
     url = validate_url(args.api_url)
     observe = getattr(args, 'observe', False)
     address = ipaddress.IPv4Address(args.address)
-    if address.is_loopback or address.is_multicast or address.is_unspecified:
+    transport = getattr(args, 'transport', 'zerotier')
+    if address.is_loopback or address.is_multicast or (transport == 'zerotier' and not observe and address.is_unspecified):
         raise ValueError('Introduce la IPv4 de ZeroTier de este PC.')
     ticket = os.environ.get('UN5_HILL_TICKET', '').strip()
     if not ticket:
@@ -198,16 +222,17 @@ def run(args):
         raise ValueError('Falta UN5_HILL_TICKET: genera el código personal desde el torneo.')
     body = {'address': str(address), 'port': args.port, 'game': args.game, 'delay': args.delay or 3,
             'state_tag': file_tag(args.state), 'symbols_tag': file_tag(args.symbols), 'available': True,
-            'transport': 'zerotier', 'spectators_enabled': observe or not getattr(args, 'no_spectators', False)}
+            'transport': transport, 'hybrid': True, 'spectators_enabled': observe or not getattr(args, 'no_spectators', False)}
     if getattr(args, 'personal_code', False):
         body['personal_code'] = True
     process, active_round, blocked_round, last_message = None, None, None, None
-    active_role, watch_failed_round = None, None
+    active_role, active_transport, watch_failed_round = None, None, None
     active_stream, watch_retry_at = None, 0
     last_board = None
     registered = False
     with tempfile.TemporaryDirectory(prefix='un5-hill-') as directory:
         child_stop = Path(directory) / 'stop'
+        room_file = Path(directory) / 'room.json'
         result_file = Path(directory) / 'result.json'
         try:
             print('Rey de la colina: cargando el save state en PCSX2 para observar ...' if observe else
@@ -230,6 +255,8 @@ def run(args):
                         print('La sesión terminó. Esperando que Django actualice la ronda.', flush=True)
                     process = None
                 body['available'] = blocked_round is None
+                relay_host = process is not None and active_transport == 'relay' and active_role == 'host'
+                room_heartbeat(body, room_file, active_round if relay_host else None, args.delay or 3)
                 try:
                     if observe:
                         snapshot = sync(url, ticket, dict(body), observe=True)
@@ -237,8 +264,11 @@ def run(args):
                             raise HillError('Django devolvió un rol incompatible con el modo observador.')
                     else:
                         snapshot = sync(url, ticket, dict(body))
-                    if snapshot.get('transport') != 'zerotier':
-                        raise HillError('Actualiza Django y los dos launchers: la pareja debe usar el mismo transporte de KOTH.')
+                    selected_transport = snapshot.get('transport')
+                    if selected_transport not in ('zerotier', 'relay') or (
+                            transport == 'relay' and selected_transport != 'relay'
+                            and snapshot.get('role') in ('host', 'guest')):
+                        raise HillError('Django devolvió un transporte incompatible. Actualiza el servidor y el launcher.')
                     registered = True
                     last_success = time.monotonic()
                 except OSError as error:
@@ -263,10 +293,11 @@ def run(args):
                     if watch_failed_round is not None and round_id != watch_failed_round:
                         watch_failed_round = None
                     if process is not None and (round_id != active_round or snapshot['role'] != active_role or not snapshot['ready']
+                                                or active_transport != selected_transport
                                                 or (active_role == 'spectator' and stream_id != active_stream)):
                         stop_match(process, child_stop)
                         process = None
-                        if round_id == active_round and active_role != 'spectator':
+                        if round_id == active_round and active_role != 'spectator' and active_transport == selected_transport:
                             blocked_round = active_round
                     if snapshot['status'] == 'finished':
                         print('El torneo finalizó.', flush=True)
@@ -280,12 +311,16 @@ def run(args):
                     watching_failed = (snapshot['role'] == 'spectator' and watch_failed_round == round_id
                                        and time.monotonic() < watch_retry_at)
                     watching_disabled = not observe and snapshot['role'] == 'spectator' and getattr(args, 'no_spectators', False)
-                    if process is None and blocked_round is None and snapshot['ready'] and not watching_failed and not watching_disabled:
+                    room_ready = (selected_transport != 'relay' or snapshot['role'] == 'host'
+                                  or (snapshot.get('host') or {}).get('relay_room'))
+                    if process is None and blocked_round is None and snapshot['ready'] and room_ready and not watching_failed and not watching_disabled:
                         child_stop.unlink(missing_ok=True)
+                        room_file.unlink(missing_ok=True)
                         active_round = round_id
                         active_stream = stream_id
                         active_role = snapshot['role']
-                        print('Iniciando modo espectador.' if active_role == 'spectator' else f"Iniciando combate como {active_role}.", flush=True)
+                        active_transport = selected_transport
+                        print('Iniciando modo espectador.' if active_role == 'spectator' else f"Iniciando combate como {active_role} por {'Netplay' if selected_transport == 'relay' else 'ZeroTier'}.", flush=True)
                         child_env = os.environ.copy()
                         child_env.pop('UN5_HILL_TICKET', None)
                         child_env.pop('UN5_KOTH_RESULT_FILE', None)
@@ -303,7 +338,7 @@ def run(args):
                             child_env['UN5_SPECTATOR_KEY'] = snapshot['spectator_key']
                         else:
                             child_env.pop('UN5_SPECTATOR_KEY', None)
-                        process = subprocess.Popen(match_command(args, snapshot, child_stop), env=child_env)
+                        process = subprocess.Popen(match_command(args, snapshot, child_stop, room_file), env=child_env)
                 # Remain responsive to STOP while waiting between heartbeats.
                 for _ in range(20):
                     if args.stop_file and Path(args.stop_file).exists():

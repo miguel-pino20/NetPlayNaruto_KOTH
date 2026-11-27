@@ -108,6 +108,7 @@ TRANSLATIONS = {
         'Shared save state for ARMSX2',
         'Estado salvo compartilhado para ARMSX2',
     ),
+    'Red del combate': ('Match network', 'Rede da partida'),
     'Descargar estado en Descargas': (
         'Save state to Downloads',
         'Salvar estado em Downloads',

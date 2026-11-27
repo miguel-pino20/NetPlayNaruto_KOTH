@@ -750,7 +750,7 @@ def online_open(args, core, is_host, tag, nick):
     try:
         api = netlink.Api(getattr(args, 'api_url', '') or args.server)
         session_token = os.environ.get('UN5_NETPLAY_SESSION', '')
-        if session_token and not is_host:
+        if not is_host and (session_token or getattr(args, 'koth_relay', False)):
             api_call(args.api_url, 'POST', f'/rooms/{args.room}/allow', {}, token=session_token)
         server_addr = netlink.resolve(args.server)
         sock = netlink.open_socket(args.port if is_host else args.bind_port)
@@ -766,6 +766,8 @@ def online_open(args, core, is_host, tag, nick):
             report_online_presence(args.api_url, 'host', room['id'], session_token)
             if getattr(args, 'room_file', None):
                 from pathlib import Path
+                # P2 can join as soon as Django receives this file.
+                api.poll(room['id'], room['token'], 'waiting')
                 path = Path(args.room_file)
                 temporary = path.with_suffix('.tmp')
                 temporary.write_text(json.dumps({'room_id': room['id'], 'delay': args.delay}), encoding='utf-8')
@@ -1316,7 +1318,7 @@ def main(argv=None, *, prepare_fixture=None):
     ap.add_argument('--stop-file', default=None, help='file signal to stop the netplay session')
     ap.add_argument('--parent-stop-file', default=None, help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest='cmd', required=True)
-    hill = sub.add_parser('hill', help='Rey de la colina con Django y peleas por ZeroTier')
+    hill = sub.add_parser('hill', help='Rey de la colina con Django y peleas por ZeroTier o Netplay')
     hill.add_argument('--api-url', required=True)
     hill.add_argument('--address', default='0.0.0.0', help='IPv4 de este PC en ZeroTier (obligatoria para conexión directa)')
     hill.add_argument('--game', required=True, choices=('un5', 'un6'))
@@ -1327,7 +1329,7 @@ def main(argv=None, *, prepare_fixture=None):
     hill.add_argument('--delay', type=int, choices=(0, *range(2, 11)), default=3)
     hill.add_argument('--auto-delay', action='store_true')
     hill.add_argument('--nick', default='')
-    hill.add_argument('--transport', choices=('zerotier',), default='zerotier')
+    hill.add_argument('--transport', choices=('zerotier', 'relay'), default='zerotier')
     hill.add_argument('--personal-code', action='store_true', help='use the tournament registration as the player identity')
     hill.add_argument('--observe', action='store_true', help='watch KOTH without joining the player queue')
     hill.add_argument('--no-spectators', action='store_true', help='disable watching and serving spectators')
@@ -1393,6 +1395,7 @@ def main(argv=None, *, prepare_fixture=None):
                        help='HTTP(S) address of the server API (e.g. https://un5netplay.duckdns.org); '
                             'default: http://--server. UDP (relay) always uses --server')
         q.add_argument('--relay-only', action='store_true', help='send game packets only through the principal relay')
+        q.add_argument('--koth-relay', action='store_true', help=argparse.SUPPRESS)
         q.add_argument('--zerotier', action='store_true', help='use casual ZeroTier score reporting with direct UDP')
         q.add_argument('--bind-address', default='0.0.0.0', help='local IPv4 for direct UDP connections')
         q.add_argument('--spectator-port', type=int, default=0, help='TCP port for read-only spectators (0 = off)')

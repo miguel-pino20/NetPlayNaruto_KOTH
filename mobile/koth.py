@@ -8,7 +8,7 @@ import time
 from types import SimpleNamespace
 
 from discord_auth import AccountError, api_call
-from hill import HillError, file_tag, release_game, round_nick, submit_pending_result
+from hill import HillError, file_tag, relay_arguments, release_game, room_heartbeat, round_nick, submit_pending_result
 from netplay import main as play
 
 if __package__:
@@ -40,16 +40,23 @@ def play_round(config, snapshot, state, symbols, stop):
         '--stop-file', str(stop), '--parent-stop-file', config['stop_file'],
         'watch' if role == 'spectator' else role, '--state', str(state),
         '--session-epoch', snapshot.get('session_epoch') or snapshot['round_id'],
-        '--delay', str(host['delay']), '--nick', round_nick(snapshot, config['nick']), '--server', '',
+        '--delay', str(host['delay']), '--nick', round_nick(snapshot, config['nick']),
     ]
+    relay = snapshot.get('transport') == 'relay'
+    if relay:
+        args += relay_arguments(snapshot, stop.with_name('room.json'))
+    else:
+        args += ['--server', '']
     if role == 'spectator':
         args += ['--preloaded-state', '--connect', f"{host['address']}:{host['spectator_port']}"]
         os.environ['UN5_SPECTATOR_SOURCES'] = json.dumps(snapshot.get('spectator_sources', []))
     else:
-        args += ['--auto-delay', '--bind-address', config['address']]
-        if role == 'guest':
+        args += ['--auto-delay']
+        if not relay:
+            args += ['--bind-address', config['address']]
+        if role == 'guest' and not relay:
             args += ['--bind-port', '0', '--connect', f"{host['address']}:{host['port']}"]
-        else:
+        elif role == 'host':
             args += ['--port', str(host['port']), '--no-share-state', '--no-announce']
             guest = snapshot.get('guest') or {}
             if guest.get('address'):
@@ -63,9 +70,19 @@ def play_round(config, snapshot, state, symbols, stop):
         os.environ['UN5_KOTH_RESULT_FILE'] = str(Path(stop).with_name('result.json'))
     else:
         os.environ.pop('UN5_KOTH_RESULT_FILE', None)
+    previous_session = os.environ.get('UN5_NETPLAY_SESSION')
+    if relay:
+        from appdata import load_session
+        session, _ = load_session()
+        os.environ['UN5_NETPLAY_SESSION'] = session or ''
     try:
         return play(args)
     finally:
+        if relay:
+            if previous_session is None:
+                os.environ.pop('UN5_NETPLAY_SESSION', None)
+            else:
+                os.environ['UN5_NETPLAY_SESSION'] = previous_session
         os.environ.pop('UN5_KOTH_PLAYERS', None)
         os.environ.pop('UN5_KOTH_RESULT_FILE', None)
         os.environ.pop('UN5_SPECTATOR_KEY', None)
@@ -77,9 +94,10 @@ def run_koth(config, report):
     report('preparing', tr('KOTH · Descargando los archivos de la partida. Vuelve a ARMSX2.'))
     state_options = {'variant': config['variant']} if config.get('variant') else {}
     state, symbols = prepare_files(config['directory'], config['game'], **state_options)
+    transport = config.get('koth_transport', 'zerotier')
     body = {'address': config['address'], 'port': 47400, 'game': config['game'], 'delay': 3,
             'state_tag': file_tag(state), 'symbols_tag': file_tag(symbols), 'available': False,
-            'transport': 'zerotier', 'spectators_enabled': True}
+            'transport': transport, 'hybrid': True, 'spectators_enabled': True}
     url, ticket = config['url'], config['koth_ticket']
     future = None
     active = blocked = None
@@ -88,6 +106,7 @@ def run_koth(config, report):
     last_sync = time.monotonic()
     with TemporaryDirectory(dir=config['directory'], prefix='koth-') as temp, ThreadPoolExecutor(max_workers=1) as worker:
         round_stop = Path(temp) / 'stop'
+        room_file = round_stop.with_name('room.json')
         try:
             while not parent_stop.exists():
                 submit_pending_result(round_stop.with_name('result.json'), url, ticket)
@@ -108,6 +127,8 @@ def run_koth(config, report):
                     last_sync = time.monotonic()
 
                 body['available'] = prepared
+                relay_host = future is not None and active[1] == 'host' and active[3] == 'relay'
+                room_heartbeat(body, room_file, active[0] if relay_host else None, 3)
                 try:
                     snapshot = sync(url, ticket, body)
                 except OSError:
@@ -119,17 +140,22 @@ def run_koth(config, report):
                     if snapshot['status'] == 'finished':
                         return 0
                     role = snapshot.get('role')
+                    selected_transport = snapshot.get('transport')
                     identity = (snapshot.get('round_id'), role,
-                                snapshot.get('session_epoch') or snapshot.get('stream_id'))
-                    if snapshot.get('transport') != 'zerotier':
-                        raise HillError(tr('KOTH móvil requiere que la pareja utilice ZeroTier.'))
+                                snapshot.get('session_epoch') or snapshot.get('stream_id'), selected_transport)
+                    if selected_transport not in ('zerotier', 'relay') or (
+                            transport == 'relay' and selected_transport != 'relay' and role in ('host', 'guest')):
+                        raise HillError(tr('Django devolvió un transporte incompatible. Actualiza el servidor y el launcher.'))
                     if blocked and (blocked[:2] != identity[:2] or time.monotonic() >= retry_after):
                         blocked = None
-                    ready = snapshot.get('ready') and role in ROLES
+                    room_ready = (selected_transport != 'relay' or role == 'host'
+                                  or (snapshot.get('host') or {}).get('relay_room'))
+                    ready = snapshot.get('ready') and role in ROLES and room_ready
                     if future and (not ready or active != identity):
                         round_stop.touch()
                     if future is None and prepared and ready and blocked is None:
                         round_stop.unlink(missing_ok=True)
+                        room_file.unlink(missing_ok=True)
                         active = identity
                         future = worker.submit(play_round, config, snapshot, state, symbols, round_stop)
                     role_label = tr(ROLES.get(role, 'En espera'))

@@ -75,6 +75,21 @@ class MobileKothTests(unittest.TestCase):
         result = str(self.root / 'result.json')
         self.assertEqual(reports, [result, result, None, result])
 
+    @patch('appdata.load_session', return_value=('mobile-session', {}))
+    @patch('mobile.koth.play', return_value=0)
+    def test_android_relay_host_and_guest_use_the_principal_room(self, play, load_session):
+        host = dict(self.snapshot['host'], relay_room='main-room')
+        for role in ('host', 'guest'):
+            snapshot = dict(self.snapshot, role=role, transport='relay', host=host,
+                            guest=None, spectator_key=None)
+            koth.play_round(self.config, snapshot, self.state, self.symbols, self.root / 'round.stop')
+            argv = play.call_args.args[0]
+            self.assertIn('--relay-only', argv)
+            self.assertNotIn('--bind-address', argv)
+            flag = '--room-file' if role == 'host' else '--room'
+            self.assertEqual(argv[argv.index(flag) + 1],
+                             str(self.root / 'room.json') if role == 'host' else 'main-room')
+
     def test_heartbeat_reports_django_roles_and_disconnects(self):
         roles = iter((None, 'guest', 'host', 'spectator'))
         messages = []

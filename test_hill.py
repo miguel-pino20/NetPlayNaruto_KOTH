@@ -316,6 +316,49 @@ class HillTests(unittest.TestCase):
         self.assertEqual(popen.call_count, 1)
         self.assertEqual(sync.call_args_list[0].args[2]['transport'], 'zerotier')
 
+    @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket'})
+    @patch('hill.time.sleep')
+    @patch('hill.subprocess.Popen')
+    @patch('hill.sync')
+    def test_zerotier_preference_uses_relay_and_announces_room_for_its_round(self, sync, popen, sleep):
+        host = dict(self.snapshot(), transport='relay')
+        sync.side_effect = [host, dict(host, status='finished'), {}]
+        popen.return_value.poll.return_value = None
+
+        def launch(command, **kwargs):
+            room_file = Path(command[command.index('--room-file') + 1])
+            room_file.write_text('{"room_id":"main-room","delay":4}', encoding='utf-8')
+            return popen.return_value
+
+        popen.side_effect = launch
+        self.assertEqual(hill.run(self.args), 0)
+        command = popen.call_args.args[0]
+        self.assertIn('--relay-only', command)
+        self.assertNotIn('--bind-address', command)
+        heartbeat = sync.call_args_list[1].args[2]
+        self.assertEqual(heartbeat['transport'], 'zerotier')
+        self.assertTrue(heartbeat['hybrid'])
+        self.assertEqual((heartbeat['room_id'], heartbeat['room_round'], heartbeat['delay']), ('main-room', 'one', 4))
+
+    @patch.dict(os.environ, {'UN5_HILL_TICKET': 'private-ticket'})
+    @patch('hill.time.sleep')
+    @patch('hill.subprocess.Popen')
+    @patch('hill.sync')
+    def test_netplay_guest_needs_no_zerotier_ip_and_waits_for_the_relay_room(self, sync, popen, sleep):
+        self.args.transport = 'relay'
+        self.args.address = '0.0.0.0'
+        waiting = dict(self.snapshot(role='guest'), transport='relay')
+        waiting['host']['relay_room'] = ''
+        ready = dict(waiting, host=dict(waiting['host'], relay_room='main-room'))
+        sync.side_effect = [waiting, ready, dict(ready, status='finished'), {}]
+        popen.return_value.poll.return_value = None
+        self.assertEqual(hill.run(self.args), 0)
+        popen.assert_called_once()
+        command = popen.call_args.args[0]
+        self.assertIn('--relay-only', command)
+        self.assertEqual(command[command.index('--room') + 1], 'main-room')
+        self.assertNotIn('--connect', command)
+
     def test_spectator_disabled_host_does_not_start_a_stream(self):
         self.args.transport = 'zerotier'
         self.args.no_spectators = True

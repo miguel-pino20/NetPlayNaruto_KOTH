@@ -78,11 +78,17 @@ El launcher encuentra el cruce listo de cada cuenta de Discord. Con PCSX2 y el j
 juego y los archivos de ambos, asigna P1/P2 según la cuenta Discord e intercambia
 las direcciones. La partida conecta por UDP directo cuando ambos están listos.
 
-## Rey de la colina con Django y ZeroTier
+## Rey de la Colina con Django
 
-Django coordina los turnos. Las peleas de KOTH conectan directamente por ZeroTier,
-con delay automático. Los participantes en espera también pueden observar por
-ZeroTier en su propio PCSX2. HOST/GUEST fuera de KOTH conserva el servidor principal.
+Django coordina los turnos. Cada participante elige **ZeroTier** o **Netplay**
+al conectar. Si ambos eligen ZeroTier, el combate usa UDP directo. Si alguno
+elige Netplay, ambos usan el relay del servidor principal. Django repite la
+selección con cada pareja. Netplay funciona sin una IPv4 de ZeroTier.
+
+Ambos launchers y Django deben admitir la selección de red para usar el relay.
+El servidor principal debe aceptar el estado configurado en el evento. Para UN6,
+el servidor actual acepta Original como estado predeterminado. Los espectadores
+pueden observar los combates de ZeroTier.
 
 La URL pública de Django es `https://narutimateonline.servegame.com/`.
 El launcher migra automáticamente los dominios anteriores
@@ -108,16 +114,17 @@ save state y símbolos que los jugadores. El host debe habilitar espectadores.
 Observar no ocupa cupo. El tablero muestra la puntuación registrada por Django.
 
 1. En Django, instala la actualización y ejecuta `python manage.py migrate`.
-2. Todos deben estar autorizados en la misma red ZeroTier. El host debe permitir
-   UDP 47400 para jugar y TCP 47401 si habilita espectadores.
+2. Para jugar por ZeroTier, ambos deben estar autorizados en la misma red.
+   El host debe permitir UDP 47400 para jugar y TCP 47401 si habilita espectadores.
    Cada PC debe tener PCSX2 con PINE habilitado,
    el juego abierto y los mismos archivos de save state y symbols de UN5 o UN6.
    El launcher comprueba y descarga el estado y los símbolos del servidor de
-   archivos habitual por HTTP antes de entrar. Los controles del combate viajan por ZeroTier.
+   archivos habitual por HTTP antes de entrar.
 3. En **Your Role** selecciona **KOTH**. El panel de salas cambia a una lista de
    eventos de Django. La URL del sitio se puede editar encima de la lista.
    Selecciona el evento y pulsa **JOIN KOTH** (también puedes hacer doble clic).
-4. Confirma tu nombre y selecciona tu red de ZeroTier; la IPv4 es obligatoria.
+4. Confirma tu nombre y selecciona **ZeroTier** o **Netplay**. Si eliges ZeroTier,
+   configura tu IPv4 de esa red.
    Si tienes la sesión de Discord del launcher activa,
    Django la verifica con el servidor principal y vincula la inscripción a tu
    misma cuenta de Discord. Sin esa sesión, te inscribe como invitado. Se guarda
@@ -202,7 +209,8 @@ El launcher y KOTH miden el ping entre jugadores antes de cada partida. El host
 elige entre 2 y 10 frames y ambos mantienen ese valor durante la sesión. Con una
 versión anterior se conserva el delay inicial de la sala. Desde terminal puedes indicar `--delay 0` para
 calcularlo por el ping, o elegir 2–10 frames manualmente.
-KOTH usa ZeroTier. `--api-url` es la URL de Django.
+`--api-url` es la URL de Django. `--transport relay` selecciona Netplay para
+KOTH. En ese modo puedes omitir `--address`.
 `--no-spectators` permite comparar el comportamiento sin transmisión de espectadores.
 `--port` permite cambiar el puerto del host (47400 por defecto).
 Las pruebas automatizadas no sustituyen una prueba real con dos PCs y PCSX2.
