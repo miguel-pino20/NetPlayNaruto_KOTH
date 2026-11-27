@@ -176,11 +176,18 @@ def wait_fixture(args, is_host, login, stopped):
     path = f'/api/netplay/events/{event}/fixtures/{fixture}/sync/'
     body = {'address': args.bind_address, 'game': args.fixture_game, 'state_tag': file_tag(args.state),
             'symbols_tag': file_tag(args.symbols), 'attempt': uuid4().hex, 'peer_attempt': '', 'dual_report': True}
-    print('ZeroTier: esperando al otro jugador del cruce…', flush=True)
+    preference = getattr(args, 'fixture_transport', 'direct-only')
+    if preference != 'direct-only':
+        body['transport'] = preference
+
+    def heartbeat(payload):
+        return api_call(url, 'POST', path, payload, timeout=6,
+                        extra_headers={'X-Netplay-Session': login}, follow_redirects=False)
+
+    print('Torneo: esperando al otro jugador del cruce…', flush=True)
     while not stopped():
         try:
-            result = api_call(url, 'POST', path, body, timeout=6,
-                              extra_headers={'X-Netplay-Session': login}, follow_redirects=False)
+            result = heartbeat(body)
         except AccountError as error:
             if error.code and error.code < 500:
                 raise
@@ -190,11 +197,28 @@ def wait_fixture(args, is_host, login, stopped):
                 raise AccountError('El rol del cruce cambió. Actualiza la lista.')
             body['peer_attempt'] = result['peer_attempt']
             if result['ready'] and result['session_epoch'] != getattr(args, 'previous_fixture_epoch', None):
+                args.session_epoch = result['session_epoch']
+                args.fixture_result_grant = result.get('result_grant')
+                transport = result.get('transport', 'zerotier')
+                if transport == 'relay':
+                    if preference == 'direct-only' or not args.fixture_result_grant:
+                        raise AccountError('El cruce por Netplay requiere dos launchers actualizados.')
+                    args.fixture_relay = True
+                    if is_host:
+                        def publish_room(room_id):
+                            ack = heartbeat({**body, 'room_id': room_id, 'room_epoch': args.session_epoch})
+                            if not ack['ready'] or ack.get('session_epoch') != args.session_epoch or ack.get('relay_room') != room_id:
+                                raise AccountError('Django no confirmó la sala de Netplay para esta pelea.')
+                        args.publish_fixture_room = publish_room
+                    else:
+                        args.room = result['relay_room']
+                    print(f'Netplay: cruce {fixture} · {"P1" if is_host else "P2"}.', flush=True)
+                    return not stopped()
+                if transport != 'zerotier' or preference == 'relay':
+                    raise AccountError('Django no confirmó el transporte solicitado para este cruce.')
                 peer = str(ipaddress.IPv4Address(result['address']))
                 if peer == args.bind_address:
                     raise AccountError('Ambos jugadores registraron la misma IPv4 de ZeroTier. Revisen la red elegida.')
-                args.session_epoch = result['session_epoch']
-                args.fixture_result_grant = result.get('result_grant')
                 if is_host:
                     args.expect_guest_ip = peer
                 else:

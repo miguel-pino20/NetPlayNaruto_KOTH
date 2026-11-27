@@ -529,7 +529,13 @@ class MobileApp(App):
             game = Spinner(text=self.game.text, values=('un5', 'un6'),
                            size_hint_y=None, height=dp(48))
             panel.add_widget(game)
-            self.button(panel, 'Conectar a mi cruce', lambda: self.connect_tournament(source, event, game.text))
+            network = None
+            if event['format'] == 'round_robin':
+                self.label_in(panel, 'Red del combate', 14, 40)
+                network = Spinner(text='ZeroTier', values=('ZeroTier', 'Netplay'), size_hint_y=None, height=dp(48))
+                panel.add_widget(network)
+            self.button(panel, 'Conectar a mi cruce', lambda: self.connect_tournament(
+                source, event, game.text, network.text if network else None))
         self.button(panel, 'Abrir cuadro público', lambda: webbrowser.open(
             f"{site_url(source)}/torneos/{int(event['id'])}/publico/"))
         bracket = self.tournament_column(panel)
@@ -574,7 +580,7 @@ class MobileApp(App):
 
         self.run_job(lambda: join_tournament(source, session, event['id']), show)
 
-    def connect_tournament(self, source, event, game):
+    def connect_tournament(self, source, event, game, network=None):
         from host import prepare_files
         from koth_client import KOTH_STATES, assigned_fixture
         if platform != 'android':
@@ -589,10 +595,13 @@ class MobileApp(App):
             return
         try:
             url = https_url(source)
-            try:
-                address = validate_address(self.inputs['zt_address'].text.strip())
-            except ValueError:
-                raise ValueError(tr('Revisa la IPv4 de ZeroTier en la pestaña Conexión.')) from None
+            preference = {'Netplay': 'relay', 'ZeroTier': 'zerotier'}.get(network, 'direct-only')
+            address = '0.0.0.0'
+            if preference != 'relay':
+                try:
+                    address = validate_address(self.inputs['zt_address'].text.strip())
+                except ValueError:
+                    raise ValueError(tr('Revisa la IPv4 de ZeroTier en la pestaña Conexión.')) from None
             slot = int(self.inputs['pine_slot'].text)
             if not 1 <= slot <= 65535:
                 raise ValueError(tr('Puerto PINE inválido.'))
@@ -627,7 +636,7 @@ class MobileApp(App):
                       'address': address, 'transport': 'direct', 'fixture': {
                           'event_id': fixture['event_id'], 'fixture_id': fixture['fixture_id']},
                       'url': url, 'role': 'host' if role == 'p1' else 'guest',
-                      'round_robin': event['format'] == 'round_robin',
+                      'round_robin': event['format'] == 'round_robin', 'fixture_transport': preference,
                       'nick': fixture[role]['name'], 'overlay': False,
                       'stop_file': str(Path(self.user_data_dir) / 'host.stop')}
             self.launch_mobile_service(config)

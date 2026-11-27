@@ -100,15 +100,16 @@ def session_arguments(config):
         if not room or len(room) > 64 or not all(c.isalnum() or c in '-_' for c in room):
             raise ValueError(tr('Selecciona una sala válida del servidor.'))
         return args + ['--room', room, '--fetch-state']
-    bind = validate_address(config['address']) if config.get('address') else '0.0.0.0'
+    preference = config.get('fixture_transport', 'direct-only') if config.get('round_robin') and config.get('fixture') else 'direct-only'
+    bind = validate_address(config['address']) if preference != 'relay' and config.get('address') else '0.0.0.0'
     args += ['--zerotier', '--bind-address', bind, '--server', '']
     if fixture := config.get('fixture'):
-        if bind == '0.0.0.0':
+        if bind == '0.0.0.0' and preference != 'relay':
             raise ValueError(tr('El cruce necesita una dirección local de ZeroTier.'))
         args += ['--tournament-fixture', str(fixture['event_id']), str(fixture['fixture_id']),
                  '--api-url', config['url'], '--fixture-game', config['game']]
         if config.get('round_robin'):
-            args.append('--round-robin')
+            args += ['--round-robin', '--fixture-transport', preference]
         return args + (['--no-share-state'] if role == 'host' else [])
     if role == 'guest':
         args += ['--connect', validate_address(config.get('host_ip', '')) + ':47400']

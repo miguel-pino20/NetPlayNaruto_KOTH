@@ -74,9 +74,12 @@ puedes consultar los torneos oficiales, inscribirte con Discord y revisar los cr
 por ronda. Las llaves se generan cuando el organizador inicia el torneo. Usa
 **Refresh** para consultar resultados nuevos o **Tournament page** para abrir la vista pública.
 Para jugar, ambos participantes eligen el torneo en curso y pulsan **Connect to my match**.
-El launcher encuentra el cruce listo de cada cuenta de Discord. Con PCSX2 y el juego abiertos, cada jugador elige su red ZeroTier y pulsa iniciar. Django verifica el cruce, el
-juego y los archivos de ambos, asigna P1/P2 según la cuenta Discord e intercambia
-las direcciones. La partida conecta por UDP directo cuando ambos están listos.
+El launcher encuentra el cruce listo de cada cuenta de Discord. En **Round Robin**,
+cada jugador elige **ZeroTier** o **Netplay** al conectar. Si ambos eligen ZeroTier,
+el cruce va por UDP directo. Si cualquiera elige Netplay, ambos usan el relay y
+el servidor principal debe aceptar el estado del evento. Los cruces de
+eliminación usan ZeroTier. Django verifica el juego y los archivos de ambos y
+asigna P1/P2 según sus cuentas de Discord.
 
 ## Rey de la Colina con Django
 

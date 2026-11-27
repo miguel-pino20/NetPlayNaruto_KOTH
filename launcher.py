@@ -1805,10 +1805,27 @@ class Launcher(tk.Tk):
             return None
         return address
 
-    def zerotier(self, *, fixture, round_robin=False):
+    def zerotier(self, *, fixture, round_robin=False, preference=None):
         if self.backend.running or self._koth_pending or self._after_sync or self._after_allow:
             return
-        address = self._saved_zerotier_address()
+        if round_robin and preference is None:
+            dialog = tk.Toplevel(self, bg=PANEL, padx=20, pady=16)
+            dialog.title(tr('hill.transport'))
+            dialog.transient(self)
+            tk.Label(dialog, text=tr('hill.transport'), bg=PANEL, fg=TEXT).pack(anchor='w', pady=(0, 6))
+            network = ttk.Combobox(dialog, values=('ZeroTier', 'Netplay'), state='readonly')
+            network.current(0)
+            network.pack(fill='x')
+
+            def connect():
+                selection = 'relay' if network.get() == 'Netplay' else 'zerotier'
+                dialog.destroy()
+                self.zerotier(fixture=fixture, round_robin=True, preference=selection)
+
+            ttk.Button(dialog, text=tr('hill.connect'), command=connect).pack(fill='x', pady=(10, 0))
+            dialog.grab_set()
+            return
+        address = '0.0.0.0' if preference == 'relay' else self._saved_zerotier_address()
         if not address or not self._ensure_state_dir() or not self._pick_game():
             return
         match = KOTH_STATES.get(fixture.get('match_state'))
@@ -1820,7 +1837,7 @@ class Launcher(tk.Tk):
                    role=fixture['role'].upper())
         cfg = {**self.cfg(), 'transport': 'zerotier', 'zerotier_address': address,
                'fixture': fixture, 'game': self.game, 'hill_url': self.tournaments.url,
-               'round_robin': round_robin}
+               'round_robin': round_robin, 'fixture_transport': preference or 'direct-only'}
         if match:
             cfg['zerotier_state'] = match[1]
         self._start_direct(cfg, role, title, fixture_login=self.backend.session)

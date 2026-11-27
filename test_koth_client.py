@@ -87,6 +87,39 @@ class KothClientTests(unittest.TestCase):
             else:
                 self.assertEqual(args.connect, '10.1.2.2:47400')
 
+    def test_round_robin_negotiates_relay_without_changing_the_result_endpoint(self):
+        from koth_client import wait_fixture
+        from launcher_core import zerotier_args
+        from netplay import main
+
+        self.path.write_text('fixture files')
+        for role, preference in (('host', 'zerotier'), ('guest', 'relay')):
+            is_host = role == 'host'
+            cfg = dict(fixture={'event_id': 7, 'fixture_id': 9}, hill_url=self.url, game='un6',
+                       round_robin=True, fixture_transport=preference,
+                       zerotier_address='10.1.2.1' if is_host else '')
+            with patch('netplay.run_tournament') as run:
+                main([role, *zerotier_args(cfg, role), '--load-slot', '8'])
+                args = run.call_args.args[0]
+            args.state = args.symbols = self.path
+            ready = dict(role='p1' if is_host else 'p2', ready=True, peer_attempt='b' * 32,
+                         session_epoch='e' * 32, transport='relay',
+                         relay_room='' if is_host else 'relay-room',
+                         result_grant={'ticket': 'result-ticket'})
+            with patch('koth_client.api_call', side_effect=[
+                    ready, dict(ready, relay_room='relay-room')]) as sync:
+                self.assertTrue(wait_fixture(args, is_host, 'login', lambda: False))
+                self.assertEqual(sync.call_args.args[3]['transport'], preference)
+                if is_host:
+                    args.publish_fixture_room('relay-room')
+                    self.assertEqual(sync.call_args.args[3]['room_epoch'], ready['session_epoch'])
+                else:
+                    self.assertEqual(args.bind_address, '0.0.0.0')
+                    self.assertEqual(args.room, 'relay-room')
+            self.assertTrue(args.fixture_relay)
+            self.assertEqual(args.api_url, self.url)
+            self.assertEqual(args.fixture_result_grant, ready['result_grant'])
+
     def test_tournament_rematch_requires_a_fresh_network_session(self):
         from koth_client import wait_fixture
         from types import SimpleNamespace

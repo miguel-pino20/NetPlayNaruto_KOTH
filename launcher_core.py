@@ -345,14 +345,15 @@ def zerotier_args(cfg, action):
             return str(ip)
         except ValueError:
             raise ValueError(tr('zt.invalid_ip')) from None
-    address = ipv4(cfg.get('zerotier_address', ''))
+    preference = cfg.get('fixture_transport', 'direct-only') if cfg.get('round_robin') and cfg.get('fixture') else 'direct-only'
+    address = '0.0.0.0' if preference == 'relay' else ipv4(cfg.get('zerotier_address', ''))
     args = ['--server', '', '--bind-address', address]
     if cfg.get('fixture'):
         fixture = cfg['fixture']
         args += ['--tournament-fixture', str(fixture['event_id']), str(fixture['fixture_id']),
                  '--api-url', cfg['hill_url'], '--fixture-game', cfg['game']]
         if cfg.get('round_robin'):
-            args.append('--round-robin')
+            args += ['--round-robin', '--fixture-transport', preference]
         if action == 'guest':
             return args + ['--bind-port', GUEST_BIND_PORT]
     if action == 'host':

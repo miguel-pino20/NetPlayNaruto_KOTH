@@ -696,7 +696,7 @@ def online_guest_fetch(args):
     """Guest, online: read the room, take its input delay and download the host's match state and symbols.json from the
     server when they differ from yours (--fetch-state)."""
     try:
-        api = netlink.Api(getattr(args, 'api_url', '') or args.server)
+        api = netlink.Api(getattr(args, 'relay_api_url', None) or getattr(args, 'api_url', '') or args.server)
         room = api.get_room(args.room)
     except netlink.ServerError as error:
         print(f'failed: {error}')
@@ -748,10 +748,12 @@ def online_open(args, core, is_host, tag, nick):
     from discord_auth import AccountError, api_call
     api = room = sock = None
     try:
-        api = netlink.Api(getattr(args, 'api_url', '') or args.server)
-        session_token = os.environ.get('UN5_NETPLAY_SESSION', '')
+        api_url = getattr(args, 'relay_api_url', None) or getattr(args, 'api_url', '')
+        api = netlink.Api(api_url or args.server)
+        session_token = os.environ.get('UN5_FIXTURE_LOGIN' if getattr(args, 'fixture_relay', False)
+                                       else 'UN5_NETPLAY_SESSION', '')
         if not is_host and (session_token or getattr(args, 'koth_relay', False)):
-            api_call(args.api_url, 'POST', f'/rooms/{args.room}/allow', {}, token=session_token)
+            api_call(api_url, 'POST', f'/rooms/{args.room}/allow', {}, token=session_token)
         server_addr = netlink.resolve(args.server)
         sock = netlink.open_socket(args.port if is_host else args.bind_port)
         pub = netlink.whoami(sock, server_addr)
@@ -763,7 +765,11 @@ def online_open(args, core, is_host, tag, nick):
         if is_host:
             sym_tag = symbols_tag(args.symbols)
             room = api.create_room(nick, args.delay, tag, sym_tag, pub, lan)
-            report_online_presence(args.api_url, 'host', room['id'], session_token)
+            report_online_presence(api_url, 'host', room['id'], session_token)
+            publish_fixture_room = getattr(args, 'publish_fixture_room', None)
+            if publish_fixture_room:
+                api.poll(room['id'], room['token'], 'waiting')
+                publish_fixture_room(room['id'])
             if getattr(args, 'room_file', None):
                 from pathlib import Path
                 # P2 can join as soon as Django receives this file.
@@ -788,7 +794,7 @@ def online_open(args, core, is_host, tag, nick):
                   f"host's UN5-partida.p2s.")
             sock.close()
             return None, None
-        report_online_presence(args.api_url, 'guest', args.room, session_token)
+        report_online_presence(api_url, 'guest', args.room, session_token)
         host_addr = tuple(room['host']['addr'])
         cands = [tuple(c) for c in room['host'].get('lan', [])] if host_addr[0] == pub[0] else []
         relay = (server_addr, bytes.fromhex(room['token']))
@@ -798,7 +804,7 @@ def online_open(args, core, is_host, tag, nick):
         print(f"guest: joined room {args.room} ({room['host']['nick']}), connecting (delay {room['delay']} frames, "
               f"state tag {tag}) ...")
         return node, None
-    except (netlink.ServerError, OSError, AccountError) as error:
+    except (netlink.ServerError, OSError, AccountError, KeyError, ValueError) as error:
         if (is_host and room is None and isinstance(error, netlink.ServerError)
                 and tag in (netlink.UN6_PORTAL_STATE_TAG, netlink.UN6_AUDIO20_STATE_TAG)
                 and "match state is not the server's default" in str(error)):
@@ -825,8 +831,9 @@ def cmd_play(args, is_host):
     if args.delay <= 0 and not server_mode:
         args.delay = LAN_DELAY                         # LAN / VPN: nothing to measure before connecting
     fixture = getattr(args, 'tournament_fixture', None)
-    if fixture and (server_mode or getattr(args, 'bind_address', '0.0.0.0') == '0.0.0.0'):
-        print('El cruce necesita una dirección local de ZeroTier.')
+    if fixture and (server_mode or (getattr(args, 'bind_address', '0.0.0.0') == '0.0.0.0'
+                                    and getattr(args, 'fixture_transport', 'direct-only') != 'relay')):
+        print('El cruce necesita una dirección local de ZeroTier o la selección de Netplay.')
         return 1
     if not is_host and not server_mode and not args.connect and not fixture:
         print('guest: give --connect HOST_IP:PORT, or --server SERVER --room ID.')
@@ -994,7 +1001,7 @@ def run_tournament(args, prepare_fixture=None):
                 pause()
         return 0
     except (AccountError, KeyError, OSError, ValueError) as error:
-        print(f'No se pudo coordinar el cruce por ZeroTier: {error}', flush=True)
+        print(f'No se pudo coordinar el cruce: {error}', flush=True)
         return 1
     finally:
         if prepared and prepare_fixture is None:
@@ -1028,8 +1035,13 @@ def play_connected(args, is_host, server_mode, pine, core):
                 return 0
             if is_host and not args.fixture_result_grant:
                 args.fixture_result_grant = fixture_result_grant(args, login)
+            if getattr(args, 'fixture_relay', False):
+                args.server, args.relay_api_url = netlink.DEFAULT_SERVER, netlink.DEFAULT_API_URL
+                args.relay_only = server_mode = True
+                if not is_host and not online_guest_fetch(args):
+                    return 1
         except (AccountError, ValueError, KeyError, OSError) as error:
-            print(f'No se pudo coordinar el cruce por ZeroTier: {error}', flush=True)
+            print(f'No se pudo coordinar el cruce: {error}', flush=True)
             return 1
     tag = state_tag(args.state) if args.state else '00' * 8
     apply_config(args, core, tag)
@@ -1132,7 +1144,7 @@ def play_connected(args, is_host, server_mode, pine, core):
         except ValueError:
             pass
     presence_stop = threading.Event()
-    if server_mode and os.environ.get('UN5_NETPLAY_SESSION'):
+    if server_mode and not getattr(args, 'fixture_relay', False) and os.environ.get('UN5_NETPLAY_SESSION'):
         def presence_loop():
             from discord_auth import AccountError, api_call
             while not presence_stop.is_set():
@@ -1396,6 +1408,8 @@ def main(argv=None, *, prepare_fixture=None):
                             'default: http://--server. UDP (relay) always uses --server')
         q.add_argument('--relay-only', action='store_true', help='send game packets only through the principal relay')
         q.add_argument('--koth-relay', action='store_true', help=argparse.SUPPRESS)
+        q.add_argument('--fixture-transport', choices=('direct-only', 'zerotier', 'relay'),
+                       default='direct-only', help=argparse.SUPPRESS)
         q.add_argument('--zerotier', action='store_true', help='use casual ZeroTier score reporting with direct UDP')
         q.add_argument('--bind-address', default='0.0.0.0', help='local IPv4 for direct UDP connections')
         q.add_argument('--spectator-port', type=int, default=0, help='TCP port for read-only spectators (0 = off)')
